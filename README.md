@@ -4,6 +4,8 @@
 
 A small terminal utility for tracking time against projects and scopes. A scope is either a ticket number or a free-form description; they are intentionally the same concept.
 
+`tt` currently supports macOS and Linux. Native Windows is not supported.
+
 ## Concepts
 
 - Every time entry has a project and a scope.

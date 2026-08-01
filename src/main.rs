@@ -1,3 +1,5 @@
-fn main() {
-    eprintln!("tt: CLI implementation pending");
+mod cli;
+
+fn main() -> std::process::ExitCode {
+    cli::main(cli::clap::parse_env())
 }
