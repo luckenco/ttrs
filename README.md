@@ -7,7 +7,8 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 ## Concepts
 
 - Every time entry has a project and a scope.
-- A project has an optional client.
+- Clients are created explicitly.
+- A project may reference one client.
 - More than one timer may run at once.
 - Overlapping timers remain overlapping; their time is not divided or adjusted.
 - All timestamps are stored in UTC and displayed in the configured timezone.
@@ -69,15 +70,18 @@ tt log -p website -s ISSUE-123 -f 0900 -e 1232
 
 The end must be later than the start. Completed entries may overlap running timers or other completed entries.
 
-### Manage projects
+### Manage clients and projects
 
 ```console
+tt client add --name <name>
+tt client list
+
 tt project add --name <name> [--client <client>]
 tt project edit --name <name> [--client <client> | --clear-client]
 tt project list
 ```
 
-Projects are created explicitly so a typo cannot silently create a new project.
+`--client` selects an existing client; an unknown client is an error. Clients and projects are created explicitly so a typo cannot silently create one.
 
 ### Configure the timezone
 
