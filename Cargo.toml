@@ -1,6 +1,8 @@
 [package]
-name = "swap"
+name = "tt"
 version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+jiff = { version = "0.2.35", default-features = false, features = ["std", "perf-inline"] }
+rusqlite = { version = "0.40.1", default-features = false, features = ["bundled"] }

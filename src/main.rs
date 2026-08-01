@@ -1,3 +1,3 @@
 fn main() {
-    println!("Hello, world!");
+    eprintln!("tt: CLI implementation pending");
 }
