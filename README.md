@@ -6,11 +6,25 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 
 `tt` currently supports macOS and Linux. Native Windows is not supported.
 
+## Is it for you?
+
+`tt` is useful when all of these match how you operate:
+
+- All tracked work is billable under a service agreement.
+- Agreement terms do not change; a rate or limit change creates a new agreement.
+- Each project uses one current agreement, while historical work keeps its original agreement.
+- Work may belong directly to an agreement without belonging to a project.
+- Monthly minimums and maximums follow calendar months in the agreement's IANA timezone.
+- Concurrent timers may overlap, and that overlap must remain unadjusted.
+- You work on macOS or Linux; native Windows is not a target.
+
 ## Concepts
 
-- Every time entry has a project and a scope.
-- Clients are created explicitly.
-- A project may reference one client.
+- Every time entry has a service agreement and a scope.
+- A time entry may also reference a project.
+- Clients and immutable service agreements are created explicitly.
+- Agreements define an hourly rate, currency, optional monthly minimum and maximum, and billing timezone.
+- A project selects one active agreement at a time.
 - More than one timer may run at once.
 - Overlapping timers remain overlapping; their time is not divided or adjusted.
 - All timestamps are stored in UTC and displayed in the configured timezone.
@@ -22,9 +36,10 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 ```console
 tt start --project <project> --scope <scope> [--at <time>]
 tt start -p <project> -s <scope> [--at <time>]
+tt start --client <client> --agreement <agreement> --scope <scope> [--at <time>]
 ```
 
-`--at` defaults to now. The project must already exist.
+`--at` defaults to now. A project uses its currently selected agreement. Agreement-level time may be recorded without a project by supplying `--client` and `--agreement`.
 
 Examples:
 
@@ -52,9 +67,9 @@ tt status
 Example output:
 
 ```text
-ID       PROJECT    SCOPE              STARTED   ELAPSED
-a81f2c   website    ISSUE-02           09:00     01:32
-c102b7   internal   Planning meeting   10:15     00:17
+ID   AGREEMENT     PROJECT    SCOPE              STARTED   ELAPSED
+1    Support 2026  website    ISSUE-02           09:00     01:32
+2    Support 2026  -          Planning meeting   10:15     00:17
 ```
 
 ### Log a completed entry
@@ -62,6 +77,7 @@ c102b7   internal   Planning meeting   10:15     00:17
 ```console
 tt log --project <project> --scope <scope> --from <time> --to <time>
 tt log -p <project> -s <scope> -f <time> -e <time>
+tt log --client <client> --agreement <agreement> --scope <scope> --from <time> --to <time>
 ```
 
 Example:
@@ -72,18 +88,23 @@ tt log -p website -s ISSUE-123 -f 0900 -e 1232
 
 The end must be later than the start. Completed entries may overlap running timers or other completed entries.
 
-### Manage clients and projects
+### Manage clients, agreements, and projects
 
 ```console
 tt client add --name <name>
 tt client list
 
-tt project add --name <name> [--client <client>]
-tt project edit --name <name> [--client <client> | --clear-client]
+tt agreement add --client <client> --name <name> --rate <amount> --currency <code> \
+  [--minimum-hours <hours>] [--maximum-hours <hours>] --timezone <IANA-timezone>
+tt agreement list [--client <client>]
+tt agreement archive --client <client> --name <name>
+
+tt project add --name <name> --client <client> --agreement <agreement>
+tt project edit --name <name> --agreement <agreement>
 tt project list
 ```
 
-`--client` selects an existing client; an unknown client is an error. Clients and projects are created explicitly so a typo cannot silently create one.
+Agreement terms are immutable. Create a new agreement when a rate or monthly limit changes, then switch the project to it. Existing timers and entries retain the agreement selected when they were created. A project and its agreement must belong to the same client.
 
 ### Configure the timezone
 
@@ -113,7 +134,7 @@ $ tt
 
 Project:
 1. website (Acme)
-2. internal
+2. API (Acme)
 > 1
 
 Scope:
@@ -139,8 +160,8 @@ The dialog lists the running timers. Selecting one stops it:
 $ tt
 
 Running:
-1. ISSUE-02    website    00:42
-2. ISSUE-05    internal   00:18
+1. ISSUE-02    Support 2026    website    00:42
+2. ISSUE-05    Support 2026    API        00:18
 > 2
 
 Stopped ISSUE-05 at 12:32
