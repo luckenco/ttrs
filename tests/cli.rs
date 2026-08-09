@@ -72,8 +72,38 @@ fn stderr(output: &Output) -> String {
 fn explicit_commands_route_through_the_shared_application() {
     let case = Case::new();
     case.ok(&["client", "add", "--name", "Acme"]);
-    case.ok(&["project", "add", "--name", "website", "--client", "Acme"]);
-    assert!(case.ok(&["project", "list"]).contains("website\tAcme"));
+    case.ok(&[
+        "agreement",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "Support 2026",
+        "--rate",
+        "125.50",
+        "--currency",
+        "EUR",
+        "--minimum-hours",
+        "20",
+        "--maximum-hours",
+        "80",
+        "--timezone",
+        "Europe/Berlin",
+    ]);
+    case.ok(&[
+        "project",
+        "add",
+        "--name",
+        "website",
+        "--client",
+        "Acme",
+        "--agreement",
+        "Support 2026",
+    ]);
+    assert!(
+        case.ok(&["project", "list"])
+            .contains("website\tAcme\tSupport 2026")
+    );
 
     let started = case.ok(&[
         "start",
@@ -90,10 +120,49 @@ fn explicit_commands_route_through_the_shared_application() {
     assert!(case.ok(&["status"]).contains("No running timers"));
 
     case.ok(&[
-        "log", "-p", "website", "-s", "Backfill", "-f", "1000", "-e", "1100",
+        "log",
+        "--client",
+        "Acme",
+        "--agreement",
+        "Support 2026",
+        "-s",
+        "Backfill",
+        "-f",
+        "1000",
+        "-e",
+        "1100",
     ]);
-    case.ok(&["project", "edit", "--name", "website", "--clear-client"]);
-    assert!(case.ok(&["project", "list"]).contains("website\t-"));
+    case.ok(&[
+        "agreement",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "Support 2027",
+        "--rate",
+        "150",
+        "--currency",
+        "EUR",
+        "--timezone",
+        "Europe/Berlin",
+    ]);
+    case.ok(&[
+        "project",
+        "edit",
+        "--name",
+        "website",
+        "--agreement",
+        "Support 2027",
+    ]);
+    case.ok(&[
+        "agreement",
+        "archive",
+        "--client",
+        "Acme",
+        "--name",
+        "Support 2026",
+    ]);
+    assert!(case.ok(&["agreement", "list"]).contains("Support 2027"));
     assert!(case.ok(&["client", "list"]).contains("Acme"));
     assert!(case.root.join("data/tt.sqlite3").exists());
 }
@@ -155,7 +224,31 @@ fn pty(case: &Case, interaction: &str) -> Output {
 #[cfg(target_os = "macos")]
 fn bare_interaction_starts_cancels_and_stops() {
     let case = Case::new();
-    case.ok(&["project", "add", "--name", "website"]);
+    case.ok(&["client", "add", "--name", "Acme"]);
+    case.ok(&[
+        "agreement",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "Support",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--timezone",
+        "UTC",
+    ]);
+    case.ok(&[
+        "project",
+        "add",
+        "--name",
+        "website",
+        "--client",
+        "Acme",
+        "--agreement",
+        "Support",
+    ]);
 
     let started = pty(
         &case,
@@ -221,7 +314,7 @@ fn list_exits_cleanly_when_its_consumer_closes_the_pipe() {
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let mut header = String::new();
     output.read_line(&mut header).unwrap();
-    assert_eq!(header, "ID\tNAME\tCLIENT\n");
+    assert_eq!(header, "ID\tNAME\tCLIENT\tAGREEMENT\n");
     drop(output);
 
     assert!(child.wait().unwrap().success());
