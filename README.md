@@ -12,21 +12,24 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 
 - All tracked work is billable under a service agreement.
 - Agreement terms do not change; a rate or limit change creates a new agreement.
-- Each project uses one current agreement, while historical work keeps its original agreement.
-- Work may belong directly to an agreement without belonging to a project.
-- Monthly minimums and maximums follow calendar months in the agreement's IANA timezone.
-- Concurrent timers may overlap, and that overlap must remain unadjusted.
+- Every project belongs to one client and always has one current agreement.
+- Every agreement belongs to one project; historical work keeps its original agreement.
+- Project timezone and client ownership never change.
+- Monthly limits use whole hours and are prorated by local calendar day across agreements.
+- A client may have only one running timer; different clients may overlap.
 - You work on macOS or Linux; native Windows is not a target.
 
 ## Concepts
 
 - Every time entry has a service agreement and a scope.
-- A time entry may also reference a project.
-- Clients and immutable service agreements are created explicitly.
-- Agreements define an hourly rate, currency, optional monthly minimum and maximum, and billing timezone.
-- A project selects one active agreement at a time.
-- More than one timer may run at once.
-- Overlapping timers remain overlapping; their time is not divided or adjusted.
+- Every project belongs to exactly one client.
+- Every agreement belongs to exactly one project.
+- Projects define their client and immutable billing timezone.
+- Agreements define an hourly rate, currency, optional monthly minimum and maximum, and explicit effective date.
+- Creating a project atomically creates its initial agreement.
+- Creating replacement terms marks the previous agreement as replaced.
+- Agreement replacement, logging, and project archival are blocked while that client has a running timer.
+- Exact durations enforce maximums; future billing reports round each agreement-month to the nearest 30 minutes, halves upward.
 - All timestamps are stored in UTC and displayed in the configured timezone.
 
 ## CLI contract
@@ -34,12 +37,11 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 ### Start a timer
 
 ```console
-tt start --project <project> --scope <scope> [--at <time>]
+tt start --project <project-name|id:project-id> --scope <scope> [--at <time>]
 tt start -p <project> -s <scope> [--at <time>]
-tt start --client <client> --agreement <agreement> --scope <scope> [--at <time>]
 ```
 
-`--at` defaults to now. A project uses its currently selected agreement. Agreement-level time may be recorded without a project by supplying `--client` and `--agreement`.
+`--at` defaults to now. The project must be active and uses its current agreement. Starting is rejected when the client already has a running timer or the monthly maximum has been reached.
 
 Examples:
 
@@ -48,12 +50,12 @@ tt start --project website --scope ISSUE-123
 tt start -p internal -s "Planning meeting" --at 0900
 ```
 
-Starting a timer does not stop any other running timer.
+Starting a timer does not stop another timer. Different clients may have concurrent timers.
 
 ### Stop a timer
 
 ```console
-tt stop --id <timer-id> [--at <time>]
+tt stop --id id:<timer-id> [--at <time>]
 ```
 
 `--at` defaults to now. Timer IDs are shown by `tt status` and returned by `tt start`.
@@ -67,17 +69,19 @@ tt status
 Example output:
 
 ```text
-ID   AGREEMENT     PROJECT    SCOPE              STARTED   ELAPSED
-1    Support 2026  website    ISSUE-02           09:00     01:32
-2    Support 2026  -          Planning meeting   10:15     00:17
+ID    AGREEMENT     PROJECT    SCOPE              STARTED   ELAPSED  CAP LEFT
+id:1  Support 2026  website    ISSUE-02           09:00     01:32    04:28
+id:2  Retainer 2026 API        Planning meeting   10:15     00:17    -
 ```
+
+For capped projects, `tt start` and `tt status` always show the exact allowance remaining. One hour or less is marked `WARNING`; zero is `LIMIT REACHED`. A capped timer remains visible until stopped. Stopping records only through the cap and reports any discarded overflow. Monthly minimums never alter tracked entries.
 
 ### Log a completed entry
 
 ```console
-tt log --project <project> --scope <scope> --from <time> --to <time>
+tt log --project <project-name|id:project-id> --scope <scope> --from <time> --to <time>
 tt log -p <project> -s <scope> -f <time> -e <time>
-tt log --client <client> --agreement <agreement> --scope <scope> --from <time> --to <time>
+tt log --agreement id:<agreement-id> --scope <scope> --from <time> --to <time>
 ```
 
 Example:
@@ -86,7 +90,7 @@ Example:
 tt log -p website -s ISSUE-123 -f 0900 -e 1232
 ```
 
-The end must be later than the start. Completed entries may overlap running timers or other completed entries.
+The end must be later than the start and the entry must fit within one agreement period. Agreement IDs allow historical backfills against replaced agreements. Logging is blocked while the client has a running timer. Completed entries may overlap one another.
 
 ### Manage clients, agreements, and projects
 
@@ -94,17 +98,21 @@ The end must be later than the start. Completed entries may overlap running time
 tt client add --name <name>
 tt client list
 
-tt agreement add --client <client> --name <name> --rate <amount> --currency <code> \
-  [--minimum-hours <hours>] [--maximum-hours <hours>] --timezone <IANA-timezone>
-tt agreement list [--client <client>]
-tt agreement archive --client <client> --name <name>
+tt project add --client <client-name|id:client-id> --name <name> \
+  --timezone <IANA-timezone> --agreement <agreement-name> \
+  --rate <amount> --currency <code> --effective-on <YYYY-MM-DD> \
+  [--minimum-hours <whole-hours>] [--maximum-hours <whole-hours>]
+tt project archive --project <project> [--on <YYYY-MM-DD>]
+tt project unarchive --project <project>
+tt project list [--all]
 
-tt project add --name <name> --client <client> --agreement <agreement>
-tt project edit --name <name> --agreement <agreement>
-tt project list
+tt agreement add --project <project-name|id:project-id> --name <name> \
+  --rate <amount> --currency <code> --effective-on <YYYY-MM-DD> \
+  [--minimum-hours <whole-hours>] [--maximum-hours <whole-hours>]
+tt agreement list [--client <client-name|id:client-id>] [--all]
 ```
 
-Agreement terms are immutable. Create a new agreement when a rate or monthly limit changes, then switch the project to it. Existing timers and entries retain the agreement selected when they were created. A project and its agreement must belong to the same client.
+Project creation atomically creates the initial agreement and prints both IDs. Effective dates are required and cannot be future. Replacement is rejected if conflicting work already exists. Project archival defaults to today in the project timezone; the archival day remains active. Unarchiving restores continuous coverage retroactively.
 
 ### Configure the timezone
 
@@ -133,8 +141,8 @@ The dialog walks through starting a timer:
 $ tt
 
 Project:
-1. website (Acme)
-2. API (Acme)
+1. website (Acme; Support 2026)
+2. API (Acme; Retainer 2026)
 > 1
 
 Scope:
@@ -147,10 +155,10 @@ n. New scope
 Start time [now]:
 >
 
-Started ISSUE-08 for website at 09:32
+Started ISSUE-08 for website at 09:32 (id:1)
 ```
 
-The scope list contains the three most recently used distinct scopes for the selected project. Starting a second concurrent timer is done with the explicit `tt start` command.
+The scope list contains the three most recently used distinct scopes for the selected project across replacement agreements. Starting a concurrent timer for a different client uses the explicit `tt start` command.
 
 ### One or more timers are running
 
@@ -164,7 +172,7 @@ Running:
 2. ISSUE-05    Support 2026    API        00:18
 > 2
 
-Stopped ISSUE-05 at 12:32
+Stopped ISSUE-05 at 12:32 (id:1)
 ```
 
 Cancelling the dialog makes no changes.

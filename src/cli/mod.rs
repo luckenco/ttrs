@@ -7,14 +7,14 @@ mod terms;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TrackingTarget {
     Project(String),
-    Agreement { client: String, agreement: String },
+    Agreement(String),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Bare,
     Start {
-        target: TrackingTarget,
+        project: String,
         scope: String,
         at: Option<String>,
     },
@@ -34,31 +34,39 @@ pub enum Command {
     },
     ClientList,
     AgreementAdd {
-        client: String,
+        project: String,
         name: String,
         rate: String,
         currency: String,
         minimum_hours: Option<String>,
         maximum_hours: Option<String>,
-        timezone: String,
+        effective_on: String,
     },
     AgreementList {
         client: Option<String>,
-    },
-    AgreementArchive {
-        client: String,
-        name: String,
+        all: bool,
     },
     ProjectAdd {
         name: String,
         client: String,
         agreement: String,
+        rate: String,
+        currency: String,
+        minimum_hours: Option<String>,
+        maximum_hours: Option<String>,
+        timezone: String,
+        effective_on: String,
     },
-    ProjectEdit {
-        name: String,
-        agreement: String,
+    ProjectArchive {
+        project: String,
+        on: Option<String>,
     },
-    ProjectList,
+    ProjectUnarchive {
+        project: String,
+    },
+    ProjectList {
+        all: bool,
+    },
     ConfigSetTimezone {
         timezone: String,
     },

@@ -1,6 +1,6 @@
 use std::{error, fmt, str::FromStr};
 
-use jiff::{Timestamp, tz::TimeZone};
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 /// Returned when an identifier is not a positive integer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -119,36 +119,77 @@ impl HourlyRate {
     }
 }
 
-/// Minimum and maximum working minutes in a calendar month.
+/// Minimum and maximum whole working hours in a calendar month.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct MonthlyHours {
-    minimum_minutes: Option<u32>,
-    maximum_minutes: Option<u32>,
+    minimum: Option<u32>,
+    maximum: Option<u32>,
 }
 
 impl MonthlyHours {
     /// Creates monthly limits, requiring the minimum not to exceed the maximum.
-    pub fn new(minimum_minutes: Option<u32>, maximum_minutes: Option<u32>) -> crate::Result<Self> {
-        if minimum_minutes
-            .zip(maximum_minutes)
+    pub fn new(minimum: Option<u32>, maximum: Option<u32>) -> crate::Result<Self> {
+        if minimum
+            .zip(maximum)
             .is_some_and(|(minimum, maximum)| minimum > maximum)
         {
             return Err(crate::Error::InvalidMonthlyHours);
         }
+        Ok(Self { minimum, maximum })
+    }
+
+    /// Returns the monthly minimum in whole hours.
+    pub const fn minimum(self) -> Option<u32> {
+        self.minimum
+    }
+
+    /// Returns the monthly maximum in whole hours.
+    pub const fn maximum(self) -> Option<u32> {
+        self.maximum
+    }
+}
+
+/// The name and immutable terms for a new service agreement.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct NewAgreement {
+    name: String,
+    hourly_rate: HourlyRate,
+    monthly_hours: MonthlyHours,
+    effective_on: Date,
+}
+
+impl NewAgreement {
+    /// Creates agreement terms effective on a local project date.
+    pub fn new(
+        name: String,
+        hourly_rate: HourlyRate,
+        monthly_hours: MonthlyHours,
+        effective_on: Date,
+    ) -> crate::Result<Self> {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(crate::Error::EmptyAgreementName);
+        }
         Ok(Self {
-            minimum_minutes,
-            maximum_minutes,
+            name: name.to_owned(),
+            hourly_rate,
+            monthly_hours,
+            effective_on,
         })
     }
 
-    /// Returns the monthly minimum in minutes.
-    pub const fn minimum_minutes(self) -> Option<u32> {
-        self.minimum_minutes
+    /// Returns the first local calendar day governed by these terms.
+    pub const fn effective_on(&self) -> Date {
+        self.effective_on
     }
 
-    /// Returns the monthly maximum in minutes.
-    pub const fn maximum_minutes(self) -> Option<u32> {
-        self.maximum_minutes
+    pub(crate) fn into_parts(self) -> (String, HourlyRate, MonthlyHours, Date) {
+        (
+            self.name,
+            self.hourly_rate,
+            self.monthly_hours,
+            self.effective_on,
+        )
     }
 }
 
@@ -156,37 +197,33 @@ impl MonthlyHours {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ServiceAgreement {
     id: ServiceAgreementId,
-    client: ClientId,
+    project: ProjectId,
     name: String,
     hourly_rate: HourlyRate,
     monthly_hours: MonthlyHours,
-    billing_timezone: TimeZone,
-    active: bool,
+    effective_on: Date,
+    current: bool,
 }
 
 impl ServiceAgreement {
     pub(crate) fn new(
         id: ServiceAgreementId,
-        client: ClientId,
+        project: ProjectId,
         name: String,
         hourly_rate: HourlyRate,
         monthly_hours: MonthlyHours,
-        billing_timezone: TimeZone,
-        active: bool,
+        effective_on: Date,
+        current: bool,
     ) -> Self {
         assert!(!name.trim().is_empty(), "agreement names must not be empty");
-        assert!(
-            billing_timezone.iana_name().is_some(),
-            "billing timezones must have an IANA name"
-        );
         Self {
             id,
-            client,
+            project,
             name,
             hourly_rate,
             monthly_hours,
-            billing_timezone,
-            active,
+            effective_on,
+            current,
         }
     }
 
@@ -195,12 +232,12 @@ impl ServiceAgreement {
         self.id
     }
 
-    /// Returns the client that owns the agreement.
-    pub const fn client(&self) -> ClientId {
-        self.client
+    /// Returns the project that owns the agreement.
+    pub const fn project(&self) -> ProjectId {
+        self.project
     }
 
-    /// Returns the agreement's name, unique within its client.
+    /// Returns the agreement's name, unique within its project.
     pub fn name(&self) -> &str {
         &self.name
     }
@@ -215,38 +252,14 @@ impl ServiceAgreement {
         self.monthly_hours
     }
 
-    /// Returns the IANA timezone used for calendar-month boundaries.
-    pub const fn billing_timezone(&self) -> &TimeZone {
-        &self.billing_timezone
+    /// Returns the first local calendar day governed by this agreement.
+    pub const fn effective_on(&self) -> Date {
+        self.effective_on
     }
 
-    /// Returns whether new work may be recorded under this agreement.
-    pub const fn is_active(&self) -> bool {
-        self.active
-    }
-}
-
-/// The commercial and optional project context for new work.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct WorkContext {
-    agreement: ServiceAgreementId,
-    project: Option<ProjectId>,
-}
-
-impl WorkContext {
-    /// Creates a context scoped to an agreement and optional project.
-    pub const fn new(agreement: ServiceAgreementId, project: Option<ProjectId>) -> Self {
-        Self { agreement, project }
-    }
-
-    /// Returns the service agreement governing the work.
-    pub const fn agreement(self) -> ServiceAgreementId {
-        self.agreement
-    }
-
-    /// Returns the project classification, if any.
-    pub const fn project(self) -> Option<ProjectId> {
-        self.project
+    /// Returns whether this is the project's latest agreement.
+    pub const fn is_current(&self) -> bool {
+        self.current
     }
 }
 
@@ -278,24 +291,31 @@ impl Client {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Project {
     id: ProjectId,
+    client: ClientId,
     name: String,
-    client: Option<ClientId>,
-    active_agreement: Option<ServiceAgreementId>,
+    billing_timezone: TimeZone,
+    archived_on: Option<Date>,
 }
 
 impl Project {
     pub(crate) fn new(
         id: ProjectId,
+        client: ClientId,
         name: String,
-        client: Option<ClientId>,
-        active_agreement: Option<ServiceAgreementId>,
+        billing_timezone: TimeZone,
+        archived_on: Option<Date>,
     ) -> Self {
         assert!(!name.trim().is_empty(), "project names must not be empty");
+        assert!(
+            billing_timezone.iana_name().is_some(),
+            "billing timezones must have an IANA name"
+        );
         Self {
             id,
-            name,
             client,
-            active_agreement,
+            name,
+            billing_timezone,
+            archived_on,
         }
     }
 
@@ -309,14 +329,58 @@ impl Project {
         &self.name
     }
 
-    /// Returns the client assigned to the project, if any.
-    pub const fn client(&self) -> Option<ClientId> {
+    /// Returns the client that owns the project.
+    pub const fn client(&self) -> ClientId {
         self.client
     }
 
-    /// Returns the agreement selected for new project work.
-    pub const fn active_agreement(&self) -> Option<ServiceAgreementId> {
-        self.active_agreement
+    /// Returns the timezone defining project calendar days and months.
+    pub const fn billing_timezone(&self) -> &TimeZone {
+        &self.billing_timezone
+    }
+
+    /// Returns the final active calendar day, if the project is archived.
+    pub const fn archived_on(&self) -> Option<Date> {
+        self.archived_on
+    }
+
+    /// Returns whether the project accepts work.
+    pub const fn is_active(&self) -> bool {
+        self.archived_on.is_none()
+    }
+}
+
+/// Monthly-cap information for a running timer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct TimerLimit {
+    remaining_us: i64,
+    cap_at: Option<Timestamp>,
+    reached: bool,
+}
+
+impl TimerLimit {
+    pub(crate) const fn new(remaining_us: i64, cap_at: Option<Timestamp>, reached: bool) -> Self {
+        assert!(remaining_us >= 0, "remaining duration must not be negative");
+        Self {
+            remaining_us,
+            cap_at,
+            reached,
+        }
+    }
+
+    /// Returns the exact remaining allowance in microseconds.
+    pub const fn remaining_us(self) -> i64 {
+        self.remaining_us
+    }
+
+    /// Returns when continuous tracking will reach the cap this month.
+    pub const fn cap_at(self) -> Option<Timestamp> {
+        self.cap_at
+    }
+
+    /// Returns whether the timer has already reached its cap.
+    pub const fn is_reached(self) -> bool {
+        self.reached
     }
 }
 
@@ -324,7 +388,7 @@ impl Project {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RunningTimer {
     id: TimerId,
-    context: WorkContext,
+    agreement: ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
 }
@@ -332,14 +396,14 @@ pub struct RunningTimer {
 impl RunningTimer {
     pub(crate) fn new(
         id: TimerId,
-        context: WorkContext,
+        agreement: ServiceAgreementId,
         scope: String,
         started_at: Timestamp,
     ) -> Self {
         assert!(!scope.trim().is_empty(), "timer scopes must not be empty");
         Self {
             id,
-            context,
+            agreement,
             scope,
             started_at,
         }
@@ -350,9 +414,9 @@ impl RunningTimer {
         self.id
     }
 
-    /// Returns the commercial and project context being tracked.
-    pub const fn context(&self) -> WorkContext {
-        self.context
+    /// Returns the service agreement governing the work.
+    pub const fn agreement(&self) -> ServiceAgreementId {
+        self.agreement
     }
 
     /// Returns the ticket number or free-form task description.
@@ -370,7 +434,7 @@ impl RunningTimer {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TimeEntry {
     id: EntryId,
-    context: WorkContext,
+    agreement: ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
     ended_at: Timestamp,
@@ -379,7 +443,7 @@ pub struct TimeEntry {
 impl TimeEntry {
     pub(crate) fn new(
         id: EntryId,
-        context: WorkContext,
+        agreement: ServiceAgreementId,
         scope: String,
         started_at: Timestamp,
         ended_at: Timestamp,
@@ -388,7 +452,7 @@ impl TimeEntry {
         assert!(started_at < ended_at, "entries must end after they start");
         Self {
             id,
-            context,
+            agreement,
             scope,
             started_at,
             ended_at,
@@ -400,9 +464,9 @@ impl TimeEntry {
         self.id
     }
 
-    /// Returns the commercial and project context of the entry.
-    pub const fn context(&self) -> WorkContext {
-        self.context
+    /// Returns the service agreement governing the entry.
+    pub const fn agreement(&self) -> ServiceAgreementId {
+        self.agreement
     }
 
     /// Returns the ticket number or free-form task description.

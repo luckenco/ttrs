@@ -22,16 +22,14 @@ pub(super) fn format_rate(rate: &model::HourlyRate) -> String {
     format_scaled(rate.amount_micros(), 1_000_000)
 }
 
-pub(super) fn format_minutes(minutes: Option<u32>) -> String {
-    match minutes {
-        Some(minutes) => format!("{}:{:02}", minutes / 60, minutes % 60),
-        None => "-".into(),
-    }
+pub(super) fn format_hours(hours: Option<u32>) -> String {
+    hours.map_or_else(|| "-".into(), |hours| hours.to_string())
 }
 
 fn parse_hours(value: &str) -> Result<u32, Error> {
-    let minutes = parse_scaled(value, 60, "monthly hours")?;
-    u32::try_from(minutes).map_err(|_| Error::usage("monthly hours are too large"))
+    value
+        .parse()
+        .map_err(|_| Error::usage(format!("invalid whole monthly hours '{value}'")))
 }
 
 fn parse_scaled(value: &str, scale: i64, description: &str) -> Result<i64, Error> {
@@ -89,9 +87,10 @@ mod tests {
 
     #[test]
     fn parses_exact_rates_and_monthly_hours() {
-        let (rate, hours) = parse("125.50", "EUR".into(), Some("37.5"), Some("80")).unwrap();
+        let (rate, hours) = parse("125.50", "EUR".into(), Some("37"), Some("80")).unwrap();
         assert_eq!(rate.amount_micros(), 125_500_000);
-        assert_eq!(hours.minimum_minutes(), Some(2_250));
+        assert_eq!(hours.minimum(), Some(37));
         assert_eq!(format_rate(&rate), "125.5");
+        assert!(parse("125", "EUR".into(), Some("37.5"), None).is_err());
     }
 }

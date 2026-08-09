@@ -71,13 +71,20 @@ fn stderr(output: &Output) -> String {
 #[test]
 fn explicit_commands_route_through_the_shared_application() {
     let case = Case::new();
-    case.ok(&["client", "add", "--name", "Acme"]);
-    case.ok(&[
-        "agreement",
+    assert!(
+        case.ok(&["client", "add", "--name", "Acme"])
+            .contains("id:1")
+    );
+    let created = case.ok(&[
+        "project",
         "add",
         "--client",
-        "Acme",
+        "id:1",
         "--name",
+        "website",
+        "--timezone",
+        "Europe/Berlin",
+        "--agreement",
         "Support 2026",
         "--rate",
         "125.50",
@@ -87,22 +94,32 @@ fn explicit_commands_route_through_the_shared_application() {
         "20",
         "--maximum-hours",
         "80",
-        "--timezone",
-        "Europe/Berlin",
+        "--effective-on",
+        "2026-03-01",
     ]);
-    case.ok(&[
-        "project",
-        "add",
-        "--name",
-        "website",
-        "--client",
-        "Acme",
-        "--agreement",
-        "Support 2026",
-    ]);
+    assert!(created.contains("project website (id:1)"));
+    assert!(created.contains("agreement Support 2026 (id:1)"));
     assert!(
-        case.ok(&["project", "list"])
-            .contains("website\tAcme\tSupport 2026")
+        case.ok(&[
+            "agreement",
+            "add",
+            "--project",
+            "id:1",
+            "--name",
+            "Support 2027",
+            "--rate",
+            "150",
+            "--currency",
+            "EUR",
+            "--effective-on",
+            "2026-03-12",
+        ])
+        .contains("id:2")
+    );
+    assert!(case.ok(&["agreement", "list"]).contains("Support 2027"));
+    assert!(
+        case.ok(&["agreement", "list", "--all"])
+            .contains("Support 2026")
     );
 
     let started = case.ok(&[
@@ -114,57 +131,44 @@ fn explicit_commands_route_through_the_shared_application() {
         "--at",
         "0900",
     ]);
-    assert!(started.contains("Planning meeting") && started.contains("ID 1"));
+    assert!(started.contains("Planning meeting") && started.contains("id:1"));
     assert!(case.ok(&["status"]).contains("Planning meeting"));
-    case.ok(&["stop", "--id", "1", "--at", "1000"]);
+    assert!(
+        case.ok(&["stop", "--id", "id:1", "--at", "1000"])
+            .contains("id:1")
+    );
     assert!(case.ok(&["status"]).contains("No running timers"));
+    assert!(
+        case.ok(&[
+            "log",
+            "--agreement",
+            "id:1",
+            "-s",
+            "Backfill",
+            "-f",
+            "2026-03-05T10:00:00Z",
+            "-e",
+            "2026-03-05T11:00:00Z",
+        ])
+        .contains("id:2")
+    );
 
-    case.ok(&[
-        "log",
-        "--client",
-        "Acme",
-        "--agreement",
-        "Support 2026",
-        "-s",
-        "Backfill",
-        "-f",
-        "1000",
-        "-e",
-        "1100",
-    ]);
-    case.ok(&[
-        "agreement",
-        "add",
-        "--client",
-        "Acme",
-        "--name",
-        "Support 2027",
-        "--rate",
-        "150",
-        "--currency",
-        "EUR",
-        "--timezone",
-        "Europe/Berlin",
-    ]);
-    case.ok(&[
-        "project",
-        "edit",
-        "--name",
-        "website",
-        "--agreement",
-        "Support 2027",
-    ]);
-    case.ok(&[
-        "agreement",
-        "archive",
-        "--client",
-        "Acme",
-        "--name",
-        "Support 2026",
-    ]);
-    assert!(case.ok(&["agreement", "list"]).contains("Support 2027"));
-    assert!(case.ok(&["client", "list"]).contains("Acme"));
+    case.ok(&["project", "archive", "--project", "id:1"]);
+    assert!(!case.ok(&["project", "list"]).contains("website"));
+    assert!(case.ok(&["project", "list", "--all"]).contains("website"));
+    assert!(
+        case.ok(&["agreement", "list"])
+            .contains("No service agreements")
+    );
+    assert!(
+        case.ok(&["agreement", "list", "--all"])
+            .contains("Support 2027")
+    );
+    case.ok(&["project", "unarchive", "--project", "id:1"]);
+    assert!(case.ok(&["project", "list"]).contains("website"));
+    assert!(case.ok(&["client", "list"]).contains("id:1\tAcme"));
     assert!(case.root.join("data/tt.sqlite3").exists());
+
 }
 
 #[test]
@@ -172,6 +176,16 @@ fn parser_results_have_the_cli_exit_contract() {
     let case = Case::new();
     assert!(case.ok(&["--help"]).contains("Usage"));
     case.fails(2, &["start", "--project"]);
+    case.fails(
+        2,
+        &[
+            "start",
+            "--agreement",
+            "Support",
+            "--scope",
+            "Missing client",
+        ],
+    );
     case.fails(2, &[]);
 }
 
@@ -226,20 +240,6 @@ fn bare_interaction_starts_cancels_and_stops() {
     let case = Case::new();
     case.ok(&["client", "add", "--name", "Acme"]);
     case.ok(&[
-        "agreement",
-        "add",
-        "--client",
-        "Acme",
-        "--name",
-        "Support",
-        "--rate",
-        "100",
-        "--currency",
-        "EUR",
-        "--timezone",
-        "UTC",
-    ]);
-    case.ok(&[
         "project",
         "add",
         "--name",
@@ -248,6 +248,14 @@ fn bare_interaction_starts_cancels_and_stops() {
         "Acme",
         "--agreement",
         "Support",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--timezone",
+        "UTC",
+        "--effective-on",
+        "2026-03-01",
     ]);
 
     let started = pty(
@@ -299,22 +307,22 @@ fn list_exits_cleanly_when_its_consumer_closes_the_pipe() {
             "WITH RECURSIVE n(x) AS (
                  VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 5000
              )
-             INSERT INTO projects(name)
-             SELECT printf('project-%05d', x) FROM n;",
+             INSERT INTO clients(name)
+             SELECT printf('client-%05d', x) FROM n;",
         )
         .unwrap();
     drop(connection);
 
     let mut child = case
         .command()
-        .args(["project", "list"])
+        .args(["client", "list"])
         .stdout(Stdio::piped())
         .spawn()
         .unwrap();
     let mut output = BufReader::new(child.stdout.take().unwrap());
     let mut header = String::new();
     output.read_line(&mut header).unwrap();
-    assert_eq!(header, "ID\tNAME\tCLIENT\tAGREEMENT\n");
+    assert_eq!(header, "ID\tNAME\n");
     drop(output);
 
     assert!(child.wait().unwrap().success());

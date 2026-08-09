@@ -16,35 +16,48 @@ struct Cli {
         .args(["project", "agreement"])
 ))]
 struct TargetArgs {
-    /// Use the project's active agreement.
-    #[arg(short, long, conflicts_with_all = ["agreement", "client"])]
+    /// Project name or id:<number>; uses its current agreement.
+    #[arg(short, long, conflicts_with = "agreement")]
     project: Option<String>,
-    /// Record agreement-level time without a project.
-    #[arg(short = 'a', long, requires = "client")]
+    /// Active agreement reference in id:<number> form.
+    #[arg(short = 'a', long)]
     agreement: Option<String>,
-    /// Client owning an agreement-level target.
-    #[arg(short = 'c', long, requires = "agreement")]
-    client: Option<String>,
 }
 
 impl TargetArgs {
     fn into_target(self) -> TrackingTarget {
-        match (self.project, self.client, self.agreement) {
-            (Some(project), None, None) => TrackingTarget::Project(project),
-            (None, Some(client), Some(agreement)) => {
-                TrackingTarget::Agreement { client, agreement }
-            }
+        match (self.project, self.agreement) {
+            (Some(project), None) => TrackingTarget::Project(project),
+            (None, Some(agreement)) => TrackingTarget::Agreement(agreement),
             _ => unreachable!("clap enforces the tracking target"),
         }
     }
+}
+
+#[derive(Args)]
+struct AgreementTermsArgs {
+    /// Hourly price in currency units, with up to six decimal places.
+    #[arg(long)]
+    rate: String,
+    /// Three-letter uppercase currency code.
+    #[arg(long)]
+    currency: String,
+    #[arg(long)]
+    minimum_hours: Option<String>,
+    #[arg(long)]
+    maximum_hours: Option<String>,
+    /// First local calendar day governed by these terms.
+    #[arg(long)]
+    effective_on: String,
 }
 
 #[derive(Subcommand)]
 enum TopCommand {
     /// Start a timer.
     Start {
-        #[command(flatten)]
-        target: TargetArgs,
+        /// Project name or id:<number>.
+        #[arg(short, long)]
+        project: String,
         #[arg(short, long)]
         scope: String,
         #[arg(long)]
@@ -105,60 +118,66 @@ enum ClientCommand {
 
 #[derive(Subcommand)]
 enum AgreementCommand {
-    /// Add an immutable service agreement.
+    /// Replace a project's current agreement with immutable terms.
     Add {
+        /// Project name or id:<number>.
         #[arg(long)]
-        client: String,
+        project: String,
         #[arg(long)]
         name: String,
-        /// Hourly price in currency units, with up to six decimal places.
-        #[arg(long)]
-        rate: String,
-        /// Three-letter uppercase currency code.
-        #[arg(long)]
-        currency: String,
-        #[arg(long)]
-        minimum_hours: Option<String>,
-        #[arg(long)]
-        maximum_hours: Option<String>,
-        /// IANA timezone defining calendar-month boundaries.
-        #[arg(long)]
-        timezone: String,
+        #[command(flatten)]
+        terms: AgreementTermsArgs,
     },
     /// List service agreements.
     List {
+        /// Client name or id:<number>.
         #[arg(long)]
         client: Option<String>,
-    },
-    /// Prevent new work under an unused agreement.
-    Archive {
+        /// Include replaced agreements and agreements of archived projects.
         #[arg(long)]
-        client: String,
-        #[arg(long)]
-        name: String,
+        all: bool,
     },
 }
 
 #[derive(Subcommand)]
 enum ProjectCommand {
-    /// Add a project and select its active agreement.
+    /// Add a project and its initial agreement atomically.
     Add {
         #[arg(long)]
         name: String,
+        /// Client name or id:<number>.
         #[arg(long)]
         client: String,
+        /// IANA timezone defining calendar-month boundaries.
+        #[arg(long)]
+        timezone: String,
+        /// Initial agreement name.
         #[arg(long)]
         agreement: String,
+        #[command(flatten)]
+        terms: AgreementTermsArgs,
     },
-    /// Switch the agreement used for new project work.
-    Edit {
+    /// Lock a project after its final active calendar day.
+    Archive {
+        /// Project name or id:<number>.
         #[arg(long)]
-        name: String,
+        project: String,
+        /// Final active date; defaults to today in the project timezone.
         #[arg(long)]
-        agreement: String,
+        on: Option<String>,
+    },
+    /// Restore an archived project and continuous commercial coverage.
+    Unarchive {
+        /// Project name or id:<number>.
+        #[arg(long)]
+        project: String,
     },
     /// List projects.
-    List,
+    List {
+        /// Include archived projects.
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -210,11 +229,7 @@ impl From<Cli> for Command {
     fn from(cli: Cli) -> Self {
         match cli.command {
             None => Self::Bare,
-            Some(TopCommand::Start { target, scope, at }) => Self::Start {
-                target: target.into_target(),
-                scope,
-                at,
-            },
+            Some(TopCommand::Start { project, scope, at }) => Self::Start { project, scope, at },
             Some(TopCommand::Stop { id, at }) => Self::Stop { id, at },
             Some(TopCommand::Status) => Self::Status,
             Some(TopCommand::Log {
@@ -237,47 +252,65 @@ impl From<Cli> for Command {
             Some(TopCommand::Agreement {
                 command:
                     AgreementCommand::Add {
-                        client,
+                        project,
                         name,
-                        rate,
-                        currency,
-                        minimum_hours,
-                        maximum_hours,
-                        timezone,
+                        terms:
+                            AgreementTermsArgs {
+                                rate,
+                                currency,
+                                minimum_hours,
+                                maximum_hours,
+                                effective_on,
+                            },
                     },
             }) => Self::AgreementAdd {
-                client,
+                project,
                 name,
                 rate,
                 currency,
                 minimum_hours,
                 maximum_hours,
-                timezone,
+                effective_on,
             },
             Some(TopCommand::Agreement {
-                command: AgreementCommand::List { client },
-            }) => Self::AgreementList { client },
-            Some(TopCommand::Agreement {
-                command: AgreementCommand::Archive { client, name },
-            }) => Self::AgreementArchive { client, name },
+                command: AgreementCommand::List { client, all },
+            }) => Self::AgreementList { client, all },
             Some(TopCommand::Project {
                 command:
                     ProjectCommand::Add {
                         name,
                         client,
+                        timezone,
                         agreement,
+                        terms:
+                            AgreementTermsArgs {
+                                rate,
+                                currency,
+                                minimum_hours,
+                                maximum_hours,
+                                effective_on,
+                            },
                     },
             }) => Self::ProjectAdd {
                 name,
                 client,
                 agreement,
+                rate,
+                currency,
+                minimum_hours,
+                maximum_hours,
+                timezone,
+                effective_on,
             },
             Some(TopCommand::Project {
-                command: ProjectCommand::Edit { name, agreement },
-            }) => Self::ProjectEdit { name, agreement },
+                command: ProjectCommand::Archive { project, on },
+            }) => Self::ProjectArchive { project, on },
             Some(TopCommand::Project {
-                command: ProjectCommand::List,
-            }) => Self::ProjectList,
+                command: ProjectCommand::Unarchive { project },
+            }) => Self::ProjectUnarchive { project },
+            Some(TopCommand::Project {
+                command: ProjectCommand::List { all },
+            }) => Self::ProjectList { all },
             Some(TopCommand::Config {
                 command:
                     ConfigCommand::Set {
@@ -305,29 +338,28 @@ mod tests {
                 .map(Command::from);
         assert!(matches!(
             project,
-            Ok(Command::Start {
-                target: TrackingTarget::Project(project),
-                ..
-            }) if project == "website"
+            Ok(Command::Start { project, .. }) if project == "website"
         ));
 
         let agreement = Cli::try_parse_from([
             "tt",
-            "start",
-            "--client",
-            "Acme",
+            "log",
             "--agreement",
-            "Support",
+            "id:1",
             "--scope",
             "Call",
+            "--from",
+            "0900",
+            "--to",
+            "1000",
         ])
         .map(Command::from);
         assert!(matches!(
             agreement,
-            Ok(Command::Start {
-                target: TrackingTarget::Agreement { client, agreement },
+            Ok(Command::Log {
+                target: TrackingTarget::Agreement(agreement),
                 ..
-            }) if client == "Acme" && agreement == "Support"
+            }) if agreement == "id:1"
         ));
     }
 }

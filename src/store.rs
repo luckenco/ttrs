@@ -1,11 +1,13 @@
-use std::{path::Path, time::Duration};
+use std::{error, path::Path, time::Duration};
 
-use jiff::{Timestamp, tz::TimeZone};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use jiff::{Timestamp, civil::Date, tz::TimeZone};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 
 use crate::{Error, Result, model};
 
-const SCHEMA_VERSION: u32 = 2;
+mod billing;
+
+const SCHEMA_VERSION: u32 = 3;
 
 const SCHEMA: &str = "
     CREATE TABLE clients (
@@ -13,36 +15,38 @@ const SCHEMA: &str = "
         name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0)
     ) STRICT;
 
+    CREATE TABLE projects (
+        id               INTEGER PRIMARY KEY,
+        client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE RESTRICT,
+        name             TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        billing_timezone TEXT NOT NULL CHECK (length(trim(billing_timezone)) > 0),
+        archived_on      TEXT,
+        UNIQUE (client_id, name)
+    ) STRICT;
+
     CREATE TABLE service_agreements (
-        id                    INTEGER PRIMARY KEY,
-        client_id             INTEGER NOT NULL REFERENCES clients(id) ON DELETE RESTRICT,
-        name                  TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        hourly_rate_micros    INTEGER NOT NULL CHECK (hourly_rate_micros >= 0),
-        currency              TEXT NOT NULL CHECK (
-            currency GLOB '[A-Z][A-Z][A-Z]'
-        ),
-        minimum_minutes       INTEGER CHECK (minimum_minutes >= 0),
-        maximum_minutes       INTEGER CHECK (maximum_minutes >= 0),
-        billing_timezone      TEXT NOT NULL CHECK (length(trim(billing_timezone)) > 0),
-        active                INTEGER NOT NULL CHECK (active IN (0, 1)),
-        UNIQUE (client_id, name),
+        id                  INTEGER PRIMARY KEY,
+        project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
+        name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
+        hourly_rate_micros  INTEGER NOT NULL CHECK (hourly_rate_micros >= 0),
+        currency            TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
+        minimum_hours       INTEGER CHECK (minimum_hours >= 0),
+        maximum_hours       INTEGER CHECK (maximum_hours >= 0),
+        effective_on        TEXT NOT NULL,
+        current             INTEGER NOT NULL CHECK (current IN (0, 1)),
+        UNIQUE (project_id, name),
         CHECK (
-            minimum_minutes IS NULL OR maximum_minutes IS NULL
-            OR minimum_minutes <= maximum_minutes
+            minimum_hours IS NULL OR maximum_hours IS NULL
+            OR minimum_hours <= maximum_hours
         )
     ) STRICT;
 
-    CREATE TABLE projects (
-        id                  INTEGER PRIMARY KEY,
-        name                TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0),
-        client_id           INTEGER REFERENCES clients(id) ON DELETE RESTRICT,
-        active_agreement_id INTEGER REFERENCES service_agreements(id) ON DELETE RESTRICT
-    ) STRICT;
+    CREATE UNIQUE INDEX service_agreements_one_current_per_project
+        ON service_agreements(project_id) WHERE current = 1;
 
     CREATE TABLE running_timers (
         id            INTEGER PRIMARY KEY,
         agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
-        project_id    INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
         scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
         started_at_us INTEGER NOT NULL
     ) STRICT;
@@ -53,7 +57,6 @@ const SCHEMA: &str = "
     CREATE TABLE time_entries (
         id            INTEGER PRIMARY KEY,
         agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
-        project_id    INTEGER REFERENCES projects(id) ON DELETE RESTRICT,
         scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
         started_at_us INTEGER NOT NULL,
         ended_at_us   INTEGER NOT NULL,
@@ -72,7 +75,7 @@ impl Store {
     pub(crate) fn open(path: &Path) -> Result<Self> {
         let mut connection = Connection::open(path)?;
         configure(&connection)?;
-        if migrate(&mut connection)? {
+        if initialize(&mut connection)? {
             connection.pragma_update(None, "journal_mode", "WAL")?;
         }
         Ok(Self { connection })
@@ -81,7 +84,7 @@ impl Store {
     pub(crate) fn memory() -> Result<Self> {
         let mut connection = Connection::open_in_memory()?;
         configure(&connection)?;
-        migrate(&mut connection)?;
+        initialize(&mut connection)?;
         Ok(Self { connection })
     }
 
@@ -92,7 +95,6 @@ impl Store {
         if changed == 0 {
             return Err(Error::ClientExists(name));
         }
-
         let id = model::ClientId::from_raw(self.connection.last_insert_rowid());
         Ok(model::Client::new(id, name))
     }
@@ -120,188 +122,139 @@ impl Store {
             .map_err(Into::into)
     }
 
-    pub(crate) fn add_agreement(
+    pub(crate) fn add_project(
         &mut self,
         client: model::ClientId,
         name: String,
-        hourly_rate: model::HourlyRate,
-        monthly_hours: model::MonthlyHours,
-        billing_timezone: TimeZone,
-    ) -> Result<model::ServiceAgreement> {
-        if self.client(client)?.is_none() {
+        timezone: TimeZone,
+        agreement: model::NewAgreement,
+    ) -> Result<(model::Project, model::ServiceAgreement)> {
+        let (agreement_name, hourly_rate, monthly_hours, effective_on) = agreement.into_parts();
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        if find_client(&transaction, client)?.is_none() {
             return Err(Error::ClientNotFound(client));
         }
-        let changed = self.connection.execute(
-            "INSERT OR IGNORE INTO service_agreements (
-                 client_id, name, hourly_rate_micros, currency,
-                 minimum_minutes, maximum_minutes, billing_timezone, active
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+        let changed = transaction.execute(
+            "INSERT OR IGNORE INTO projects (
+                 client_id, name, billing_timezone
+             ) VALUES (?1, ?2, ?3)",
             params![
                 client.get(),
                 name,
-                hourly_rate.amount_micros(),
-                hourly_rate.currency(),
-                monthly_hours.minimum_minutes(),
-                monthly_hours.maximum_minutes(),
-                billing_timezone
+                timezone
                     .iana_name()
-                    .expect("billing timezones always have an IANA name"),
-            ],
-        )?;
-        if changed == 0 {
-            return Err(Error::AgreementExists(name));
-        }
-        let id = model::ServiceAgreementId::from_raw(self.connection.last_insert_rowid());
-        Ok(model::ServiceAgreement::new(
-            id,
-            client,
-            name,
-            hourly_rate,
-            monthly_hours,
-            billing_timezone,
-            true,
-        ))
-    }
-
-    pub(crate) fn agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
-        let mut statement = self.connection.prepare(
-            "SELECT id, client_id, name, hourly_rate_micros, currency,
-                    minimum_minutes, maximum_minutes, billing_timezone, active
-             FROM service_agreements ORDER BY client_id, name",
-        )?;
-        let rows = statement.query_map([], agreement_from_row)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
-    }
-
-    pub(crate) fn agreement_by_name(
-        &self,
-        client: model::ClientId,
-        name: &str,
-    ) -> Result<Option<model::ServiceAgreement>> {
-        self.connection
-            .query_row(
-                "SELECT id, client_id, name, hourly_rate_micros, currency,
-                        minimum_minutes, maximum_minutes, billing_timezone, active
-                 FROM service_agreements WHERE client_id = ?1 AND name = ?2",
-                params![client.get(), name],
-                agreement_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
-    }
-
-    pub(crate) fn archive_agreement(
-        &mut self,
-        agreement: model::ServiceAgreementId,
-    ) -> Result<model::ServiceAgreement> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if find_agreement(&transaction, agreement)?.is_none() {
-            return Err(Error::AgreementNotFound(agreement));
-        }
-        let used = transaction.query_row(
-            "SELECT EXISTS(
-                 SELECT 1 FROM projects WHERE active_agreement_id = ?1
-             )",
-            [agreement.get()],
-            |row| row.get(0),
-        )?;
-        if used {
-            return Err(Error::AgreementInUse(agreement));
-        }
-        transaction.execute(
-            "UPDATE service_agreements SET active = 0 WHERE id = ?1",
-            [agreement.get()],
-        )?;
-        let agreement = find_agreement(&transaction, agreement)?
-            .expect("the archived agreement must still exist");
-        transaction.commit()?;
-        Ok(agreement)
-    }
-
-    pub(crate) fn add_project(
-        &mut self,
-        name: String,
-        client: Option<model::ClientId>,
-        active_agreement: Option<model::ServiceAgreementId>,
-    ) -> Result<model::Project> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if let Some(client) = client
-            && find_client(&transaction, client)?.is_none()
-        {
-            return Err(Error::ClientNotFound(client));
-        }
-
-        validate_project_agreement(&transaction, client, active_agreement)?;
-        let changed = transaction.execute(
-            "INSERT OR IGNORE INTO projects (name, client_id, active_agreement_id)
-             VALUES (?1, ?2, ?3)",
-            params![
-                name,
-                client.map(model::ClientId::get),
-                active_agreement.map(model::ServiceAgreementId::get)
+                    .expect("project timezones always have an IANA name")
             ],
         )?;
         if changed == 0 {
             return Err(Error::ProjectExists(name));
         }
 
-        let id = model::ProjectId::from_raw(transaction.last_insert_rowid());
-        transaction.commit()?;
-        Ok(model::Project::new(id, name, client, active_agreement))
-    }
-
-    pub(crate) fn set_project_client(
-        &mut self,
-        project: model::ProjectId,
-        client: Option<model::ClientId>,
-    ) -> Result<model::Project> {
-        if let Some(client) = client
-            && self.client(client)?.is_none()
-        {
-            return Err(Error::ClientNotFound(client));
-        }
-
-        let changed = self.connection.execute(
-            "UPDATE projects SET client_id = ?1, active_agreement_id = NULL WHERE id = ?2",
-            params![client.map(model::ClientId::get), project.get()],
+        let project = model::Project::new(
+            model::ProjectId::from_raw(transaction.last_insert_rowid()),
+            client,
+            name,
+            timezone,
+            None,
+        );
+        let agreement = insert_agreement(
+            &transaction,
+            project.id(),
+            agreement_name,
+            hourly_rate,
+            monthly_hours,
+            effective_on,
         )?;
-        if changed == 0 {
-            return Err(Error::ProjectNotFound(project));
-        }
-
-        Ok(self
-            .project(project)?
-            .expect("the project updated in this connection must still exist"))
+        transaction.commit()?;
+        Ok((project, agreement))
     }
 
-    pub(crate) fn set_project_agreement(
+    pub(crate) fn add_agreement(
         &mut self,
         project: model::ProjectId,
-        agreement: model::ServiceAgreementId,
-    ) -> Result<model::Project> {
+        agreement: model::NewAgreement,
+    ) -> Result<model::ServiceAgreement> {
+        let (name, hourly_rate, monthly_hours, effective_on) = agreement.into_parts();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let project_value =
-            find_project(&transaction, project)?.ok_or(Error::ProjectNotFound(project))?;
-        validate_project_agreement(&transaction, project_value.client(), Some(agreement))?;
+        let project_value = active_project(&transaction, project)?;
+        reject_client_timer(&transaction, project_value.client())?;
+        let current = current_agreement(&transaction, project)?
+            .ok_or(Error::ProjectAgreementMissing(project))?;
+        if effective_on <= current.effective_on() {
+            return Err(Error::AgreementEffectiveDateOrder);
+        }
+        let boundary = day_start(effective_on, project_value.billing_timezone())?;
+        if project_has_work_after(&transaction, project, boundary)? {
+            return Err(Error::WorkAfterEffectiveDate);
+        }
+
         transaction.execute(
-            "UPDATE projects SET active_agreement_id = ?1 WHERE id = ?2",
-            params![agreement.get(), project.get()],
+            "UPDATE service_agreements SET current = 0
+             WHERE project_id = ?1 AND current = 1",
+            [project.get()],
         )?;
-        let project =
-            find_project(&transaction, project)?.expect("the updated project must still exist");
+        let agreement = insert_agreement(
+            &transaction,
+            project,
+            name,
+            hourly_rate,
+            monthly_hours,
+            effective_on,
+        )?;
+        billing::validate_month_capacity(&transaction, project, boundary)?;
         transaction.commit()?;
-        Ok(project)
+        Ok(agreement)
+    }
+
+    pub(crate) fn agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, project_id, name, hourly_rate_micros, currency,
+                    minimum_hours, maximum_hours, effective_on, current
+             FROM service_agreements ORDER BY project_id, effective_on, id",
+        )?;
+        let rows = statement.query_map([], agreement_from_row)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub(crate) fn agreement(
+        &self,
+        id: model::ServiceAgreementId,
+    ) -> Result<Option<model::ServiceAgreement>> {
+        find_agreement(&self.connection, id)
+    }
+
+    pub(crate) fn agreement_by_name(
+        &self,
+        project: model::ProjectId,
+        name: &str,
+    ) -> Result<Option<model::ServiceAgreement>> {
+        self.connection
+            .query_row(
+                "SELECT id, project_id, name, hourly_rate_micros, currency,
+                        minimum_hours, maximum_hours, effective_on, current
+                 FROM service_agreements WHERE project_id = ?1 AND name = ?2",
+                params![project.get(), name],
+                agreement_from_row,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    pub(crate) fn current_agreement(
+        &self,
+        project: model::ProjectId,
+    ) -> Result<Option<model::ServiceAgreement>> {
+        current_agreement(&self.connection, project)
     }
 
     pub(crate) fn projects(&self) -> Result<Vec<model::Project>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, name, client_id, active_agreement_id FROM projects ORDER BY name",
+            "SELECT id, client_id, name, billing_timezone, archived_on
+             FROM projects ORDER BY name, id",
         )?;
         let rows = statement.query_map([], project_from_row)?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
@@ -311,94 +264,144 @@ impl Store {
         find_project(&self.connection, id)
     }
 
-    pub(crate) fn project_by_name(&self, name: &str) -> Result<Option<model::Project>> {
-        self.connection
-            .query_row(
-                "SELECT id, name, client_id, active_agreement_id FROM projects WHERE name = ?1",
-                [name],
-                project_from_row,
-            )
-            .optional()
-            .map_err(Into::into)
+    pub(crate) fn projects_by_name(&self, name: &str) -> Result<Vec<model::Project>> {
+        let mut statement = self.connection.prepare(
+            "SELECT id, client_id, name, billing_timezone, archived_on
+             FROM projects WHERE name = ?1 ORDER BY id",
+        )?;
+        let rows = statement.query_map([name], project_from_row)?;
+        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    }
+
+    pub(crate) fn archive_project(
+        &mut self,
+        project: model::ProjectId,
+        archived_on: Date,
+    ) -> Result<model::Project> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project_value = active_project(&transaction, project)?;
+        reject_client_timer(&transaction, project_value.client())?;
+        let current = current_agreement(&transaction, project)?
+            .ok_or(Error::ProjectAgreementMissing(project))?;
+        if archived_on < current.effective_on() {
+            return Err(Error::ArchiveDateBeforeCurrentAgreement);
+        }
+        let archived_at = day_start(archived_on, project_value.billing_timezone())?;
+        let end = day_start(
+            archived_on.tomorrow().map_err(time_error)?,
+            project_value.billing_timezone(),
+        )?;
+        if project_has_work_after(&transaction, project, end)? {
+            return Err(Error::WorkAfterArchiveDate);
+        }
+        transaction.execute(
+            "UPDATE projects SET archived_on = ?1 WHERE id = ?2",
+            params![archived_on.to_string(), project.get()],
+        )?;
+        billing::validate_month_capacity(&transaction, project, archived_at)?;
+        let project =
+            find_project(&transaction, project)?.expect("the archived project must still exist");
+        transaction.commit()?;
+        Ok(project)
+    }
+
+    pub(crate) fn unarchive_project(
+        &mut self,
+        project: model::ProjectId,
+    ) -> Result<model::Project> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let project_value =
+            find_project(&transaction, project)?.ok_or(Error::ProjectNotFound(project))?;
+        if project_value.is_active() {
+            return Err(Error::ProjectNotArchived(project));
+        }
+        transaction.execute(
+            "UPDATE projects SET archived_on = NULL WHERE id = ?1",
+            [project.get()],
+        )?;
+        let project =
+            find_project(&transaction, project)?.expect("the unarchived project must still exist");
+        transaction.commit()?;
+        Ok(project)
     }
 
     pub(crate) fn start(
         &mut self,
-        context: model::WorkContext,
+        project: model::ProjectId,
         scope: String,
         started_at: Timestamp,
     ) -> Result<model::RunningTimer> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        validate_context(&transaction, context)?;
-        transaction.execute(
-            "INSERT INTO running_timers (agreement_id, project_id, scope, started_at_us)
-             VALUES (?1, ?2, ?3, ?4)",
-            params![
-                context.agreement().get(),
-                context.project().map(model::ProjectId::get),
-                scope,
-                started_at.as_microsecond()
-            ],
-        )?;
+        let project_value = active_project(&transaction, project)?;
+        reject_client_timer(&transaction, project_value.client())?;
+        let agreement = current_agreement(&transaction, project)?
+            .ok_or(Error::ProjectAgreementMissing(project))?;
+        let agreement_start =
+            day_start(agreement.effective_on(), project_value.billing_timezone())?;
+        if started_at < agreement_start {
+            return Err(Error::WorkOutsideAgreementPeriod);
+        }
+        billing::ensure_capacity(&transaction, project, started_at, started_at)?;
 
+        transaction.execute(
+            "INSERT INTO running_timers (agreement_id, scope, started_at_us)
+             VALUES (?1, ?2, ?3)",
+            params![agreement.id().get(), scope, started_at.as_microsecond()],
+        )?;
         let id = model::TimerId::from_raw(transaction.last_insert_rowid());
         transaction.commit()?;
-        Ok(model::RunningTimer::new(id, context, scope, started_at))
+        Ok(model::RunningTimer::new(
+            id,
+            agreement.id(),
+            scope,
+            started_at,
+        ))
     }
 
     pub(crate) fn end(
         &mut self,
         timer: model::TimerId,
-        ended_at: Timestamp,
+        requested_end: Timestamp,
     ) -> Result<model::TimeEntry> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-
-        let running = transaction
-            .query_row(
-                "SELECT agreement_id, project_id, scope, started_at_us
-                 FROM running_timers WHERE id = ?1",
-                [timer.get()],
-                |row| {
-                    let agreement = model::ServiceAgreementId::from_raw(row.get(0)?);
-                    let project = row
-                        .get::<_, Option<i64>>(1)?
-                        .map(model::ProjectId::from_raw);
-                    Ok((
-                        model::WorkContext::new(agreement, project),
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .optional()?;
-        let Some((context, scope, started_at_us)) = running else {
-            return Err(Error::TimerNotFound(timer));
-        };
-
-        let started_at = timestamp(started_at_us)?;
-        let ended_at_us = ended_at.as_microsecond();
-        if ended_at <= started_at {
+        let running = find_timer(&transaction, timer)?.ok_or(Error::TimerNotFound(timer))?;
+        if requested_end <= running.started_at() {
             return Err(Error::InvalidInterval);
+        }
+        let agreement = find_agreement(&transaction, running.agreement())?
+            .expect("running timers always reference an agreement");
+        let project = find_project(&transaction, agreement.project())?
+            .expect("agreements always reference a project");
+        let ended_at = billing::capped_end(
+            &transaction,
+            project.id(),
+            running.started_at(),
+            requested_end,
+        )?;
+        if ended_at <= running.started_at() {
+            return Err(Error::MonthlyMaximumReached(project.id()));
         }
 
         transaction.execute(
             "INSERT INTO time_entries (
-                 agreement_id, project_id, scope, started_at_us, ended_at_us
-             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                 agreement_id, scope, started_at_us, ended_at_us
+             ) VALUES (?1, ?2, ?3, ?4)",
             params![
-                context.agreement().get(),
-                context.project().map(model::ProjectId::get),
-                scope,
-                started_at_us,
-                ended_at_us
+                agreement.id().get(),
+                running.scope(),
+                running.started_at().as_microsecond(),
+                ended_at.as_microsecond()
             ],
         )?;
         let entry = model::EntryId::from_raw(transaction.last_insert_rowid());
-
         let removed =
             transaction.execute("DELETE FROM running_timers WHERE id = ?1", [timer.get()])?;
         assert_eq!(
@@ -406,15 +409,18 @@ impl Store {
             "the selected timer must be removed exactly once"
         );
         transaction.commit()?;
-
         Ok(model::TimeEntry::new(
-            entry, context, scope, started_at, ended_at,
+            entry,
+            agreement.id(),
+            running.scope().to_owned(),
+            running.started_at(),
+            ended_at,
         ))
     }
 
     pub(crate) fn log(
         &mut self,
-        context: model::WorkContext,
+        agreement: model::ServiceAgreementId,
         scope: String,
         started_at: Timestamp,
         ended_at: Timestamp,
@@ -422,75 +428,203 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        validate_context(&transaction, context)?;
+        let agreement_value =
+            find_agreement(&transaction, agreement)?.ok_or(Error::AgreementNotFound(agreement))?;
+        let project = active_project(&transaction, agreement_value.project())?;
+        reject_client_timer(&transaction, project.client())?;
+        billing::validate_agreement_period(
+            &transaction,
+            &project,
+            &agreement_value,
+            started_at,
+            ended_at,
+        )?;
+        billing::ensure_capacity(&transaction, project.id(), started_at, ended_at)?;
+
         transaction.execute(
             "INSERT INTO time_entries (
-                 agreement_id, project_id, scope, started_at_us, ended_at_us
-             ) VALUES (?1, ?2, ?3, ?4, ?5)",
+                 agreement_id, scope, started_at_us, ended_at_us
+             ) VALUES (?1, ?2, ?3, ?4)",
             params![
-                context.agreement().get(),
-                context.project().map(model::ProjectId::get),
+                agreement.get(),
                 scope,
                 started_at.as_microsecond(),
                 ended_at.as_microsecond()
             ],
         )?;
-
         let id = model::EntryId::from_raw(transaction.last_insert_rowid());
         transaction.commit()?;
         Ok(model::TimeEntry::new(
-            id, context, scope, started_at, ended_at,
+            id, agreement, scope, started_at, ended_at,
         ))
     }
 
     pub(crate) fn running(&self) -> Result<Vec<model::RunningTimer>> {
         let mut statement = self.connection.prepare(
-            "SELECT id, agreement_id, project_id, scope, started_at_us
+            "SELECT id, agreement_id, scope, started_at_us
              FROM running_timers ORDER BY started_at_us, id",
         )?;
         let rows = statement.query_map([], timer_from_row)?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
 
+    pub(crate) fn timer_limit(
+        &self,
+        timer: model::TimerId,
+        now: Timestamp,
+    ) -> Result<Option<model::TimerLimit>> {
+        let running = find_timer(&self.connection, timer)?.ok_or(Error::TimerNotFound(timer))?;
+        let agreement = find_agreement(&self.connection, running.agreement())?
+            .expect("running timers always reference an agreement");
+        let project = find_project(&self.connection, agreement.project())?
+            .expect("agreements always reference a project");
+        billing::timer_limit(&self.connection, &project, &running, now)
+    }
+
     pub(crate) fn recent_scopes(
         &self,
-        context: model::WorkContext,
+        project: model::ProjectId,
         limit: usize,
     ) -> Result<Vec<String>> {
-        validate_context(&self.connection, context)?;
+        if find_project(&self.connection, project)?.is_none() {
+            return Err(Error::ProjectNotFound(project));
+        }
         if limit == 0 {
             return Ok(Vec::new());
         }
-
-        let project_query = "SELECT scope
-             FROM (
-                 SELECT scope, started_at_us FROM running_timers WHERE project_id = ?1
-                 UNION ALL
-                 SELECT scope, started_at_us FROM time_entries WHERE project_id = ?1
-             )
-             GROUP BY scope
-             ORDER BY max(started_at_us) DESC, scope
-             LIMIT ?2";
-        let agreement_query = "SELECT scope
-             FROM (
-                 SELECT scope, started_at_us FROM running_timers
-                 WHERE agreement_id = ?1 AND project_id IS NULL
-                 UNION ALL
-                 SELECT scope, started_at_us FROM time_entries
-                 WHERE agreement_id = ?1 AND project_id IS NULL
-             )
-             GROUP BY scope
-             ORDER BY max(started_at_us) DESC, scope
-             LIMIT ?2";
-        let (query, context_id) = match context.project() {
-            Some(project) => (project_query, project.get()),
-            None => (agreement_query, context.agreement().get()),
-        };
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let mut statement = self.connection.prepare(query)?;
-        let rows = statement.query_map(params![context_id, limit], |row| row.get(0))?;
+        let mut statement = self.connection.prepare(
+            "SELECT scope
+             FROM (
+                 SELECT work.scope, work.started_at_us
+                 FROM running_timers work
+                 JOIN service_agreements agreement ON agreement.id = work.agreement_id
+                 WHERE agreement.project_id = ?1
+                 UNION ALL
+                 SELECT work.scope, work.started_at_us
+                 FROM time_entries work
+                 JOIN service_agreements agreement ON agreement.id = work.agreement_id
+                 WHERE agreement.project_id = ?1
+             )
+             GROUP BY scope
+             ORDER BY max(started_at_us) DESC, scope
+             LIMIT ?2",
+        )?;
+        let rows = statement.query_map(params![project.get(), limit], |row| row.get(0))?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
+}
+
+fn insert_agreement(
+    transaction: &Transaction<'_>,
+    project: model::ProjectId,
+    name: String,
+    hourly_rate: model::HourlyRate,
+    monthly_hours: model::MonthlyHours,
+    effective_on: Date,
+) -> Result<model::ServiceAgreement> {
+    let changed = transaction.execute(
+        "INSERT OR IGNORE INTO service_agreements (
+             project_id, name, hourly_rate_micros, currency,
+             minimum_hours, maximum_hours, effective_on, current
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+        params![
+            project.get(),
+            name,
+            hourly_rate.amount_micros(),
+            hourly_rate.currency(),
+            monthly_hours.minimum(),
+            monthly_hours.maximum(),
+            effective_on.to_string(),
+        ],
+    )?;
+    if changed == 0 {
+        return Err(Error::AgreementExists(name));
+    }
+    Ok(model::ServiceAgreement::new(
+        model::ServiceAgreementId::from_raw(transaction.last_insert_rowid()),
+        project,
+        name,
+        hourly_rate,
+        monthly_hours,
+        effective_on,
+        true,
+    ))
+}
+
+fn active_project(connection: &Connection, id: model::ProjectId) -> Result<model::Project> {
+    let project = find_project(connection, id)?.ok_or(Error::ProjectNotFound(id))?;
+    if !project.is_active() {
+        return Err(Error::ProjectArchived(id));
+    }
+    Ok(project)
+}
+
+fn reject_client_timer(connection: &Connection, client: model::ClientId) -> Result<()> {
+    let exists = connection.query_row(
+        "SELECT EXISTS(
+             SELECT 1
+             FROM running_timers timer
+             JOIN service_agreements agreement ON agreement.id = timer.agreement_id
+             JOIN projects project ON project.id = agreement.project_id
+             WHERE project.client_id = ?1
+         )",
+        [client.get()],
+        |row| row.get(0),
+    )?;
+    if exists {
+        return Err(Error::ClientTimerRunning(client));
+    }
+    Ok(())
+}
+
+fn project_has_work_after(
+    connection: &Connection,
+    project: model::ProjectId,
+    boundary: Timestamp,
+) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM time_entries entry
+                 JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+                 WHERE agreement.project_id = ?1 AND entry.ended_at_us > ?2
+             )",
+            params![project.get(), boundary.as_microsecond()],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
+}
+
+fn project_agreements(
+    connection: &Connection,
+    project: model::ProjectId,
+) -> Result<Vec<model::ServiceAgreement>> {
+    let mut statement = connection.prepare(
+        "SELECT id, project_id, name, hourly_rate_micros, currency,
+                minimum_hours, maximum_hours, effective_on, current
+         FROM service_agreements WHERE project_id = ?1
+         ORDER BY effective_on, id",
+    )?;
+    let rows = statement.query_map([project.get()], agreement_from_row)?;
+    rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+}
+
+fn current_agreement(
+    connection: &Connection,
+    project: model::ProjectId,
+) -> Result<Option<model::ServiceAgreement>> {
+    connection
+        .query_row(
+            "SELECT id, project_id, name, hourly_rate_micros, currency,
+                    minimum_hours, maximum_hours, effective_on, current
+             FROM service_agreements WHERE project_id = ?1 AND current = 1",
+            [project.get()],
+            agreement_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
 }
 
 fn configure(connection: &Connection) -> Result<()> {
@@ -499,7 +633,7 @@ fn configure(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-fn migrate(connection: &mut Connection) -> Result<bool> {
+fn initialize(connection: &mut Connection) -> Result<bool> {
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
     let version = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
     let initialized = match version {
@@ -511,7 +645,6 @@ fn migrate(connection: &mut Connection) -> Result<bool> {
         SCHEMA_VERSION => false,
         version => return Err(Error::UnsupportedSchema(version)),
     };
-
     transaction.commit()?;
     Ok(initialized)
 }
@@ -527,14 +660,26 @@ fn find_client(connection: &Connection, id: model::ClientId) -> Result<Option<mo
         .map_err(Into::into)
 }
 
+fn find_project(connection: &Connection, id: model::ProjectId) -> Result<Option<model::Project>> {
+    connection
+        .query_row(
+            "SELECT id, client_id, name, billing_timezone, archived_on
+             FROM projects WHERE id = ?1",
+            [id.get()],
+            project_from_row,
+        )
+        .optional()
+        .map_err(Into::into)
+}
+
 fn find_agreement(
     connection: &Connection,
     id: model::ServiceAgreementId,
 ) -> Result<Option<model::ServiceAgreement>> {
     connection
         .query_row(
-            "SELECT id, client_id, name, hourly_rate_micros, currency,
-                    minimum_minutes, maximum_minutes, billing_timezone, active
+            "SELECT id, project_id, name, hourly_rate_micros, currency,
+                    minimum_hours, maximum_hours, effective_on, current
              FROM service_agreements WHERE id = ?1",
             [id.get()],
             agreement_from_row,
@@ -543,12 +688,12 @@ fn find_agreement(
         .map_err(Into::into)
 }
 
-fn find_project(connection: &Connection, id: model::ProjectId) -> Result<Option<model::Project>> {
+fn find_timer(connection: &Connection, id: model::TimerId) -> Result<Option<model::RunningTimer>> {
     connection
         .query_row(
-            "SELECT id, name, client_id, active_agreement_id FROM projects WHERE id = ?1",
+            "SELECT id, agreement_id, scope, started_at_us FROM running_timers WHERE id = ?1",
             [id.get()],
-            project_from_row,
+            timer_from_row,
         )
         .optional()
         .map_err(Into::into)
@@ -561,6 +706,18 @@ fn client_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::Client> {
     ))
 }
 
+fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::Project> {
+    Ok(model::Project::new(
+        model::ProjectId::from_raw(row.get(0)?),
+        model::ClientId::from_raw(row.get(1)?),
+        row.get(2)?,
+        timezone_from_row(row, 3)?,
+        row.get::<_, Option<String>>(4)?
+            .map(|date| date.parse::<Date>().map_err(date_error))
+            .transpose()?,
+    ))
+}
+
 fn agreement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::ServiceAgreement> {
     let hourly_rate = model::HourlyRate::new(row.get(3)?, row.get(4)?)
         .expect("agreement rate constraints must hold");
@@ -568,96 +725,60 @@ fn agreement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::Servic
         .expect("agreement hour constraints must hold");
     Ok(model::ServiceAgreement::new(
         model::ServiceAgreementId::from_raw(row.get(0)?),
-        model::ClientId::from_raw(row.get(1)?),
+        model::ProjectId::from_raw(row.get(1)?),
         row.get(2)?,
         hourly_rate,
         monthly_hours,
-        timezone_from_row(row, 7)?,
+        date_from_row(row, 7)?,
         row.get(8)?,
+    ))
+}
+
+fn timer_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::RunningTimer> {
+    Ok(model::RunningTimer::new(
+        model::TimerId::from_raw(row.get(0)?),
+        model::ServiceAgreementId::from_raw(row.get(1)?),
+        row.get(2)?,
+        timestamp(row.get(3)?)?,
     ))
 }
 
 fn timezone_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<TimeZone> {
     let name = row.get::<_, String>(index)?;
-    TimeZone::get(&name).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            index,
-            rusqlite::types::Type::Text,
-            Box::new(error),
-        )
-    })
+    TimeZone::get(&name)
+        .map_err(|error| conversion_error(index, rusqlite::types::Type::Text, error))
 }
 
-fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::Project> {
-    let client = row.get::<_, Option<i64>>(2)?.map(model::ClientId::from_raw);
-    let agreement = row
-        .get::<_, Option<i64>>(3)?
-        .map(model::ServiceAgreementId::from_raw);
-    Ok(model::Project::new(
-        model::ProjectId::from_raw(row.get(0)?),
-        row.get(1)?,
-        client,
-        agreement,
-    ))
+fn date_from_row(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<Date> {
+    row.get::<_, String>(index)?
+        .parse()
+        .map_err(|error| conversion_error(index, rusqlite::types::Type::Text, error))
 }
 
-fn timer_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::RunningTimer> {
-    let agreement = model::ServiceAgreementId::from_raw(row.get(1)?);
-    let project = row
-        .get::<_, Option<i64>>(2)?
-        .map(model::ProjectId::from_raw);
-    Ok(model::RunningTimer::new(
-        model::TimerId::from_raw(row.get(0)?),
-        model::WorkContext::new(agreement, project),
-        row.get(3)?,
-        timestamp(row.get(4)?)?,
-    ))
+fn date_error(error: jiff::Error) -> rusqlite::Error {
+    conversion_error(0, rusqlite::types::Type::Text, error)
 }
 
-fn validate_project_agreement(
-    connection: &Connection,
-    client: Option<model::ClientId>,
-    agreement: Option<model::ServiceAgreementId>,
-) -> Result<()> {
-    let Some(agreement_id) = agreement else {
-        return Ok(());
-    };
-    let agreement =
-        find_agreement(connection, agreement_id)?.ok_or(Error::AgreementNotFound(agreement_id))?;
-    if !agreement.is_active() {
-        return Err(Error::AgreementInactive(agreement_id));
-    }
-    if client != Some(agreement.client()) {
-        return Err(Error::AgreementClientMismatch);
-    }
-    Ok(())
+fn conversion_error(
+    index: usize,
+    kind: rusqlite::types::Type,
+    error: impl error::Error + Send + Sync + 'static,
+) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(index, kind, Box::new(error))
 }
 
-fn validate_context(connection: &Connection, context: model::WorkContext) -> Result<()> {
-    let agreement = find_agreement(connection, context.agreement())?
-        .ok_or(Error::AgreementNotFound(context.agreement()))?;
-    if !agreement.is_active() {
-        return Err(Error::AgreementInactive(agreement.id()));
-    }
-    if let Some(project_id) = context.project() {
-        let project =
-            find_project(connection, project_id)?.ok_or(Error::ProjectNotFound(project_id))?;
-        if project.active_agreement().is_none() {
-            return Err(Error::ProjectAgreementMissing(project_id));
-        }
-        if project.active_agreement() != Some(agreement.id()) {
-            return Err(Error::ProjectAgreementMismatch);
-        }
-    }
-    Ok(())
+fn day_start(date: Date, timezone: &TimeZone) -> Result<Timestamp> {
+    timezone
+        .to_ambiguous_timestamp(date.at(0, 0, 0, 0))
+        .compatible()
+        .map_err(time_error)
+}
+
+fn time_error(error: jiff::Error) -> Error {
+    Error::Storage(Box::new(error))
 }
 
 fn timestamp(microseconds: i64) -> rusqlite::Result<Timestamp> {
-    Timestamp::from_microsecond(microseconds).map_err(|error| {
-        rusqlite::Error::FromSqlConversionFailure(
-            0,
-            rusqlite::types::Type::Integer,
-            Box::new(error),
-        )
-    })
+    Timestamp::from_microsecond(microseconds)
+        .map_err(|error| conversion_error(0, rusqlite::types::Type::Integer, error))
 }

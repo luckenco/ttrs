@@ -29,7 +29,7 @@ pub enum Error {
     ClientExists(String),
     /// A project with this name already exists.
     ProjectExists(String),
-    /// A service agreement with this name already exists for the client.
+    /// A service agreement with this name already exists for the project.
     AgreementExists(String),
     /// No client exists with this identifier.
     ClientNotFound(model::ClientId),
@@ -39,20 +39,34 @@ pub enum Error {
     ProjectNotFound(model::ProjectId),
     /// No project exists with this name.
     ProjectNameNotFound(String),
+    /// More than one client has a project with this name.
+    ProjectNameAmbiguous(String),
+    /// An archived project cannot accept work or replacement terms.
+    ProjectArchived(model::ProjectId),
+    /// An active project cannot be unarchived.
+    ProjectNotArchived(model::ProjectId),
     /// No service agreement exists with this identifier.
     AgreementNotFound(model::ServiceAgreementId),
-    /// No service agreement exists with this name for the client.
+    /// No service agreement exists with this name for the project.
     AgreementNameNotFound(String),
-    /// A project has no agreement selected for new work.
+    /// A project has no current agreement.
     ProjectAgreementMissing(model::ProjectId),
-    /// A project and agreement belong to different clients.
-    AgreementClientMismatch,
-    /// Work selected an agreement other than the project's active agreement.
-    ProjectAgreementMismatch,
-    /// An archived agreement cannot accept new work.
-    AgreementInactive(model::ServiceAgreementId),
-    /// An agreement is still selected by a project.
-    AgreementInUse(model::ServiceAgreementId),
+    /// An effective date is in the future.
+    EffectiveDateFuture,
+    /// A replacement agreement must start after the current agreement.
+    AgreementEffectiveDateOrder,
+    /// Existing work conflicts with a replacement agreement's effective date.
+    WorkAfterEffectiveDate,
+    /// A project cannot be archived before its current agreement begins.
+    ArchiveDateBeforeCurrentAgreement,
+    /// Existing work conflicts with a project's archival date.
+    WorkAfterArchiveDate,
+    /// The client already has a running timer.
+    ClientTimerRunning(model::ClientId),
+    /// Work falls outside the selected agreement's effective period.
+    WorkOutsideAgreementPeriod,
+    /// A project's prorated monthly maximum has been reached.
+    MonthlyMaximumReached(model::ProjectId),
     /// No running timer exists with this identifier.
     TimerNotFound(model::TimerId),
     /// The database was created by a newer, unsupported version.
@@ -92,7 +106,7 @@ impl fmt::Display for Error {
             Self::AgreementExists(name) => {
                 write!(
                     formatter,
-                    "service agreement '{name}' already exists for this client"
+                    "service agreement '{name}' already exists for this project"
                 )
             }
             Self::ClientNotFound(id) => write!(formatter, "client {id} does not exist"),
@@ -101,29 +115,44 @@ impl fmt::Display for Error {
             Self::ProjectNameNotFound(name) => {
                 write!(formatter, "project '{name}' does not exist")
             }
+            Self::ProjectNameAmbiguous(name) => {
+                write!(formatter, "project '{name}' is ambiguous; use id:<number>")
+            }
+            Self::ProjectArchived(id) => write!(formatter, "project {id} is archived"),
+            Self::ProjectNotArchived(id) => write!(formatter, "project {id} is not archived"),
             Self::AgreementNotFound(id) => {
                 write!(formatter, "service agreement {id} does not exist")
             }
             Self::AgreementNameNotFound(name) => {
                 write!(
                     formatter,
-                    "service agreement '{name}' does not exist for this client"
+                    "service agreement '{name}' does not exist for this project"
                 )
             }
             Self::ProjectAgreementMissing(id) => {
-                write!(formatter, "project {id} has no active service agreement")
+                write!(formatter, "project {id} has no current service agreement")
             }
-            Self::AgreementClientMismatch => {
-                formatter.write_str("project and service agreement must belong to the same client")
+            Self::EffectiveDateFuture => formatter.write_str("effective date must not be future"),
+            Self::AgreementEffectiveDateOrder => {
+                formatter.write_str("replacement agreement must start after the current agreement")
             }
-            Self::ProjectAgreementMismatch => {
-                formatter.write_str("work must use the project's active service agreement")
+            Self::WorkAfterEffectiveDate => {
+                formatter.write_str("work exists on or after the replacement effective date")
             }
-            Self::AgreementInactive(id) => {
-                write!(formatter, "service agreement {id} is archived")
+            Self::ArchiveDateBeforeCurrentAgreement => {
+                formatter.write_str("project cannot be archived before its current agreement")
             }
-            Self::AgreementInUse(id) => {
-                write!(formatter, "service agreement {id} is selected by a project")
+            Self::WorkAfterArchiveDate => {
+                formatter.write_str("work exists after the project archival date")
+            }
+            Self::ClientTimerRunning(id) => {
+                write!(formatter, "client {id} already has a running timer")
+            }
+            Self::WorkOutsideAgreementPeriod => {
+                formatter.write_str("work must fit within one agreement's effective period")
+            }
+            Self::MonthlyMaximumReached(id) => {
+                write!(formatter, "project {id} reached its monthly maximum")
             }
             Self::TimerNotFound(id) => write!(formatter, "running timer {id} does not exist"),
             Self::UnsupportedSchema(version) => {

@@ -5,7 +5,7 @@ use crate::{Error, Result, model};
 /// Starts a running timer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Start {
-    context: model::WorkContext,
+    project: model::ProjectId,
     scope: String,
     started_at: Timestamp,
 }
@@ -14,20 +14,20 @@ impl Start {
     /// Creates a start command.
     ///
     /// The scope must contain at least one non-whitespace character.
-    pub fn new(context: model::WorkContext, scope: String, started_at: Timestamp) -> Result<Self> {
+    pub fn new(project: model::ProjectId, scope: String, started_at: Timestamp) -> Result<Self> {
         if scope.trim().is_empty() {
             return Err(Error::EmptyScope);
         }
 
         Ok(Self {
-            context,
+            project,
             scope,
             started_at: storage_timestamp(started_at),
         })
     }
 
-    pub(crate) fn into_parts(self) -> (model::WorkContext, String, Timestamp) {
-        (self.context, self.scope, self.started_at)
+    pub(crate) fn into_parts(self) -> (model::ProjectId, String, Timestamp) {
+        (self.project, self.scope, self.started_at)
     }
 }
 
@@ -55,7 +55,7 @@ impl End {
 /// Logs an already completed interval.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LogEntry {
-    context: model::WorkContext,
+    agreement: model::ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
     ended_at: Timestamp,
@@ -66,7 +66,7 @@ impl LogEntry {
     ///
     /// The scope must not be empty and the end must be later than the start.
     pub fn new(
-        context: model::WorkContext,
+        agreement: model::ServiceAgreementId,
         scope: String,
         started_at: Timestamp,
         ended_at: Timestamp,
@@ -82,15 +82,15 @@ impl LogEntry {
         }
 
         Ok(Self {
-            context,
+            agreement,
             scope,
             started_at,
             ended_at,
         })
     }
 
-    pub(crate) fn into_parts(self) -> (model::WorkContext, String, Timestamp, Timestamp) {
-        (self.context, self.scope, self.started_at, self.ended_at)
+    pub(crate) fn into_parts(self) -> (model::ServiceAgreementId, String, Timestamp, Timestamp) {
+        (self.agreement, self.scope, self.started_at, self.ended_at)
     }
 }
 
@@ -105,24 +105,18 @@ mod tests {
 
     #[test]
     fn rejects_blank_scope() {
-        let context = model::WorkContext::new(
-            model::ServiceAgreementId::from_raw(1),
-            Some(model::ProjectId::from_raw(1)),
-        );
-        let result = Start::new(context, "  ".into(), Timestamp::UNIX_EPOCH);
+        let project = model::ProjectId::from_raw(1);
+        let result = Start::new(project, "  ".into(), Timestamp::UNIX_EPOCH);
 
         assert!(matches!(result, Err(Error::EmptyScope)));
     }
 
     #[test]
     fn rejects_interval_lost_to_storage_precision() {
-        let context = model::WorkContext::new(
-            model::ServiceAgreementId::from_raw(1),
-            Some(model::ProjectId::from_raw(1)),
-        );
+        let agreement = model::ServiceAgreementId::from_raw(1);
         let start = "2026-01-01T00:00:00.0000001Z".parse().unwrap();
         let end = "2026-01-01T00:00:00.0000002Z".parse().unwrap();
-        let result = LogEntry::new(context, "ISSUE-1".into(), start, end);
+        let result = LogEntry::new(agreement, "ISSUE-1".into(), start, end);
 
         assert!(matches!(result, Err(Error::InvalidInterval)));
     }

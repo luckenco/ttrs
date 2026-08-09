@@ -29,22 +29,26 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
 
     match command {
         Command::Bare => interactive(&mut tracker, &zone),
-        Command::Start { target, scope, at } => {
-            let target = resolve_target(&tracker, target)?;
-            let started_at = parse_time(at.as_deref().unwrap_or("now"), &zone, now()?)?;
+        Command::Start { project, scope, at } => {
+            let project = resolve_project(&tracker, &project)?;
+            let reference = now()?;
+            let started_at = parse_time(at.as_deref().unwrap_or("now"), &zone, reference)?;
             let timer = tracker
-                .start(command::Start::new(target.context, scope, started_at).map_err(core_error)?)
+                .start(command::Start::new(project.id(), scope, started_at).map_err(core_error)?)
                 .map_err(core_error)?;
             line(format_args!(
-                "Started {} for {} at {} (ID {})",
+                "Started {} for {} at {} (id:{})",
                 timer.scope(),
-                target.label,
+                project.name(),
                 clock(timer.started_at(), &zone),
                 timer.id()
-            ))
+            ))?;
+            print_limit(&tracker, &timer, reference, project.billing_timezone())
         }
         Command::Stop { id, at } => {
             let id = id
+                .strip_prefix("id:")
+                .unwrap_or(&id)
                 .parse::<model::TimerId>()
                 .map_err(|error| Error::usage(error.to_string()))?;
             let ended_at = parse_time(at.as_deref().unwrap_or("now"), &zone, now()?)?;
@@ -52,10 +56,18 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 .end(command::End::new(id, ended_at))
                 .map_err(core_error)?;
             line(format_args!(
-                "Stopped {} at {}",
+                "Stopped {} at {} (id:{})",
                 entry.scope(),
-                clock(entry.ended_at(), &zone)
-            ))
+                clock(entry.ended_at(), &zone),
+                entry.id()
+            ))?;
+            if entry.ended_at() < ended_at {
+                line(format_args!(
+                    "Maximum reached; {} after the cap was not recorded.",
+                    duration(entry.ended_at(), ended_at)
+                ))?;
+            }
+            Ok(())
         }
         Command::Status => status(&tracker, &zone, now()?),
         Command::Log {
@@ -70,21 +82,26 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             let ended_at = parse_time(&to, &zone, reference)?;
             let entry = tracker
                 .log(
-                    command::LogEntry::new(target.context, scope, started_at, ended_at)
+                    command::LogEntry::new(target.agreement, scope, started_at, ended_at)
                         .map_err(core_error)?,
                 )
                 .map_err(core_error)?;
             line(format_args!(
-                "Logged {} for {} from {} to {}",
+                "Logged {} for {} from {} to {} (id:{})",
                 entry.scope(),
                 target.label,
                 clock(entry.started_at(), &zone),
-                clock(entry.ended_at(), &zone)
+                clock(entry.ended_at(), &zone),
+                entry.id()
             ))
         }
         Command::ClientAdd { name } => {
             let client = tracker.add_client(name).map_err(core_error)?;
-            line(format_args!("Added client {}", client.name()))
+            line(format_args!(
+                "Added client {} (id:{})",
+                client.name(),
+                client.id()
+            ))
         }
         Command::ClientList => {
             let clients = tracker.clients().map_err(core_error)?;
@@ -93,73 +110,94 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             }
             line(format_args!("ID\tNAME"))?;
             for client in clients {
-                line(format_args!("{}\t{}", client.id(), client.name()))?;
+                line(format_args!("id:{}\t{}", client.id(), client.name()))?;
             }
             Ok(())
         }
         Command::AgreementAdd {
-            client,
+            project,
             name,
             rate,
             currency,
             minimum_hours,
             maximum_hours,
-            timezone,
+            effective_on,
         } => {
-            let client = tracker.client_by_name(&client).map_err(core_error)?;
+            let project = resolve_project(&tracker, &project)?;
             let (rate, monthly_hours) = terms::parse(
                 &rate,
                 currency,
                 minimum_hours.as_deref(),
                 maximum_hours.as_deref(),
             )?;
+            let agreement =
+                model::NewAgreement::new(name, rate, monthly_hours, parse_date(&effective_on)?)
+                    .map_err(core_error)?;
             let agreement = tracker
-                .add_service_agreement(client.id(), name, rate, monthly_hours, timezone)
-                .map_err(core_error)?;
-            line(format_args!("Added service agreement {}", agreement.name()))
-        }
-        Command::AgreementList { client } => agreement_list(&tracker, client.as_deref()),
-        Command::AgreementArchive { client, name } => {
-            let client = tracker.client_by_name(&client).map_err(core_error)?;
-            let agreement = tracker
-                .service_agreement_by_name(client.id(), &name)
-                .map_err(core_error)?;
-            tracker
-                .archive_service_agreement(agreement.id())
+                .add_service_agreement(project.id(), agreement, now()?)
                 .map_err(core_error)?;
             line(format_args!(
-                "Archived service agreement {}",
-                agreement.name()
+                "Added service agreement {} (id:{})",
+                agreement.name(),
+                agreement.id()
             ))
         }
+        Command::AgreementList { client, all } => agreement_list(&tracker, client.as_deref(), all),
         Command::ProjectAdd {
             name,
             client,
             agreement,
+            rate,
+            currency,
+            minimum_hours,
+            maximum_hours,
+            timezone,
+            effective_on,
         } => {
-            let client = tracker.client_by_name(&client).map_err(core_error)?;
-            let agreement = tracker
-                .service_agreement_by_name(client.id(), &agreement)
+            let client = resolve_client(&tracker, &client)?;
+            let (rate, monthly_hours) = terms::parse(
+                &rate,
+                currency,
+                minimum_hours.as_deref(),
+                maximum_hours.as_deref(),
+            )?;
+            let agreement = model::NewAgreement::new(
+                agreement,
+                rate,
+                monthly_hours,
+                parse_date(&effective_on)?,
+            )
+            .map_err(core_error)?;
+            let (project, agreement) = tracker
+                .add_project(client.id(), name, timezone, agreement, now()?)
                 .map_err(core_error)?;
+            line(format_args!(
+                "Added project {} (id:{}) with service agreement {} (id:{})",
+                project.name(),
+                project.id(),
+                agreement.name(),
+                agreement.id()
+            ))
+        }
+        Command::ProjectArchive { project, on } => {
+            let project = resolve_project(&tracker, &project)?;
             let project = tracker
-                .add_project(name, Some(client.id()), Some(agreement.id()))
+                .archive_project(
+                    project.id(),
+                    on.as_deref().map(parse_date).transpose()?,
+                    now()?,
+                )
                 .map_err(core_error)?;
-            line(format_args!("Added project {}", project.name()))
+            line(format_args!("Archived project {}", project.name()))
         }
-        Command::ProjectEdit { name, agreement } => {
-            let project = tracker.project_by_name(&name).map_err(core_error)?;
-            let client = project.client().ok_or_else(|| {
-                Error::runtime(format!("project '{}' has no client", project.name()))
-            })?;
-            let agreement = tracker
-                .service_agreement_by_name(client, &agreement)
+        Command::ProjectUnarchive { project } => {
+            let project = resolve_project(&tracker, &project)?;
+            let project = tracker
+                .unarchive_project(project.id())
                 .map_err(core_error)?;
-            tracker
-                .set_project_agreement(project.id(), agreement.id())
-                .map_err(core_error)?;
-            line(format_args!("Updated project {}", project.name()))
+            line(format_args!("Unarchived project {}", project.name()))
         }
-        Command::ProjectList => project_list(&tracker),
+        Command::ProjectList { all } => project_list(&tracker, all),
         Command::ConfigSetTimezone { .. } | Command::ConfigGetTimezone => unreachable!(),
     }
 }
@@ -169,173 +207,292 @@ fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Erro
     if timers.is_empty() {
         return line(format_args!("No running timers."));
     }
-    let projects = tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|project| (project.id(), project.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let agreements = tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|agreement| (agreement.id(), agreement.name().to_owned()))
-        .collect::<HashMap<_, _>>();
+    let projects = project_names(tracker)?;
+    let agreements = agreement_names(tracker)?;
 
     line(format_args!(
-        "ID\tAGREEMENT\tPROJECT\tSCOPE\tSTARTED\tELAPSED"
+        "ID\tAGREEMENT\tPROJECT\tSCOPE\tSTARTED\tELAPSED\tCAP LEFT"
     ))?;
     for timer in timers {
-        let (agreement, project) = context_names(timer.context(), &agreements, &projects);
+        let (agreement, project) = work_names(timer.agreement(), &agreements, &projects);
+        let limit = tracker.timer_limit(timer.id(), now).map_err(core_error)?;
         line(format_args!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
+            "id:{}\t{}\t{}\t{}\t{}\t{}\t{}",
             timer.id(),
             agreement,
             project,
             timer.scope(),
             clock(timer.started_at(), zone),
-            elapsed(timer.started_at(), now)
+            elapsed(timer.started_at(), now),
+            format_limit(limit)
         ))?;
     }
     Ok(())
 }
 
-fn project_list(tracker: &Tracker) -> Result<(), Error> {
+fn project_list(tracker: &Tracker, all: bool) -> Result<(), Error> {
     let clients = tracker
         .clients()
         .map_err(core_error)?
         .into_iter()
         .map(|client| (client.id(), client.name().to_owned()))
         .collect::<HashMap<_, _>>();
-    let projects = tracker.projects().map_err(core_error)?;
+    let projects = tracker
+        .projects()
+        .map_err(core_error)?
+        .into_iter()
+        .filter(|project| all || project.is_active())
+        .collect::<Vec<_>>();
     if projects.is_empty() {
         return line(format_args!("No projects."));
     }
-
     let agreements = tracker
         .service_agreements()
         .map_err(core_error)?
         .into_iter()
-        .map(|agreement| (agreement.id(), agreement.name().to_owned()))
+        .filter(model::ServiceAgreement::is_current)
+        .map(|agreement| (agreement.project(), agreement.name().to_owned()))
         .collect::<HashMap<_, _>>();
-    line(format_args!("ID\tNAME\tCLIENT\tAGREEMENT"))?;
+
+    line(format_args!("ID\tNAME\tCLIENT\tAGREEMENT\tSTATUS"))?;
     for project in projects {
-        let client = project
-            .client()
-            .map(|id| {
-                clients
-                    .get(&id)
-                    .expect("projects always reference a client")
-                    .as_str()
-            })
-            .unwrap_or("-");
-        let agreement = project
-            .active_agreement()
-            .and_then(|id| agreements.get(&id))
-            .map(String::as_str)
-            .unwrap_or("-");
+        let client = clients
+            .get(&project.client())
+            .expect("projects always reference a client");
+        let agreement = agreements
+            .get(&project.id())
+            .expect("projects always have a current agreement");
         line(format_args!(
-            "{}\t{}\t{}\t{}",
+            "id:{}\t{}\t{}\t{}\t{}",
             project.id(),
             project.name(),
             client,
-            agreement
+            agreement,
+            if project.is_active() {
+                "active"
+            } else {
+                "archived"
+            }
         ))?;
     }
     Ok(())
 }
 
-fn agreement_list(tracker: &Tracker, client_name: Option<&str>) -> Result<(), Error> {
-    let selected_client = client_name
-        .map(|name| tracker.client_by_name(name).map(|client| client.id()))
-        .transpose()
-        .map_err(core_error)?;
+fn agreement_list(tracker: &Tracker, client_ref: Option<&str>, all: bool) -> Result<(), Error> {
+    let selected_client = client_ref
+        .map(|reference| resolve_client(tracker, reference).map(|client| client.id()))
+        .transpose()?;
     let clients = tracker
         .clients()
         .map_err(core_error)?
         .into_iter()
         .map(|client| (client.id(), client.name().to_owned()))
         .collect::<HashMap<_, _>>();
+    let projects = tracker
+        .projects()
+        .map_err(core_error)?
+        .into_iter()
+        .map(|project| (project.id(), project))
+        .collect::<HashMap<_, _>>();
     let agreements = tracker
         .service_agreements()
         .map_err(core_error)?
         .into_iter()
-        .filter(|agreement| selected_client.is_none_or(|client| agreement.client() == client))
+        .filter(|agreement| {
+            let project = projects
+                .get(&agreement.project())
+                .expect("agreements always reference a project");
+            (all || (agreement.is_current() && project.is_active()))
+                && selected_client.is_none_or(|client| project.client() == client)
+        })
         .collect::<Vec<_>>();
     if agreements.is_empty() {
         return line(format_args!("No service agreements."));
     }
 
     line(format_args!(
-        "ID\tCLIENT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tTIMEZONE\tACTIVE"
+        "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS"
     ))?;
     for agreement in agreements {
+        let project = projects
+            .get(&agreement.project())
+            .expect("agreements always reference a project");
         let client = clients
-            .get(&agreement.client())
-            .expect("agreements always reference a client");
+            .get(&project.client())
+            .expect("projects always reference a client");
         line(format_args!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "id:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             agreement.id(),
             client,
+            project.name(),
             agreement.name(),
             terms::format_rate(agreement.hourly_rate()),
             agreement.hourly_rate().currency(),
-            terms::format_minutes(agreement.monthly_hours().minimum_minutes()),
-            terms::format_minutes(agreement.monthly_hours().maximum_minutes()),
-            agreement
-                .billing_timezone()
-                .iana_name()
-                .expect("billing timezones always have an IANA name"),
-            if agreement.is_active() { "yes" } else { "no" }
+            terms::format_hours(agreement.monthly_hours().minimum()),
+            terms::format_hours(agreement.monthly_hours().maximum()),
+            agreement.effective_on(),
+            agreement_status(project, &agreement)
         ))?;
     }
     Ok(())
 }
 
+fn agreement_status(project: &model::Project, agreement: &model::ServiceAgreement) -> &'static str {
+    if !project.is_active() {
+        return "inactive";
+    }
+    if agreement.is_current() {
+        "current"
+    } else {
+        "replaced"
+    }
+}
+
 struct ResolvedTarget {
-    context: model::WorkContext,
+    agreement: model::ServiceAgreementId,
     label: String,
 }
 
 fn resolve_target(tracker: &Tracker, target: TrackingTarget) -> Result<ResolvedTarget, Error> {
     match target {
-        TrackingTarget::Project(name) => {
-            let project = tracker.project_by_name(&name).map_err(core_error)?;
-            let agreement = project
-                .active_agreement()
-                .ok_or_else(|| core_error(tt::Error::ProjectAgreementMissing(project.id())))?;
+        TrackingTarget::Project(reference) => {
+            let project = resolve_project(tracker, &reference)?;
+            let agreement = tracker
+                .current_service_agreement(project.id())
+                .map_err(core_error)?;
             Ok(ResolvedTarget {
-                context: model::WorkContext::new(agreement, Some(project.id())),
+                agreement: agreement.id(),
                 label: project.name().to_owned(),
             })
         }
-        TrackingTarget::Agreement { client, agreement } => {
-            let client = tracker.client_by_name(&client).map_err(core_error)?;
-            let agreement = tracker
-                .service_agreement_by_name(client.id(), &agreement)
-                .map_err(core_error)?;
+        TrackingTarget::Agreement(reference) => {
+            let agreement = resolve_agreement(tracker, &reference)?;
+            let project = tracker.project(agreement.project()).map_err(core_error)?;
             Ok(ResolvedTarget {
-                context: model::WorkContext::new(agreement.id(), None),
-                label: agreement.name().to_owned(),
+                agreement: agreement.id(),
+                label: project.name().to_owned(),
             })
         }
     }
 }
 
-fn context_names<'a>(
-    context: model::WorkContext,
-    agreements: &'a HashMap<model::ServiceAgreementId, String>,
+fn resolve_client(tracker: &Tracker, reference: &str) -> Result<model::Client, Error> {
+    let Some(id) = reference.strip_prefix("id:") else {
+        return tracker.client_by_name(reference).map_err(core_error);
+    };
+    let id = id
+        .parse::<model::ClientId>()
+        .map_err(|_| Error::usage(format!("invalid client reference '{reference}'")))?;
+    tracker.client(id).map_err(core_error)
+}
+
+fn resolve_project(tracker: &Tracker, reference: &str) -> Result<model::Project, Error> {
+    let Some(id) = reference.strip_prefix("id:") else {
+        return tracker.project_by_name(reference).map_err(core_error);
+    };
+    let id = id
+        .parse::<model::ProjectId>()
+        .map_err(|_| Error::usage(format!("invalid project reference '{reference}'")))?;
+    tracker.project(id).map_err(core_error)
+}
+
+fn resolve_agreement(tracker: &Tracker, reference: &str) -> Result<model::ServiceAgreement, Error> {
+    let id = reference
+        .strip_prefix("id:")
+        .ok_or_else(|| Error::usage("agreement references must use id:<number>"))?
+        .parse::<model::ServiceAgreementId>()
+        .map_err(|_| Error::usage(format!("invalid agreement reference '{reference}'")))?;
+    tracker.service_agreement(id).map_err(core_error)
+}
+
+type AgreementNames = HashMap<model::ServiceAgreementId, (String, model::ProjectId)>;
+
+fn project_names(tracker: &Tracker) -> Result<HashMap<model::ProjectId, String>, Error> {
+    Ok(tracker
+        .projects()
+        .map_err(core_error)?
+        .into_iter()
+        .map(|project| (project.id(), project.name().to_owned()))
+        .collect())
+}
+
+fn agreement_names(tracker: &Tracker) -> Result<AgreementNames, Error> {
+    Ok(tracker
+        .service_agreements()
+        .map_err(core_error)?
+        .into_iter()
+        .map(|agreement| {
+            (
+                agreement.id(),
+                (agreement.name().to_owned(), agreement.project()),
+            )
+        })
+        .collect())
+}
+
+fn work_names<'a>(
+    agreement: model::ServiceAgreementId,
+    agreements: &'a AgreementNames,
     projects: &'a HashMap<model::ProjectId, String>,
 ) -> (&'a str, &'a str) {
-    let agreement = agreements
-        .get(&context.agreement())
+    let (agreement, project) = agreements
+        .get(&agreement)
         .expect("recorded work always references an agreement");
-    let project = context
-        .project()
-        .and_then(|project| projects.get(&project))
-        .map(String::as_str)
-        .unwrap_or("-");
+    let project = projects
+        .get(project)
+        .expect("agreements always reference a project");
     (agreement, project)
+}
+
+fn print_limit(
+    tracker: &Tracker,
+    timer: &model::RunningTimer,
+    now: Timestamp,
+    timezone: &TimeZone,
+) -> Result<(), Error> {
+    let Some(limit) = tracker.timer_limit(timer.id(), now).map_err(core_error)? else {
+        return Ok(());
+    };
+    match limit.cap_at() {
+        Some(cap) => line(format_args!(
+            "Cap remaining: {}; timer caps at {}.",
+            format_limit(Some(limit)),
+            clock(cap, timezone)
+        )),
+        None => line(format_args!(
+            "Cap remaining this month: {}.",
+            format_limit(Some(limit))
+        )),
+    }
+}
+
+fn format_limit(limit: Option<model::TimerLimit>) -> String {
+    let Some(limit) = limit else {
+        return "-".into();
+    };
+    if limit.is_reached() {
+        return "LIMIT REACHED".into();
+    }
+    let remaining = format_us(limit.remaining_us());
+    if limit.remaining_us() <= 3_600_000_000 {
+        return format!("WARNING: {remaining}");
+    }
+    remaining
+}
+
+fn format_us(microseconds: i64) -> String {
+    let minutes = microseconds.max(0) / 60_000_000;
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+fn duration(start: Timestamp, end: Timestamp) -> String {
+    format_us(end.as_microsecond().saturating_sub(start.as_microsecond()))
+}
+
+fn parse_date(value: &str) -> Result<civil::Date, Error> {
+    value
+        .parse()
+        .map_err(|_| Error::usage(format!("invalid date '{value}'")))
 }
 
 fn interactive(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
@@ -354,7 +511,12 @@ fn interactive(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
 }
 
 fn interactive_start(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
-    let projects = tracker.projects().map_err(core_error)?;
+    let projects = tracker
+        .projects()
+        .map_err(core_error)?
+        .into_iter()
+        .filter(model::Project::is_active)
+        .collect::<Vec<_>>();
     if projects.is_empty() {
         return Err(Error::runtime(
             "no projects exist; add one with 'tt project add'",
@@ -366,23 +528,33 @@ fn interactive_start(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error
         .into_iter()
         .map(|client| (client.id(), client.name().to_owned()))
         .collect::<HashMap<_, _>>();
+    let agreements = tracker
+        .service_agreements()
+        .map_err(core_error)?
+        .into_iter()
+        .filter(model::ServiceAgreement::is_current)
+        .map(|agreement| (agreement.project(), agreement.name().to_owned()))
+        .collect::<HashMap<_, _>>();
 
     line(format_args!("Project:"))?;
     for (index, project) in projects.iter().enumerate() {
-        match project.client().and_then(|id| clients.get(&id)) {
-            Some(client) => line(format_args!("{}. {} ({client})", index + 1, project.name()))?,
-            None => line(format_args!("{}. {}", index + 1, project.name()))?,
-        }
+        let client = clients
+            .get(&project.client())
+            .expect("projects always reference a client");
+        let agreement = agreements
+            .get(&project.id())
+            .expect("projects always have a current agreement");
+        line(format_args!(
+            "{}. {} ({client}; {agreement})",
+            index + 1,
+            project.name()
+        ))?;
     }
     let Some(index) = selection(projects.len())? else {
         return cancelled();
     };
     let project = &projects[index];
-    let agreement = project
-        .active_agreement()
-        .ok_or_else(|| core_error(tt::Error::ProjectAgreementMissing(project.id())))?;
-    let context = model::WorkContext::new(agreement, Some(project.id()));
-    let scopes = tracker.recent_scopes(context, 3).map_err(core_error)?;
+    let scopes = tracker.recent_scopes(project.id(), 3).map_err(core_error)?;
 
     line(format_args!("\nScope:"))?;
     for (index, scope) in scopes.iter().enumerate() {
@@ -415,14 +587,16 @@ fn interactive_start(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error
         parse_time(&at, zone, reference)?
     };
     let timer = tracker
-        .start(command::Start::new(context, scope, started_at).map_err(core_error)?)
+        .start(command::Start::new(project.id(), scope, started_at).map_err(core_error)?)
         .map_err(core_error)?;
     line(format_args!(
-        "\nStarted {} for {} at {}",
+        "\nStarted {} for {} at {} (id:{})",
         timer.scope(),
         project.name(),
-        clock(timer.started_at(), zone)
-    ))
+        clock(timer.started_at(), zone),
+        timer.id()
+    ))?;
+    print_limit(tracker, &timer, reference, project.billing_timezone())
 }
 
 fn interactive_stop(
@@ -430,22 +604,12 @@ fn interactive_stop(
     zone: &TimeZone,
     timers: &[model::RunningTimer],
 ) -> Result<(), Error> {
-    let projects = tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|project| (project.id(), project.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let agreements = tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|agreement| (agreement.id(), agreement.name().to_owned()))
-        .collect::<HashMap<_, _>>();
+    let projects = project_names(tracker)?;
+    let agreements = agreement_names(tracker)?;
     let displayed_at = now()?;
     line(format_args!("Running:"))?;
     for (index, timer) in timers.iter().enumerate() {
-        let (agreement, project) = context_names(timer.context(), &agreements, &projects);
+        let (agreement, project) = work_names(timer.agreement(), &agreements, &projects);
         line(format_args!(
             "{}. {}\t{}\t{}\t{}",
             index + 1,
@@ -458,14 +622,23 @@ fn interactive_stop(
     let Some(index) = selection(timers.len())? else {
         return cancelled();
     };
+    let requested_end = now()?;
     let entry = tracker
-        .end(command::End::new(timers[index].id(), now()?))
+        .end(command::End::new(timers[index].id(), requested_end))
         .map_err(core_error)?;
     line(format_args!(
-        "\nStopped {} at {}",
+        "\nStopped {} at {} (id:{})",
         entry.scope(),
-        clock(entry.ended_at(), zone)
-    ))
+        clock(entry.ended_at(), zone),
+        entry.id()
+    ))?;
+    if entry.ended_at() < requested_end {
+        line(format_args!(
+            "Maximum reached; {} after the cap was not recorded.",
+            duration(entry.ended_at(), requested_end)
+        ))?;
+    }
+    Ok(())
 }
 
 fn selection(count: usize) -> Result<Option<usize>, Error> {

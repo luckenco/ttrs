@@ -1,8 +1,10 @@
 use std::path::Path;
 
+use jiff::{Timestamp, civil::Date};
+
 use crate::{Error, Result, command, model, store};
 
-/// The application service for projects, clients, timers, and time entries.
+/// The application service for projects, clients, agreements, and tracked work.
 pub struct Tracker {
     store: store::Store,
 }
@@ -14,9 +16,6 @@ impl Tracker {
     }
 
     /// Creates an ephemeral tracker backed by an in-memory database.
-    ///
-    /// This is useful for embedding, examples, and tests. Its data is lost when
-    /// the tracker is dropped.
     pub fn memory() -> Result<Self> {
         store::Store::memory().map(|store| Self { store })
     }
@@ -31,6 +30,11 @@ impl Tracker {
         self.store.clients()
     }
 
+    /// Finds a client by identifier.
+    pub fn client(&self, id: model::ClientId) -> Result<model::Client> {
+        self.store.client(id)?.ok_or(Error::ClientNotFound(id))
+    }
+
     /// Finds a client by its exact name.
     pub fn client_by_name(&self, name: &str) -> Result<model::Client> {
         self.store
@@ -38,72 +42,74 @@ impl Tracker {
             .ok_or_else(|| Error::ClientNameNotFound(name.to_owned()))
     }
 
-    /// Creates a service agreement with immutable commercial terms.
-    pub fn add_service_agreement(
+    /// Creates a project and its initial service agreement atomically.
+    pub fn add_project(
         &mut self,
         client: model::ClientId,
         name: String,
-        hourly_rate: model::HourlyRate,
-        monthly_hours: model::MonthlyHours,
         billing_timezone: String,
-    ) -> Result<model::ServiceAgreement> {
-        let name = agreement_name(name)?;
-        let billing_timezone = validate_billing_timezone(billing_timezone)?;
+        agreement: model::NewAgreement,
+        now: Timestamp,
+    ) -> Result<(model::Project, model::ServiceAgreement)> {
+        let timezone = validate_billing_timezone(billing_timezone)?;
+        reject_future(agreement.effective_on(), &timezone, now)?;
         self.store
-            .add_agreement(client, name, hourly_rate, monthly_hours, billing_timezone)
+            .add_project(client, project_name(name)?, timezone, agreement)
     }
 
-    /// Returns all service agreements ordered by client and name.
+    /// Creates and activates immutable replacement terms for a project.
+    pub fn add_service_agreement(
+        &mut self,
+        project: model::ProjectId,
+        agreement: model::NewAgreement,
+        now: Timestamp,
+    ) -> Result<model::ServiceAgreement> {
+        let project_value = self.project(project)?;
+        reject_future(
+            agreement.effective_on(),
+            project_value.billing_timezone(),
+            now,
+        )?;
+        self.store.add_agreement(project, agreement)
+    }
+
+    /// Returns all service agreements ordered by project and effective date.
     pub fn service_agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
         self.store.agreements()
     }
 
-    /// Finds a service agreement by client and exact name.
+    /// Finds a service agreement by identifier.
+    pub fn service_agreement(
+        &self,
+        id: model::ServiceAgreementId,
+    ) -> Result<model::ServiceAgreement> {
+        self.store
+            .agreement(id)?
+            .ok_or(Error::AgreementNotFound(id))
+    }
+
+    /// Finds a service agreement by project and exact name.
     pub fn service_agreement_by_name(
         &self,
-        client: model::ClientId,
+        project: model::ProjectId,
         name: &str,
     ) -> Result<model::ServiceAgreement> {
         self.store
-            .agreement_by_name(client, name)?
+            .agreement_by_name(project, name)?
             .ok_or_else(|| Error::AgreementNameNotFound(name.to_owned()))
     }
 
-    /// Archives an agreement after it is no longer selected by a project.
-    pub fn archive_service_agreement(
-        &mut self,
-        agreement: model::ServiceAgreementId,
+    /// Returns the latest agreement for a project.
+    pub fn current_service_agreement(
+        &self,
+        project: model::ProjectId,
     ) -> Result<model::ServiceAgreement> {
-        self.store.archive_agreement(agreement)
-    }
-
-    /// Creates a project, optionally selecting an existing agreement.
-    pub fn add_project(
-        &mut self,
-        name: String,
-        client: Option<model::ClientId>,
-        active_agreement: Option<model::ServiceAgreementId>,
-    ) -> Result<model::Project> {
+        if self.store.project(project)?.is_none() {
+            return Err(Error::ProjectNotFound(project));
+        }
         self.store
-            .add_project(project_name(name)?, client, active_agreement)
-    }
-
-    /// Assigns an existing client to a project, or clears it with `None`.
-    pub fn set_project_client(
-        &mut self,
-        project: model::ProjectId,
-        client: Option<model::ClientId>,
-    ) -> Result<model::Project> {
-        self.store.set_project_client(project, client)
-    }
-
-    /// Selects the agreement used for new work on a project.
-    pub fn set_project_agreement(
-        &mut self,
-        project: model::ProjectId,
-        agreement: model::ServiceAgreementId,
-    ) -> Result<model::Project> {
-        self.store.set_project_agreement(project, agreement)
+            .current_agreement(project)?
+            .ok_or(Error::ProjectAgreementMissing(project))
     }
 
     /// Returns all projects ordered by name.
@@ -111,20 +117,51 @@ impl Tracker {
         self.store.projects()
     }
 
-    /// Finds a project by its exact name.
+    /// Finds a project by identifier.
+    pub fn project(&self, id: model::ProjectId) -> Result<model::Project> {
+        self.store.project(id)?.ok_or(Error::ProjectNotFound(id))
+    }
+
+    /// Finds an unambiguous project by its exact name.
     pub fn project_by_name(&self, name: &str) -> Result<model::Project> {
-        self.store
-            .project_by_name(name)?
-            .ok_or_else(|| Error::ProjectNameNotFound(name.to_owned()))
+        let mut projects = self.store.projects_by_name(name)?;
+        match projects.len() {
+            0 => Err(Error::ProjectNameNotFound(name.to_owned())),
+            1 => Ok(projects.pop().expect("one project exists")),
+            _ => Err(Error::ProjectNameAmbiguous(name.to_owned())),
+        }
     }
 
-    /// Starts a timer without affecting any other running timer.
+    /// Archives a project on the selected final active day, defaulting to today.
+    pub fn archive_project(
+        &mut self,
+        project: model::ProjectId,
+        archived_on: Option<Date>,
+        now: Timestamp,
+    ) -> Result<model::Project> {
+        let project_value = self.project(project)?;
+        let today = now
+            .to_zoned(project_value.billing_timezone().clone())
+            .date();
+        let archived_on = archived_on.unwrap_or(today);
+        if archived_on > today {
+            return Err(Error::EffectiveDateFuture);
+        }
+        self.store.archive_project(project, archived_on)
+    }
+
+    /// Unarchives a project and restores continuous commercial coverage.
+    pub fn unarchive_project(&mut self, project: model::ProjectId) -> Result<model::Project> {
+        self.store.unarchive_project(project)
+    }
+
+    /// Starts a timer without affecting timers for other clients.
     pub fn start(&mut self, command: command::Start) -> Result<model::RunningTimer> {
-        let (context, scope, started_at) = command.into_parts();
-        self.store.start(context, scope, started_at)
+        let (project, scope, started_at) = command.into_parts();
+        self.store.start(project, scope, started_at)
     }
 
-    /// Ends a running timer and returns the resulting time entry.
+    /// Ends a running timer and returns the resulting, possibly capped entry.
     pub fn end(&mut self, command: command::End) -> Result<model::TimeEntry> {
         let (timer, ended_at) = command.into_parts();
         self.store.end(timer, ended_at)
@@ -132,8 +169,8 @@ impl Tracker {
 
     /// Creates a completed time entry without starting a timer.
     pub fn log(&mut self, command: command::LogEntry) -> Result<model::TimeEntry> {
-        let (context, scope, started_at, ended_at) = command.into_parts();
-        self.store.log(context, scope, started_at, ended_at)
+        let (agreement, scope, started_at, ended_at) = command.into_parts();
+        self.store.log(agreement, scope, started_at, ended_at)
     }
 
     /// Returns all running timers, oldest first.
@@ -141,9 +178,18 @@ impl Tracker {
         self.store.running()
     }
 
+    /// Returns cap information for a running timer, if it has a maximum.
+    pub fn timer_limit(
+        &self,
+        timer: model::TimerId,
+        now: Timestamp,
+    ) -> Result<Option<model::TimerLimit>> {
+        self.store.timer_limit(timer, now)
+    }
+
     /// Returns the most recently used distinct scopes for a project.
-    pub fn recent_scopes(&self, context: model::WorkContext, limit: usize) -> Result<Vec<String>> {
-        self.store.recent_scopes(context, limit)
+    pub fn recent_scopes(&self, project: model::ProjectId, limit: usize) -> Result<Vec<String>> {
+        self.store.recent_scopes(project, limit)
     }
 }
 
@@ -155,10 +201,6 @@ fn project_name(name: String) -> Result<String> {
     nonempty_name(name, Error::EmptyProjectName)
 }
 
-fn agreement_name(name: String) -> Result<String> {
-    nonempty_name(name, Error::EmptyAgreementName)
-}
-
 fn validate_billing_timezone(timezone: String) -> Result<jiff::tz::TimeZone> {
     let name = timezone.trim();
     let timezone = jiff::tz::TimeZone::get(name)
@@ -167,6 +209,13 @@ fn validate_billing_timezone(timezone: String) -> Result<jiff::tz::TimeZone> {
         return Err(Error::InvalidBillingTimezone(name.to_owned()));
     }
     Ok(timezone)
+}
+
+fn reject_future(date: Date, timezone: &jiff::tz::TimeZone, now: Timestamp) -> Result<()> {
+    if date > now.to_zoned(timezone.clone()).date() {
+        return Err(Error::EffectiveDateFuture);
+    }
+    Ok(())
 }
 
 fn nonempty_name(name: String, error: Error) -> Result<String> {
@@ -187,8 +236,6 @@ mod tests {
         atomic::{AtomicU64, Ordering},
     };
 
-    use jiff::Timestamp;
-
     use super::*;
 
     static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
@@ -201,266 +248,464 @@ mod tests {
         ))
     }
 
-    fn timestamp(seconds: i64) -> Timestamp {
-        Timestamp::from_second(seconds).unwrap()
+    fn timestamp(value: &str) -> Timestamp {
+        value.parse().unwrap()
     }
 
-    fn project(tracker: &mut Tracker) -> model::Project {
-        let client = tracker.add_client("Acme".into()).unwrap();
-        let rate = model::HourlyRate::new(100_000_000, "EUR".into()).unwrap();
-        let agreement = tracker
-            .add_service_agreement(
-                client.id(),
-                "Support".into(),
-                rate,
-                model::MonthlyHours::default(),
-                "Europe/Berlin".into(),
-            )
-            .unwrap();
-        tracker
-            .add_project("website".into(), Some(client.id()), Some(agreement.id()))
-            .unwrap()
+    fn date(value: &str) -> Date {
+        value.parse().unwrap()
     }
 
-    fn context(project: &model::Project) -> model::WorkContext {
-        model::WorkContext::new(project.active_agreement().unwrap(), Some(project.id()))
+    fn rate(value: i64) -> model::HourlyRate {
+        model::HourlyRate::new(value, "EUR".into()).unwrap()
     }
 
-    fn agreement(
-        tracker: &mut Tracker,
-        client: model::ClientId,
+    fn terms(
         name: &str,
-        rate: i64,
-    ) -> model::ServiceAgreement {
+        rate_value: i64,
+        monthly_hours: model::MonthlyHours,
+        effective_on: &str,
+    ) -> model::NewAgreement {
+        model::NewAgreement::new(
+            name.into(),
+            rate(rate_value),
+            monthly_hours,
+            date(effective_on),
+        )
+        .unwrap()
+    }
+
+    fn project(tracker: &mut Tracker) -> (model::Project, model::ServiceAgreement) {
+        let client = tracker.add_client("Acme".into()).unwrap();
         tracker
-            .add_service_agreement(
-                client,
-                name.into(),
-                model::HourlyRate::new(rate, "EUR".into()).unwrap(),
-                model::MonthlyHours::default(),
+            .add_project(
+                client.id(),
+                "website".into(),
                 "Europe/Berlin".into(),
+                terms(
+                    "Support",
+                    100_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-10T00:00:00Z"),
             )
             .unwrap()
     }
 
     #[test]
-    fn clients_are_explicit() {
+    fn project_creation_is_atomic() {
         let mut tracker = Tracker::memory().unwrap();
         let missing = model::ClientId::from_raw(99);
-
-        let result = tracker.add_project("website".into(), Some(missing), None);
-
-        assert!(matches!(result, Err(Error::ClientNotFound(id)) if id == missing));
-    }
-
-    #[test]
-    fn rejects_empty_and_duplicate_names() {
-        let mut tracker = Tracker::memory().unwrap();
-
-        assert!(matches!(
-            tracker.add_client("  ".into()),
-            Err(Error::EmptyClientName)
-        ));
-        assert!(matches!(
-            tracker.add_project("  ".into(), None, None),
-            Err(Error::EmptyProjectName)
-        ));
-
-        tracker.add_client("Acme".into()).unwrap();
-        tracker.add_project("website".into(), None, None).unwrap();
-        assert!(matches!(
-            tracker.add_client("Acme".into()),
-            Err(Error::ClientExists(name)) if name == "Acme"
-        ));
-        assert!(matches!(
-            tracker.add_project("website".into(), None, None),
-            Err(Error::ProjectExists(name)) if name == "website"
-        ));
-    }
-
-    #[test]
-    fn assigns_and_clears_project_client() {
-        let mut tracker = Tracker::memory().unwrap();
-        let client = tracker.add_client("Acme".into()).unwrap();
-        let project = tracker
-            .add_project("website".into(), Some(client.id()), None)
-            .unwrap();
-
-        let cleared = tracker.set_project_client(project.id(), None).unwrap();
-
-        assert_eq!(cleared.client(), None);
-    }
-
-    #[test]
-    fn switching_agreements_only_affects_new_timers() {
-        let mut tracker = Tracker::memory().unwrap();
-        let client = tracker.add_client("Acme".into()).unwrap();
-        let old = agreement(&mut tracker, client.id(), "Support 2025", 100_000_000);
-        let new = agreement(&mut tracker, client.id(), "Support 2026", 125_000_000);
-        let project = tracker
-            .add_project("website".into(), Some(client.id()), Some(old.id()))
-            .unwrap();
-        let old_timer = tracker
-            .start(command::Start::new(context(&project), "old".into(), timestamp(0)).unwrap())
-            .unwrap();
-
-        let project = tracker
-            .set_project_agreement(project.id(), new.id())
-            .unwrap();
-        let new_timer = tracker
-            .start(command::Start::new(context(&project), "new".into(), timestamp(1)).unwrap())
-            .unwrap();
-        tracker.archive_service_agreement(old.id()).unwrap();
-
-        assert_eq!(
-            old_timer.context(),
-            model::WorkContext::new(old.id(), Some(project.id()))
+        let result = tracker.add_project(
+            missing,
+            "website".into(),
+            "UTC".into(),
+            terms(
+                "Support",
+                100_000_000,
+                model::MonthlyHours::default(),
+                "2026-01-01",
+            ),
+            timestamp("2026-01-01T00:00:00Z"),
         );
-        assert_eq!(new_timer.context(), context(&project));
-        tracker
-            .end(command::End::new(old_timer.id(), timestamp(2)))
-            .unwrap();
+        assert!(matches!(result, Err(Error::ClientNotFound(id)) if id == missing));
+        assert!(tracker.projects().unwrap().is_empty());
     }
 
     #[test]
-    fn supports_concurrent_timers() {
+    fn project_names_are_unique_per_client() {
         let mut tracker = Tracker::memory().unwrap();
-        let project = project(&mut tracker);
-
-        tracker
-            .start(command::Start::new(context(&project), "ISSUE-1".into(), timestamp(0)).unwrap())
-            .unwrap();
-        tracker
-            .start(command::Start::new(context(&project), "ISSUE-2".into(), timestamp(1)).unwrap())
-            .unwrap();
-
-        let timers = tracker.running().unwrap();
-        assert_eq!(timers.len(), 2);
-        assert_eq!(timers[0].scope(), "ISSUE-1");
-        assert_eq!(timers[1].scope(), "ISSUE-2");
-    }
-
-    #[test]
-    fn ending_timer_transitions_it_to_entry() {
-        let mut tracker = Tracker::memory().unwrap();
-        let project = project(&mut tracker);
-        let timer = tracker
-            .start(command::Start::new(context(&project), "ISSUE-1".into(), timestamp(0)).unwrap())
-            .unwrap();
-
-        let entry = tracker
-            .end(command::End::new(timer.id(), timestamp(60)))
-            .unwrap();
-
-        assert_eq!(entry.context(), context(&project));
-        assert_eq!(entry.scope(), "ISSUE-1");
-        assert_eq!(entry.started_at(), timestamp(0));
-        assert_eq!(entry.ended_at(), timestamp(60));
-        assert!(tracker.running().unwrap().is_empty());
-        assert!(matches!(
-            tracker.end(command::End::new(timer.id(), timestamp(120))),
-            Err(Error::TimerNotFound(id)) if id == timer.id()
-        ));
-    }
-
-    #[test]
-    fn failed_end_leaves_timer_running() {
-        let mut tracker = Tracker::memory().unwrap();
-        let project = project(&mut tracker);
-        let timer = tracker
-            .start(command::Start::new(context(&project), "ISSUE-1".into(), timestamp(60)).unwrap())
-            .unwrap();
-
-        let result = tracker.end(command::End::new(timer.id(), timestamp(30)));
-
-        assert!(matches!(result, Err(Error::InvalidInterval)));
-        assert_eq!(tracker.running().unwrap(), vec![timer]);
-    }
-
-    #[test]
-    fn logs_completed_entry_directly() {
-        let mut tracker = Tracker::memory().unwrap();
-        let project = project(&mut tracker);
-        let command = command::LogEntry::new(
-            context(&project),
-            "ISSUE-1".into(),
-            timestamp(0),
-            timestamp(60),
-        )
-        .unwrap();
-
-        let entry = tracker.log(command).unwrap();
-
-        assert_eq!(entry.scope(), "ISSUE-1");
-        assert!(tracker.running().unwrap().is_empty());
-    }
-
-    #[test]
-    fn returns_distinct_recent_scopes() {
-        let mut tracker = Tracker::memory().unwrap();
-        let project = project(&mut tracker);
-        for (scope, start) in [("old", 0), ("recent", 20), ("old", 30), ("latest", 40)] {
-            let command = command::LogEntry::new(
-                context(&project),
-                scope.into(),
-                timestamp(start),
-                timestamp(start + 1),
-            )
-            .unwrap();
-            tracker.log(command).unwrap();
+        let acme = tracker.add_client("Acme".into()).unwrap();
+        let globex = tracker.add_client("Globex".into()).unwrap();
+        for client in [acme.id(), globex.id()] {
+            tracker
+                .add_project(
+                    client,
+                    "website".into(),
+                    "UTC".into(),
+                    terms(
+                        "Support",
+                        100_000_000,
+                        model::MonthlyHours::default(),
+                        "2026-01-01",
+                    ),
+                    timestamp("2026-01-01T00:00:00Z"),
+                )
+                .unwrap();
         }
 
-        let replacement = agreement(
-            &mut tracker,
-            project.client().unwrap(),
-            "Support replacement",
-            125_000_000,
-        );
-        let project = tracker
-            .set_project_agreement(project.id(), replacement.id())
-            .unwrap();
-        let scopes = tracker.recent_scopes(context(&project), 3).unwrap();
-        assert_eq!(scopes, ["latest", "old", "recent"]);
+        assert!(matches!(
+            tracker.project_by_name("website"),
+            Err(Error::ProjectNameAmbiguous(name)) if name == "website"
+        ));
+    }
 
-        let agreement_context = model::WorkContext::new(replacement.id(), None);
-        tracker
-            .log(
-                command::LogEntry::new(
-                    agreement_context,
-                    "agreement-only".into(),
-                    timestamp(50),
-                    timestamp(51),
+    #[test]
+    fn replacement_requires_stopped_timers_and_clean_boundary() {
+        let mut tracker = Tracker::memory().unwrap();
+        let (project, old) = project(&mut tracker);
+        let timer = tracker
+            .start(
+                command::Start::new(
+                    project.id(),
+                    "old".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
                 )
                 .unwrap(),
             )
             .unwrap();
-        assert_eq!(
-            tracker.recent_scopes(agreement_context, 3).unwrap(),
-            ["agreement-only"]
+        let replace = |tracker: &mut Tracker| {
+            tracker.add_service_agreement(
+                project.id(),
+                terms(
+                    "Support 2026",
+                    125_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-03",
+                ),
+                timestamp("2026-01-04T00:00:00Z"),
+            )
+        };
+        assert!(matches!(
+            replace(&mut tracker),
+            Err(Error::ClientTimerRunning(_))
+        ));
+        tracker
+            .end(command::End::new(
+                timer.id(),
+                timestamp("2026-01-02T10:00:00Z"),
+            ))
+            .unwrap();
+        let new = replace(&mut tracker).unwrap();
+
+        assert!(!tracker.service_agreement(old.id()).unwrap().is_current());
+        assert!(new.is_current());
+        assert!(matches!(
+            tracker.log(
+                command::LogEntry::new(
+                    old.id(),
+                    "late".into(),
+                    timestamp("2026-01-03T09:00:00Z"),
+                    timestamp("2026-01-03T10:00:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::WorkOutsideAgreementPeriod)
+        ));
+    }
+
+    #[test]
+    fn one_running_timer_is_allowed_per_client() {
+        let mut tracker = Tracker::memory().unwrap();
+        let (project, _) = project(&mut tracker);
+        let second = tracker
+            .add_project(
+                project.client(),
+                "api".into(),
+                "Europe/Berlin".into(),
+                terms(
+                    "Support",
+                    100_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-10T00:00:00Z"),
+            )
+            .unwrap()
+            .0;
+        tracker
+            .start(
+                command::Start::new(
+                    project.id(),
+                    "first".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            tracker.start(
+                command::Start::new(
+                    second.id(),
+                    "second".into(),
+                    timestamp("2026-01-02T09:01:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::ClientTimerRunning(id)) if id == project.client()
+        ));
+    }
+
+    #[test]
+    fn monthly_maximum_caps_timers_and_logs() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let (project, agreement) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Support",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(1)).unwrap(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-01T00:00:00Z"),
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "logged".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
+                    timestamp("2026-01-02T09:59:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let timer = tracker
+            .start(
+                command::Start::new(
+                    project.id(),
+                    "timer".into(),
+                    timestamp("2026-01-02T10:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let limit = tracker
+            .timer_limit(timer.id(), timestamp("2026-01-02T10:00:30Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(limit.remaining_us(), 30_000_000);
+        assert_eq!(limit.cap_at(), Some(timestamp("2026-01-02T10:01:00Z")));
+        let entry = tracker
+            .end(command::End::new(
+                timer.id(),
+                timestamp("2026-01-02T10:10:00Z"),
+            ))
+            .unwrap();
+        assert_eq!(entry.ended_at(), timestamp("2026-01-02T10:01:00Z"));
+        assert!(matches!(
+            tracker.log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "overflow".into(),
+                    timestamp("2026-01-02T11:00:00Z"),
+                    timestamp("2026-01-02T11:01:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::MonthlyMaximumReached(id)) if id == project.id()
+        ));
+    }
+
+    #[test]
+    fn rejects_replacement_that_lowers_month_below_existing_work() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let (project, agreement) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Old",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(31)).unwrap(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-20T00:00:00Z"),
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "work".into(),
+                    timestamp("2026-01-02T00:00:00Z"),
+                    timestamp("2026-01-02T16:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            tracker.add_service_agreement(
+                project.id(),
+                terms(
+                    "Too low",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(0)).unwrap(),
+                    "2026-01-16",
+                ),
+                timestamp("2026-01-20T00:00:00Z"),
+            ),
+            Err(Error::MonthlyMaximumReached(id)) if id == project.id()
+        ));
+        assert!(
+            tracker
+                .service_agreement(agreement.id())
+                .unwrap()
+                .is_current()
         );
-        assert_eq!(
-            tracker.recent_scopes(context(&project), 1).unwrap(),
-            ["latest"]
-        );
+    }
+
+    #[test]
+    fn prorates_replacement_maximums_by_calendar_day() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let (project, old) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Old",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(31)).unwrap(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-20T00:00:00Z"),
+            )
+            .unwrap();
+        let new = tracker
+            .add_service_agreement(
+                project.id(),
+                terms(
+                    "New",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(62)).unwrap(),
+                    "2026-01-16",
+                ),
+                timestamp("2026-01-20T00:00:00Z"),
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    old.id(),
+                    "old".into(),
+                    timestamp("2026-01-02T00:00:00Z"),
+                    timestamp("2026-01-02T15:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    new.id(),
+                    "new".into(),
+                    timestamp("2026-01-16T00:00:00Z"),
+                    timestamp("2026-01-17T08:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            tracker.log(
+                command::LogEntry::new(
+                    new.id(),
+                    "overflow".into(),
+                    timestamp("2026-01-18T00:00:00Z"),
+                    timestamp("2026-01-18T00:01:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::MonthlyMaximumReached(id)) if id == project.id()
+        ));
+    }
+
+    #[test]
+    fn archive_and_unarchive_lock_tracking() {
+        let mut tracker = Tracker::memory().unwrap();
+        let (project, agreement) = project(&mut tracker);
+        tracker
+            .archive_project(
+                project.id(),
+                Some(date("2026-01-10")),
+                timestamp("2026-01-10T12:00:00Z"),
+            )
+            .unwrap();
+        assert!(matches!(
+            tracker.log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "locked".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
+                    timestamp("2026-01-02T10:00:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::ProjectArchived(id)) if id == project.id()
+        ));
+        tracker.unarchive_project(project.id()).unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "restored".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
+                    timestamp("2026-01-02T10:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn recent_scopes_survive_replacement_agreements() {
+        let mut tracker = Tracker::memory().unwrap();
+        let (project, agreement) = project(&mut tracker);
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "old".into(),
+                    timestamp("2026-01-02T09:00:00Z"),
+                    timestamp("2026-01-02T10:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        tracker
+            .add_service_agreement(
+                project.id(),
+                terms(
+                    "Replacement",
+                    125_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-03",
+                ),
+                timestamp("2026-01-03T12:00:00Z"),
+            )
+            .unwrap();
+        assert_eq!(tracker.recent_scopes(project.id(), 3).unwrap(), ["old"]);
     }
 
     #[test]
     fn persists_running_timers() {
         let path = database_path();
-
         let timer = {
             let mut tracker = Tracker::open(&path).unwrap();
-            let project = project(&mut tracker);
+            let (project, _) = project(&mut tracker);
             tracker
                 .start(
-                    command::Start::new(context(&project), "ISSUE-1".into(), timestamp(0)).unwrap(),
+                    command::Start::new(
+                        project.id(),
+                        "ISSUE-1".into(),
+                        timestamp("2026-01-02T09:00:00Z"),
+                    )
+                    .unwrap(),
                 )
                 .unwrap()
         };
-
         let tracker = Tracker::open(&path).unwrap();
         assert_eq!(tracker.running().unwrap(), [timer]);
-
         drop(tracker);
         std::fs::remove_file(path).unwrap();
     }
@@ -479,12 +724,10 @@ mod tests {
                 })
             })
             .collect::<Vec<_>>();
-
         barrier.wait();
         for handle in handles {
             handle.join().unwrap().unwrap();
         }
-
         let tracker = Tracker::open(&path).unwrap();
         assert!(tracker.projects().unwrap().is_empty());
         drop(tracker);

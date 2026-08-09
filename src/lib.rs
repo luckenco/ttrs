@@ -7,34 +7,36 @@
 //! # Example
 //!
 //! ```
+//! use jiff::civil::Date;
 //! use tt::{Timestamp, Tracker, command, model};
 //!
 //! let mut tracker = Tracker::memory()?;
 //! let client = tracker.add_client("Acme".into())?;
 //! let rate = model::HourlyRate::new(125_000_000, "EUR".into())?;
-//! let agreement = tracker.add_service_agreement(
-//!     client.id(),
+//! let terms = model::NewAgreement::new(
 //!     "Support 2026".into(),
 //!     rate,
 //!     model::MonthlyHours::default(),
-//!     "Europe/Berlin".into(),
+//!     "2026-01-01".parse::<Date>()?,
 //! )?;
-//! let project = tracker.add_project(
+//! let (project, agreement) = tracker.add_project(
+//!     client.id(),
 //!     "website".into(),
-//!     Some(client.id()),
-//!     Some(agreement.id()),
+//!     "Europe/Berlin".into(),
+//!     terms,
+//!     "2026-01-02T00:00:00Z".parse()?,
 //! )?;
-//! let started_at = Timestamp::from_second(0)?;
-//! let ended_at = Timestamp::from_second(60)?;
+//! let started_at = "2026-01-02T09:00:00Z".parse()?;
+//! let ended_at = "2026-01-02T09:01:00Z".parse()?;
 //!
-//! let context = model::WorkContext::new(agreement.id(), Some(project.id()));
 //! let timer = tracker.start(command::Start::new(
-//!     context,
+//!     project.id(),
 //!     "ISSUE-123".into(),
 //!     started_at,
 //! )?)?;
 //! let entry = tracker.end(command::End::new(timer.id(), ended_at))?;
 //!
+//! assert_eq!(agreement.project(), project.id());
 //! assert_eq!(entry.scope(), "ISSUE-123");
 //! assert_eq!(entry.started_at(), started_at);
 //! assert_eq!(entry.ended_at(), ended_at);
