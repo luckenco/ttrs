@@ -7,15 +7,29 @@
 //! # Example
 //!
 //! ```
-//! use tt::{Timestamp, Tracker, command};
+//! use tt::{Timestamp, Tracker, command, model};
 //!
 //! let mut tracker = Tracker::memory()?;
-//! let project = tracker.add_project("website".into(), None)?;
+//! let client = tracker.add_client("Acme".into())?;
+//! let rate = model::HourlyRate::new(125_000_000, "EUR".into())?;
+//! let agreement = tracker.add_service_agreement(
+//!     client.id(),
+//!     "Support 2026".into(),
+//!     rate,
+//!     model::MonthlyHours::default(),
+//!     "Europe/Berlin".into(),
+//! )?;
+//! let project = tracker.add_project(
+//!     "website".into(),
+//!     Some(client.id()),
+//!     Some(agreement.id()),
+//! )?;
 //! let started_at = Timestamp::from_second(0)?;
 //! let ended_at = Timestamp::from_second(60)?;
 //!
+//! let context = model::WorkContext::new(agreement.id(), Some(project.id()));
 //! let timer = tracker.start(command::Start::new(
-//!     project.id(),
+//!     context,
 //!     "ISSUE-123".into(),
 //!     started_at,
 //! )?)?;
