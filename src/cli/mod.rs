@@ -2,12 +2,19 @@ use std::{fmt, io, io::Write, process::ExitCode};
 
 mod app;
 pub mod clap;
+mod terms;
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum TrackingTarget {
+    Project(String),
+    Agreement { client: String, agreement: String },
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Bare,
     Start {
-        project: String,
+        target: TrackingTarget,
         scope: String,
         at: Option<String>,
     },
@@ -17,7 +24,7 @@ pub enum Command {
     },
     Status,
     Log {
-        project: String,
+        target: TrackingTarget,
         scope: String,
         from: String,
         to: String,
@@ -26,14 +33,30 @@ pub enum Command {
         name: String,
     },
     ClientList,
+    AgreementAdd {
+        client: String,
+        name: String,
+        rate: String,
+        currency: String,
+        minimum_hours: Option<String>,
+        maximum_hours: Option<String>,
+        timezone: String,
+    },
+    AgreementList {
+        client: Option<String>,
+    },
+    AgreementArchive {
+        client: String,
+        name: String,
+    },
     ProjectAdd {
         name: String,
-        client: Option<String>,
+        client: String,
+        agreement: String,
     },
     ProjectEdit {
         name: String,
-        client: Option<String>,
-        clear_client: bool,
+        agreement: String,
     },
     ProjectList,
     ConfigSetTimezone {
