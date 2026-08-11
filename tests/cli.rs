@@ -169,6 +169,38 @@ fn explicit_commands_route_through_the_shared_application() {
     assert!(case.ok(&["client", "list"]).contains("id:1\tAcme"));
     assert!(case.root.join("data/tt.sqlite3").exists());
 
+    let cap_case = Case::new();
+    cap_case.ok(&["client", "add", "--name", "Acme"]);
+    cap_case.ok(&[
+        "project",
+        "add",
+        "--client",
+        "id:1",
+        "--name",
+        "website",
+        "--timezone",
+        "Europe/Berlin",
+        "--agreement",
+        "Support",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--maximum-hours",
+        "1",
+        "--effective-on",
+        "2026-03-01",
+    ]);
+    let started = cap_case.ok(&[
+        "start",
+        "--project",
+        "id:1",
+        "--scope",
+        "Timezone check",
+        "--at",
+        "1100",
+    ]);
+    assert!(started.contains("timer caps at 12:00"), "{started}");
 }
 
 #[test]

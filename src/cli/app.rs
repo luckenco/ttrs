@@ -43,7 +43,7 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 clock(timer.started_at(), &zone),
                 timer.id()
             ))?;
-            print_limit(&tracker, &timer, reference, project.billing_timezone())
+            print_limit(&tracker, &timer, reference, &zone)
         }
         Command::Stop { id, at } => {
             let id = id
@@ -596,7 +596,7 @@ fn interactive_start(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error
         clock(timer.started_at(), zone),
         timer.id()
     ))?;
-    print_limit(tracker, &timer, reference, project.billing_timezone())
+    print_limit(tracker, &timer, reference, zone)
 }
 
 fn interactive_stop(
