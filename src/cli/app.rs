@@ -515,8 +515,18 @@ fn timezone() -> Result<TimeZone, Error> {
 }
 
 fn set_timezone(name: &str) -> Result<(), Error> {
-    iana_timezone(name).ok_or_else(|| Error::usage(format!("invalid IANA timezone '{name}'")))?;
-    let path = config_path()?;
+    save_timezone(name)?;
+    line(format_args!("Timezone set to {name}"))
+}
+
+/// Persists a validated timezone without writing into the active terminal UI.
+pub(super) fn save_timezone(name: &str) -> Result<TimeZone, Error> {
+    write_timezone(&config_path()?, name)
+}
+
+fn write_timezone(path: &std::path::Path, name: &str) -> Result<TimeZone, Error> {
+    let zone = iana_timezone(name)
+        .ok_or_else(|| Error::usage(format!("invalid IANA timezone '{name}'")))?;
     let parent = path.parent().expect("configuration path has a parent");
     fs::create_dir_all(parent).map_err(io_error)?;
     let mut temporary = tempfile::NamedTempFile::new_in(parent).map_err(io_error)?;
@@ -524,7 +534,7 @@ fn set_timezone(name: &str) -> Result<(), Error> {
     temporary
         .persist(path)
         .map_err(|error| io_error(error.error))?;
-    line(format_args!("Timezone set to {name}"))
+    Ok(zone)
 }
 
 fn iana_timezone(name: &str) -> Option<TimeZone> {
@@ -628,6 +638,21 @@ mod tests {
         assert!(parse_time("2560", &utc(), now()).is_err());
         assert!(parse_time("2026-03-29 02:30", &berlin, now()).is_err());
         assert!(parse_time("2026-10-25 02:30", &berlin, now()).is_err());
+    }
+
+    #[test]
+    fn timezone_persistence_validates_before_replacing_the_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("timezone");
+        assert_eq!(
+            write_timezone(&path, "Europe/Berlin").unwrap().iana_name(),
+            Some("Europe/Berlin")
+        );
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Europe/Berlin\n");
+        assert!(write_timezone(&path, "not/a/timezone").is_err());
+        assert_eq!(fs::read_to_string(&path).unwrap(), "Europe/Berlin\n");
+        write_timezone(&path, "UTC").unwrap();
+        assert_eq!(fs::read_to_string(&path).unwrap(), "UTC\n");
     }
 
     #[test]
