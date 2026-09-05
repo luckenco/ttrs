@@ -11,6 +11,16 @@ pub struct Dashboard {
     pub timers: Vec<TimerStatus>,
     /// Recorded and live work since local midnight, through the requested instant.
     pub today: DailyTotal,
+    /// This month's estimated earnings by currency, in millionths of currency.
+    ///
+    /// Sums the retainer charges below plus hourly work in each project's current
+    /// billing month (not the display timezone's month). Includes historical
+    /// agreement rates, archived projects and capped live work through now.
+    /// Fixed fees cover the whole agreed period, not only elapsed days. Hourly
+    /// fractions truncate after summing per currency; retainer charges retain
+    /// their existing per-agreement precision. No hourly minimums, invoice
+    /// rounding, currency conversion or additional daily earnings are applied.
+    pub month_earnings_micros: BTreeMap<String, i128>,
     /// Retainer agreement-months in each project's current billing month,
     /// including replaced agreements and archived projects with coverage.
     /// Ordered by project ID and agreement effective date.

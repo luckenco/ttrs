@@ -38,13 +38,100 @@ impl super::Store {
         let (retainers, earnings) =
             self.retainer_totals(&all_projects, &agreements, &clients, &timers, start, now)?;
         let today = self.daily_total(start, now, &projects, &timers, earnings)?;
+        let month_earnings_micros =
+            self.monthly_earnings(now, &all_projects, &agreements, &timers, &retainers)?;
         transaction.commit()?;
         Ok(model::Dashboard {
             projects,
             timers,
             today,
+            month_earnings_micros,
             retainers,
         })
+    }
+
+    fn monthly_earnings(
+        &self,
+        now: Timestamp,
+        projects: &[model::Project],
+        agreements: &[model::ServiceAgreement],
+        timers: &[model::TimerStatus],
+        retainers: &[model::RetainerMonth],
+    ) -> Result<BTreeMap<String, i128>> {
+        let starts = projects
+            .iter()
+            .map(|project| {
+                let zone = project.billing_timezone();
+                let month = now.to_zoned(zone.clone()).date().first_of_month();
+                Ok((project.id(), super::day_start(month, zone)?))
+            })
+            .collect::<Result<HashMap<_, _>>>()?;
+        let Some(first) = starts.values().min() else {
+            return Ok(BTreeMap::new());
+        };
+        let mut earnings = BTreeMap::<String, i128>::new();
+        let mut add = |project, from: i64, to: i64, rate: i64, currency: &str| {
+            let duration =
+                (to.min(now.as_microsecond()) - from.max(starts[&project].as_microsecond())).max(0);
+            if duration > 0 {
+                *earnings.entry(currency.to_owned()).or_default() +=
+                    i128::from(duration) * i128::from(rate);
+            }
+        };
+        // One indexed range query, then clip to each project's local month.
+        // Retainer charges are already calculated, so never price their hours here.
+        let mut statement = self.connection.prepare_cached(
+            "SELECT agreement.project_id, entry.started_at_us, entry.ended_at_us,
+                    agreement.hourly_rate_micros, agreement.currency
+             FROM time_entries entry
+             JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+             WHERE entry.ended_at_us > ?1 AND entry.started_at_us < ?2
+               AND agreement.fee_micros IS NULL",
+        )?;
+        let rows = statement.query_map(
+            params![first.as_microsecond(), now.as_microsecond()],
+            |row| {
+                Ok((
+                    model::ProjectId::from_raw(row.get(0)?),
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            },
+        )?;
+        for row in rows {
+            let (project, from, to, rate, currency) = row?;
+            add(project, from, to, rate, &currency);
+        }
+        for status in timers {
+            let agreement = agreements
+                .iter()
+                .find(|a| a.id() == status.timer.agreement())
+                .expect("running timers have agreements");
+            if let model::Pricing::Hourly(rate) = agreement.pricing() {
+                let end = status
+                    .limit
+                    .and_then(model::TimerLimit::cap_at)
+                    .unwrap_or(now);
+                add(
+                    agreement.project(),
+                    status.timer.started_at().as_microsecond(),
+                    end.as_microsecond(),
+                    rate.amount_micros(),
+                    rate.currency(),
+                );
+            }
+        }
+        for weighted in earnings.values_mut() {
+            *weighted /= 3_600_000_000;
+        }
+        for total in retainers {
+            *earnings
+                .entry(total.agreement.pricing().currency().to_owned())
+                .or_default() += total.charge_micros();
+        }
+        Ok(earnings)
     }
 
     fn daily_total(

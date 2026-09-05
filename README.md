@@ -180,7 +180,7 @@ Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashb
 
 During development, schema changes require recreating the local database. There are no migrations or backward-compatibility guarantees.
 
-The dashboard shows running timers with their project, client, agreement, elapsed time, and monthly allowance. Above them, **worked today** and **earned today** update once per second. Retainers have a separate monthly estimate section showing actual versus included hours and the fee plus any overage. Changes made through another CLI process appear automatically.
+The dashboard shows running timers with their project, client, agreement, elapsed time, and monthly allowance. Above them, **worked today**, **earned today** and **this month · estimate** update once per second. The monthly estimate combines all retainer charges with hourly earnings this month, including capped live timers. Retainers also have a separate breakdown showing actual versus included hours and the fee plus any overage. Changes made through another CLI process appear automatically.
 
 ### Controls
 
@@ -207,6 +207,17 @@ Success feedback clears after three seconds. Form errors appear beside the relev
 - Different currencies are shown separately, never converted or added together. Display amounts round to two decimal places; this does not change stored work.
 - Daily work displays hours and minutes; individual timers retain seconds. Uncapped timers omit allowance text. Colors reinforce text labels rather than replacing them, and selected rows use an explicit high-contrast foreground/background pair.
 
+### Monthly earnings estimate
+
+**This month · estimate** (stacked as **Month (est.)** on small terminals) combines:
+
+- Every retainer's prorated base fee and monthly overage, including retainers with no tracked work yet.
+- Completed and capped live hourly work through now, using its historical agreement rates.
+
+Each project contributes its current calendar month in its own billing timezone, matching the retainer breakdown rather than the display timezone. Currencies stay separate. Today's earnings are already included and are never added a second time. Hourly minimums and invoice rounding do not apply. Hourly fractions truncate after summing per currency; retainer charges keep the per-agreement precision described below.
+
+For Vertex, this is **€5,000 + Flyeralarm hours × €125**, with no shapeID overage rate. It is an estimate because fixed fees cover the full agreed period, not just elapsed days.
+
 ### Monthly retainer estimates
 
 - Each agreement is shown separately for the current calendar month in its project's billing timezone. Replaced agreements and archived projects remain visible if they covered part of that month.
@@ -221,7 +232,7 @@ Keyboard actions remain instant. The dashboard has no decorative animation or pu
 
 Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
 
-The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed; retainer totals also read each relevant agreement-month's entries on every refresh (at most two billing months intersect a display day). Very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
+The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed; one additional indexed range query totals monthly hourly work, clipping to each project's month. The combined estimate reuses existing retainer totals rather than querying each day. Retainer totals read each relevant agreement-month's entries on every refresh (at most two billing months intersect a display day). Very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
 
 ## Time input and storage
 

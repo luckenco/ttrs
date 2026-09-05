@@ -316,6 +316,50 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
 }
 
 #[test]
+fn currency_totals_leave_room_for_timers_and_feedback_at_small_sizes() {
+    let (mut tracker, mut app, now) = setup();
+    tracker
+        .start(
+            command::Start::new(
+                app.snapshot.projects[0].project.id(),
+                "Planning".into(),
+                "2026-01-02T09:00:00Z".parse().unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.message = Some(Message::Warning("Check the cap".into()));
+    let currencies = ["EUR", "GBP", "USD"];
+    for (daily, monthly) in [(0, 0), (0, 3), (3, 0), (1, 3), (3, 1), (3, 3)] {
+        app.snapshot.today.earnings_micros = currencies
+            .iter()
+            .take(daily)
+            .map(|c| (c.to_string(), 100_000_000))
+            .collect();
+        app.snapshot.month_earnings_micros = currencies
+            .iter()
+            .take(monthly)
+            .map(|c| (c.to_string(), 5_000_000_000))
+            .collect();
+        for (width, height) in [(32, 10), (50, 16), (60, 10), (100, 24)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
+                .unwrap();
+            let rendered = terminal.backend().to_string();
+            assert!(rendered.contains("Earned today"));
+            assert!(rendered.contains("estimate") || rendered.contains("Month (est.)"));
+            assert!(rendered.contains("Planning"));
+            assert!(rendered.contains("Check the cap"));
+            if width == 32 && daily == 3 && monthly == 3 {
+                insta::assert_snapshot!("monthly_currencies_compact", terminal.backend());
+            }
+        }
+    }
+}
+
+#[test]
 fn text_editing_moves_by_grapheme_and_keeps_the_cursor_visible() {
     let mut input = Input::default();
     input.insert("cafe\u{301}界👩‍💻");

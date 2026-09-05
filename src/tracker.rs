@@ -233,7 +233,8 @@ impl Tracker {
     /// Retainer fees stay in separate [`model::RetainerMonth`] estimates; daily
     /// earnings include only today's increase in hourly overage. Fees and included
     /// hours are prorated by local calendar days of agreement coverage, not elapsed
-    /// days. Retainer months follow each project's billing timezone.
+    /// days. The monthly estimate sums these retainer charges with hourly earnings
+    /// in each project's current billing month, independent of the display timezone.
     ///
     /// ```
     /// use jiff::tz::TimeZone;
@@ -243,6 +244,7 @@ impl Tracker {
     /// assert_eq!(dashboard.today.worked_us, 0);
     /// assert!(dashboard.today.earnings_micros.is_empty());
     /// assert!(dashboard.retainers.is_empty());
+    /// assert!(dashboard.month_earnings_micros.is_empty());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dashboard(&self, now: Timestamp, zone: &jiff::tz::TimeZone) -> Result<model::Dashboard> {

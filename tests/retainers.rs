@@ -95,6 +95,7 @@ fn fee_without_rate_is_fixed_and_included_hours_do_not_cap_work() {
         .unwrap();
     assert_eq!(empty.retainers[0].charge_micros(), 5_000_000_000);
     assert_eq!(empty.retainers[0].worked_us, 0);
+    assert_eq!(empty.month_earnings_micros["EUR"], 5_000_000_000);
     log(
         &mut tracker,
         &agreement,
@@ -181,6 +182,7 @@ fn overage_uses_monthly_usage_and_only_todays_increase_is_daily_earnings() {
     assert_eq!(before.retainers[0].worked_us, 24 * HOUR);
     assert_eq!(before.retainers[0].overage_micros, 500_000_000);
     assert_eq!(before.retainers[0].charge_micros(), 5_500_000_000);
+    assert_eq!(before.month_earnings_micros["EUR"], 5_500_000_000);
     assert_eq!(before.today.worked_us, 3 * HOUR);
     assert_eq!(before.today.earnings_micros["EUR"], 375_000_000);
     tracker.end_if_current(&timer, now).unwrap();
@@ -317,12 +319,28 @@ fn replacements_and_archival_prorate_each_agreements_fee_and_included_hours() {
     assert_eq!(snapshot.retainers[1].fee_micros, 3_200_000_000);
     assert_eq!(snapshot.retainers[1].included_us, 32 * HOUR);
     assert_eq!(snapshot.retainers[1].overage_micros, 0);
+    assert_eq!(
+        snapshot.month_earnings_micros["EUR"],
+        snapshot
+            .retainers
+            .iter()
+            .map(model::RetainerMonth::charge_micros)
+            .sum::<i128>()
+    );
     tracker.archive_project(project.id(), None, now).unwrap();
     let archived = tracker.dashboard(now, &TimeZone::UTC).unwrap();
     assert!(archived.projects.is_empty());
     assert_eq!(archived.retainers[1].fee_micros, 1_000_000_000);
     assert_eq!(archived.retainers[1].included_us, 10 * HOUR);
     assert_eq!(archived.retainers[1].overage_micros, 4_400_000_000);
+    assert_eq!(
+        archived.month_earnings_micros["EUR"],
+        archived
+            .retainers
+            .iter()
+            .map(model::RetainerMonth::charge_micros)
+            .sum::<i128>()
+    );
     assert!(
         tracker
             .dashboard(ts("2026-02-01T00:00:00Z"), &TimeZone::UTC)
@@ -435,4 +453,75 @@ fn daily_earnings_keep_currencies_separate_and_sum_fractions_before_truncation()
     assert_eq!(snapshot.retainers[0].overage_micros, 0);
     assert_eq!(snapshot.retainers[1].agreement.pricing().currency(), "USD");
     assert_eq!(snapshot.retainers[1].charge_micros(), 5_050_000_000);
+    assert_eq!(snapshot.month_earnings_micros["EUR"], 5_000_000_000);
+    assert_eq!(snapshot.month_earnings_micros["USD"], 5_050_000_000);
+}
+
+#[test]
+fn monthly_estimate_adds_all_retainers_hourly_work_and_live_time_once() {
+    let (mut tracker, project, retainer) = setup(20, Some(125_000_000), None, "UTC");
+    log(
+        &mut tracker,
+        &retainer,
+        "2026-01-02T00:00:00Z",
+        "2026-01-03T00:00:00Z",
+    );
+    let now = ts("2026-01-20T12:00:00Z");
+    tracker
+        .add_project(
+            project.client(),
+            "Other retainer".into(),
+            "UTC".into(),
+            model::NewAgreement::new(
+                "Monthly".into(),
+                model::Retainer::new(
+                    model::MonthlyFee::new(1_000_000_000, "EUR".into()).unwrap(),
+                    0,
+                    None,
+                )
+                .unwrap(),
+                model::MonthlyHours::default(),
+                "2026-01-01".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    let (hourly_project, hourly) = tracker
+        .add_project(
+            project.client(),
+            "Flyeralarm".into(),
+            "UTC".into(),
+            model::NewAgreement::new(
+                "Hourly".into(),
+                model::HourlyRate::new(125_000_000, "EUR".into()).unwrap(),
+                model::MonthlyHours::default(),
+                "2026-01-01".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    log(
+        &mut tracker,
+        &hourly,
+        "2026-01-03T09:00:00Z",
+        "2026-01-03T11:00:00Z",
+    );
+    let timer = tracker
+        .start(
+            command::Start::new(
+                hourly_project.id(),
+                "live".into(),
+                ts("2026-01-20T11:00:00Z"),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let before = tracker.dashboard(now, &TimeZone::UTC).unwrap();
+    assert_eq!(before.today.earnings_micros["EUR"], 125_000_000);
+    assert_eq!(before.month_earnings_micros["EUR"], 6_875_000_000);
+    tracker.end_if_current(&timer, now).unwrap();
+    let after = tracker.dashboard(now, &TimeZone::UTC).unwrap();
+    assert_eq!(before.month_earnings_micros, after.month_earnings_micros);
 }

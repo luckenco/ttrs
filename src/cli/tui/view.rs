@@ -1,3 +1,5 @@
+use std::collections;
+
 use jiff::{Timestamp, tz::TimeZone};
 use ratatui::{
     Frame, layout,
@@ -103,16 +105,10 @@ fn draw_dashboard(
     area: layout::Rect,
     compact: bool,
 ) {
-    let mut earnings = app
-        .snapshot
-        .today
-        .earnings_micros
-        .iter()
-        .map(|(currency, micros)| money(currency, *micros))
-        .collect::<Vec<_>>();
-    if earnings.is_empty() {
-        earnings.push("—".into());
-    }
+    let mut earnings = amounts(&app.snapshot.today.earnings_micros);
+    let mut monthly = amounts(&app.snapshot.month_earnings_micros);
+    let gap = u16::from(area.height >= 10);
+    let minimum = if compact { 3 } else { 2 };
     let mut retainer_height = 0;
     if !app.snapshot.retainers.is_empty() {
         retainer_height = u16::try_from(app.snapshot.retainers.len())
@@ -120,12 +116,21 @@ fn draw_dashboard(
             .saturating_mul(2)
             .saturating_add(1)
             .min(area.height / 2)
-            .min(area.height.saturating_sub(5));
+            .min(area.height.saturating_sub(minimum + gap + 3));
+        if retainer_height == 2 {
+            retainer_height = 1;
+        }
     }
-    let gap = u16::from(area.height >= 10);
-    let summary_height = (earnings.len() as u16 + 1 + gap)
-        .min(area.height.saturating_sub(4 + retainer_height))
-        .max(2 + gap);
+    let rows = if compact {
+        earnings.len() + monthly.len()
+    } else {
+        earnings.len().max(monthly.len())
+    };
+    let summary_height = u16::try_from(rows)
+        .unwrap_or(u16::MAX)
+        .saturating_add(1 + gap)
+        .min(area.height.saturating_sub(3 + retainer_height))
+        .max(minimum + gap);
     let [summary, title, timers, retainers] = layout::Layout::vertical([
         layout::Constraint::Length(summary_height),
         layout::Constraint::Length(1),
@@ -135,10 +140,13 @@ fn draw_dashboard(
     .areas(area);
     draw_retainers(frame, &app.snapshot.retainers, retainers);
     let visible = usize::from(summary_height - 1 - gap);
-    if earnings.len() > visible {
-        let hidden = earnings.len() - visible + 1;
-        earnings.truncate(visible);
-        earnings[visible - 1] = format!("+{hidden} currencies; resize");
+    if compact {
+        let daily_rows = earnings.len().min(visible - monthly.len().min(visible / 2));
+        limit_amounts(&mut earnings, daily_rows);
+        limit_amounts(&mut monthly, visible - daily_rows);
+    } else {
+        limit_amounts(&mut earnings, visible);
+        limit_amounts(&mut monthly, visible);
     }
     let worked = hours(app.snapshot.today.worked_us);
     if compact {
@@ -146,28 +154,33 @@ fn draw_dashboard(
             text::Span::raw("Worked today  "),
             text::Span::raw(worked).bold(),
         ])];
-        lines.extend(earnings.iter().enumerate().map(|(i, earned)| {
-            let label = if i == 0 {
-                "Earned today  "
-            } else {
-                "              "
-            };
-            text::Line::from(vec![text::Span::raw(label), text::Span::raw(earned).bold()])
-        }));
+        for (heading, values) in [("Earned today  ", earnings), ("Month (est.)  ", monthly)] {
+            lines.extend(values.into_iter().enumerate().map(|(i, value)| {
+                let label = if i == 0 { heading } else { "              " };
+                text::Line::from(vec![text::Span::raw(label), text::Span::raw(value).bold()])
+            }));
+        }
         frame.render_widget(widgets::Paragraph::new(lines), summary);
     } else {
-        let [work, cash] =
-            layout::Layout::horizontal([layout::Constraint::Percentage(50); 2]).areas(summary);
-        frame.render_widget(
-            widgets::Paragraph::new(vec![
-                text::Line::from("Worked today").dim(),
-                text::Line::from(worked).bold(),
-            ]),
-            work,
-        );
-        let mut lines = vec![text::Line::from("Earned today").dim()];
-        lines.extend(earnings.into_iter().map(|s| text::Line::from(s).bold()));
-        frame.render_widget(widgets::Paragraph::new(lines), cash);
+        let [work, cash, month] =
+            layout::Layout::horizontal([layout::Constraint::Fill(1); 3]).areas(summary);
+        let mut month_label = "This month · estimate";
+        if month.width < 21 {
+            month_label = "Month · estimate";
+        }
+        for (heading, values, area) in [
+            ("Worked today", vec![worked], work),
+            ("Earned today", earnings, cash),
+            (month_label, monthly, month),
+        ] {
+            let mut lines = vec![text::Line::from(heading).dim()];
+            lines.extend(
+                values
+                    .into_iter()
+                    .map(|value| text::Line::from(value).bold()),
+            );
+            frame.render_widget(widgets::Paragraph::new(lines), area);
+        }
     }
     frame.render_widget(
         widgets::Paragraph::new(format!("Running · {}", app.snapshot.timers.len())).dim(),
@@ -279,6 +292,28 @@ fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: 
         lines.push(text::Line::from(truncate(&detail, usize::from(area.width))).dim());
     }
     frame.render_widget(widgets::Paragraph::new(lines), area);
+}
+
+fn amounts(totals: &collections::BTreeMap<String, i128>) -> Vec<String> {
+    if totals.is_empty() {
+        return vec!["—".into()];
+    }
+    totals
+        .iter()
+        .map(|(currency, micros)| money(currency, *micros))
+        .collect()
+}
+
+fn limit_amounts(values: &mut Vec<String>, rows: usize) {
+    assert!(
+        rows > 0,
+        "each earnings total needs at least one visible row"
+    );
+    if values.len() > rows {
+        let hidden = values.len() - rows + 1;
+        values.truncate(rows);
+        values[rows - 1] = format!("+{hidden} curr.; resize");
+    }
 }
 
 fn hours(micros: i128) -> String {

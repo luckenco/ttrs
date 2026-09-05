@@ -3,8 +3,8 @@ source: src/cli/tui/tests.rs
 expression: terminal.backend()
 ---
 "tt  ·  Fri 02 Jan 10:00  UTC                                                                        "
-"Worked today                                      Earned today                                      "
-"00:00                                             —                                                 "
+"Worked today                     Earned today                      This month · estimate            "
+"00:00                            —                                 —                                "
 "            ╭ Start / switch ──────────────────────────────────────────────────────────╮            "
 "Running · 0 │Acme / website                                                            │            "
 "No running t│› Scope                                                                   │            "

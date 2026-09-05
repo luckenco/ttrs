@@ -58,6 +58,10 @@ fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
         assert_eq!(snapshot.timers[0].timer, timer);
         assert_eq!(snapshot.today.worked_us, i128::from(minutes) * 60_000_000);
         assert_eq!(
+            snapshot.month_earnings_micros["EUR"],
+            i128::from(minutes) * 100_000_000 / 60
+        );
+        assert_eq!(
             snapshot.timers[0].limit.unwrap().remaining_us(),
             (120 - minutes) * 60_000_000
         );
@@ -69,6 +73,7 @@ fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
         assert!(snapshot.timers.is_empty());
         assert_eq!(snapshot.today.worked_us, 3_600_000_000);
         assert_eq!(snapshot.today.earnings_micros["EUR"], 100_000_000);
+        assert_eq!(snapshot.month_earnings_micros["EUR"], 100_000_000);
     }
 }
 
@@ -127,6 +132,8 @@ fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
     assert_eq!(dashboard.today.worked_us, 4 * 3_600_000_000);
     assert_eq!(dashboard.today.earnings_micros["EUR"], 300_000_000);
     assert_eq!(dashboard.today.earnings_micros["USD"], 100_000_000);
+    assert_eq!(dashboard.month_earnings_micros["EUR"], 400_000_000);
+    assert_eq!(dashboard.month_earnings_micros["USD"], 100_000_000);
     assert_eq!(dashboard.timers.len(), 2);
 }
 
@@ -143,7 +150,15 @@ fn live_caps_stop_earnings_and_remain_consistent_after_stopping() {
     assert_eq!(before.today.worked_us, 1_800_000_000);
     assert_eq!(before.today.earnings_micros["EUR"], 50_000_000);
     assert!(before.timers[0].limit.unwrap().is_reached());
+    assert_eq!(before.month_earnings_micros["EUR"], 100_000_000);
     tracker.end_if_current(&timer, now).unwrap();
+    assert_eq!(
+        tracker
+            .dashboard(now, &TimeZone::UTC)
+            .unwrap()
+            .month_earnings_micros,
+        before.month_earnings_micros
+    );
     assert_eq!(
         before.today,
         tracker.dashboard(now, &TimeZone::UTC).unwrap().today
@@ -163,6 +178,7 @@ fn cap_reached_before_today_does_not_earn_again_even_in_a_new_month() {
         .unwrap();
     assert_eq!(dashboard.today.worked_us, 0);
     assert!(dashboard.today.earnings_micros.is_empty());
+    assert!(dashboard.month_earnings_micros.is_empty());
     assert!(dashboard.timers[0].limit.unwrap().is_reached());
 }
 
@@ -239,6 +255,50 @@ fn historical_rates_archived_projects_and_minimums_do_not_distort_totals() {
     assert!(snapshot.projects.is_empty());
     assert_eq!(snapshot.today.worked_us, 3_660_000_000);
     assert_eq!(snapshot.today.earnings_micros["EUR"], 103_333_333);
+    assert_eq!(snapshot.month_earnings_micros["EUR"], 103_333_333);
+}
+
+#[test]
+fn monthly_hourly_earnings_follow_each_projects_month_not_the_display_zone() {
+    let mut tracker = Tracker::memory().unwrap();
+    let client = tracker.add_client("Acme".into()).unwrap();
+    let now = ts("2026-02-01T00:30:00Z");
+    for zone in ["Europe/Berlin", "America/New_York"] {
+        let (_, agreement) = tracker
+            .add_project(
+                client.id(),
+                zone.into(),
+                zone.into(),
+                model::NewAgreement::new(
+                    "Hourly".into(),
+                    model::HourlyRate::new(100_000_000, "EUR".into()).unwrap(),
+                    model::MonthlyHours::default(),
+                    "2026-01-01".parse().unwrap(),
+                )
+                .unwrap(),
+                now,
+            )
+            .unwrap();
+        for (from, to) in [
+            ("2026-01-02T09:00:00Z", "2026-01-02T10:00:00Z"),
+            ("2026-01-31T22:00:00Z", "2026-02-01T01:00:00Z"),
+            ("2026-02-02T09:00:00Z", "2026-02-02T10:00:00Z"),
+        ] {
+            tracker
+                .log(
+                    command::LogEntry::new(agreement.id(), "work".into(), ts(from), ts(to))
+                        .unwrap(),
+                )
+                .unwrap();
+        }
+    }
+    for display_zone in ["UTC", "Europe/Berlin", "America/New_York"] {
+        let snapshot = tracker
+            .dashboard(now, &TimeZone::get(display_zone).unwrap())
+            .unwrap();
+        // Berlin: 1.5 February hours. New York: 3.5 January hours.
+        assert_eq!(snapshot.month_earnings_micros["EUR"], 500_000_000);
+    }
 }
 
 #[test]
