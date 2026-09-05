@@ -1,0 +1,21 @@
+---
+source: src/cli/tui/tests.rs
+expression: "format!(\"{}Cursor: {cursor:?}\", terminal.backend())"
+---
+" tt  |  Fri 02 Jan 10:00:00  UTC                  "
+"╭ Worked today ─────────╮╭ Earned today ─────────╮"
+"│0╭ Start / switch ────────────────────────────╮ │"
+"╰─│Acme / website                              │─╯"
+"╭ │╭ Scope (type new or select recent) ───────╮│─╮"
+"│P││界                                        ││ │" Hidden by multi-width symbols: [(5, " ")]
+"│A│╰──────────────────────────────────────────╯│ │"
+"│0│› 界                                        │ │" Hidden by multi-width symbols: [(6, "l")]
+"│ │                                            │ │"
+"│ │╭ Time (blank = now; Tab to edit) ─────────╮│ │"
+"│ ││                                          ││ │"
+"│ │╰──────────────────────────────────────────╯│ │"
+"╰─│Enter: Switch from Planning · Esc cancel    │─╯"
+"  ╰────────────────────────────────────────────╯  "
+"                                                  "
+" ↑↓/jk select   s start/switch   x stop   q quit  "
+Cursor: Position { x: 6, y: 5 }

@@ -196,3 +196,18 @@ Rules:
 7. Ambiguous or nonexistent local times around daylight-saving transitions are rejected unless an explicit offset is supplied.
 
 The configured timezone is an IANA name such as `Europe/Berlin`, not a fixed offset, so daylight-saving changes are handled correctly.
+
+## Development checks
+
+```console
+cargo fmt --check
+cargo test --all-targets
+cargo test --doc
+cargo clippy --all-targets --all-features -- -D warnings
+```
+
+TUI layout and picker cursor snapshots live in `src/cli/tui/snapshots/`.
+They use a fixed clock and timezone, and run without a real terminal. For intentional
+rendering changes, run `cargo test --bin tt cli::tui::tests`, then review the pending
+snapshots with `cargo insta review` (install once with `cargo install cargo-insta --locked`).
+Commit the accepted `.snap` files, not the pending `.snap.new` files, and rerun the tests.

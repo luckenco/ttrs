@@ -196,33 +196,14 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
         terminal
             .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
             .unwrap();
-        let text: String = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|c| c.symbol())
-            .collect();
-        if width < 50 {
-            assert!(text.contains("Resize to at least"));
-        } else {
-            for expected in [
-                "Worked today",
-                "Earned today",
-                "01:00:00",
-                "EUR 100.00",
-                "Planning",
-            ] {
-                assert!(text.contains(expected), "missing {expected}: {text}");
-            }
-        }
+        insta::assert_snapshot!(format!("dashboard_{width}x{height}"), terminal.backend());
     }
     let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
-    for code in [
-        KeyCode::Char('s'),
-        KeyCode::Enter,
-        KeyCode::Char('界'),
-        KeyCode::Tab,
+    for (name, code) in [
+        ("project_picker", KeyCode::Char('s')),
+        ("switch_picker", KeyCode::Enter),
+        ("scope_unicode", KeyCode::Char('界')),
+        ("time_input", KeyCode::Tab),
     ] {
         app.key(
             KeyEvent::new(code, KeyModifiers::NONE),
@@ -234,5 +215,19 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
         terminal
             .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
             .unwrap();
+        let cursor = terminal.get_cursor_position().unwrap();
+        insta::assert_snapshot!(name, format!("{}Cursor: {cursor:?}", terminal.backend()));
     }
+}
+
+#[test]
+fn empty_dashboard_shows_cli_setup_instructions() {
+    let tracker = Tracker::memory().unwrap();
+    let now = "2026-01-02T10:00:00Z".parse().unwrap();
+    let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
+    let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("empty_dashboard", terminal.backend());
 }

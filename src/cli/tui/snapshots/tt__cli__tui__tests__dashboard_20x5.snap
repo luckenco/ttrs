@@ -1,0 +1,9 @@
+---
+source: src/cli/tui/tests.rs
+expression: terminal.backend()
+---
+"Resize to at least  "
+"50 x 16.            "
+"q: quit (timers keep"
+"running)            "
+"                    "
