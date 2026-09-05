@@ -191,6 +191,90 @@ fn explicit_commands_route_through_the_shared_application() {
 }
 
 #[test]
+fn list_queries_preserve_filters_labels_and_order() {
+    let case = Case::new();
+    assert_eq!(case.ok(&["project", "list"]), "No projects.\n");
+    assert_eq!(case.ok(&["agreement", "list"]), "No service agreements.\n");
+    for client in ["Acme", "Other", "Third"] {
+        case.ok(&["client", "add", "--name", client]);
+    }
+    for (client, name) in [("Acme", "website"), ("Other", "api"), ("Third", "website")] {
+        case.ok(&[
+            "project",
+            "add",
+            "--client",
+            client,
+            "--name",
+            name,
+            "--timezone",
+            "UTC",
+            "--agreement",
+            "Original",
+            "--rate",
+            "100",
+            "--currency",
+            "EUR",
+            "--effective-on",
+            "2026-03-01",
+        ]);
+    }
+    case.ok(&[
+        "agreement",
+        "add",
+        "--project",
+        "id:1",
+        "--name",
+        "Replacement",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-05",
+    ]);
+    case.ok(&["project", "archive", "--project", "id:3"]);
+    let projects = "ID\tNAME\tCLIENT\tAGREEMENT\tSTATUS\nid:2\tapi\tOther\tOriginal\tactive\nid:1\twebsite\tAcme\tReplacement\tactive\n";
+    assert_eq!(case.ok(&["project", "list"]), projects);
+    assert_eq!(
+        case.ok(&["project", "list", "--all"]),
+        format!("{projects}id:3\twebsite\tThird\tOriginal\tarchived\n")
+    );
+    let header = "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS\n";
+    let old = "id:1\tAcme\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\treplaced\n";
+    let current = "id:4\tAcme\twebsite\tReplacement\t100\tEUR\t-\t-\t2026-03-05\tcurrent\n";
+    let other = "id:2\tOther\tapi\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tcurrent\n";
+    let archived = "id:3\tThird\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tinactive\n";
+    assert_eq!(
+        case.ok(&["agreement", "list"]),
+        format!("{header}{current}{other}")
+    );
+    assert_eq!(
+        case.ok(&["agreement", "list", "--all"]),
+        format!("{header}{old}{current}{other}{archived}")
+    );
+    assert_eq!(
+        case.ok(&["agreement", "list", "--client", "Acme"]),
+        format!("{header}{current}")
+    );
+    assert_eq!(
+        case.ok(&["agreement", "list", "--client", "id:1", "--all"]),
+        format!("{header}{old}{current}")
+    );
+    assert_eq!(
+        case.ok(&["agreement", "list", "--client", "Third"]),
+        "No service agreements.\n"
+    );
+    assert_eq!(
+        case.ok(&["agreement", "list", "--client", "Third", "--all"]),
+        format!("{header}{archived}")
+    );
+    assert!(
+        case.fails(1, &["agreement", "list", "--client", "Missing"])
+            .contains("does not exist")
+    );
+}
+
+#[test]
 fn parser_results_have_the_cli_exit_contract() {
     let case = Case::new();
     assert!(case.ok(&["--help"]).contains("Usage"));

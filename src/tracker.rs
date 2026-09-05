@@ -81,6 +81,18 @@ impl Tracker {
         self.store.agreements()
     }
 
+    /// Lists agreements with project and client labels, ordered by project,
+    /// effective date, and agreement ID. An unknown client ID returns no rows.
+    ///
+    /// Unless `all` is set, only current agreements of active projects are returned.
+    pub fn agreement_list(
+        &self,
+        client: Option<model::ClientId>,
+        all: bool,
+    ) -> Result<Vec<model::AgreementListing>> {
+        self.store.agreement_list(client, all)
+    }
+
     /// Finds a service agreement by identifier.
     pub fn service_agreement(
         &self,
@@ -118,6 +130,19 @@ impl Tracker {
     /// Returns all projects ordered by name.
     pub fn projects(&self) -> Result<Vec<model::Project>> {
         self.store.projects()
+    }
+
+    /// Lists each project's current agreement with project and client labels,
+    /// ordered by project name and ID. Archived projects are included only with `all`.
+    ///
+    /// ```
+    /// let tracker = tt::Tracker::memory()?;
+    /// assert!(tracker.project_list(false)?.is_empty());
+    /// assert!(tracker.agreement_list(None, false)?.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn project_list(&self, all: bool) -> Result<Vec<model::AgreementListing>> {
+        self.store.project_list(all)
     }
 
     /// Finds a project by identifier.
@@ -357,8 +382,13 @@ mod tests {
         let mut tracker = Tracker::memory().unwrap();
         let acme = tracker.add_client("Acme".into()).unwrap();
         let globex = tracker.add_client("Globex".into()).unwrap();
-        for client in [acme.id(), globex.id()] {
-            tracker
+        let other = tracker.add_client("Other".into()).unwrap();
+        assert!(matches!(
+            tracker.project_by_name("website"),
+            Err(Error::ProjectNameNotFound(_))
+        ));
+        for client in [acme.id(), globex.id(), other.id()] {
+            let project = tracker
                 .add_project(
                     client,
                     "website".into(),
@@ -371,7 +401,17 @@ mod tests {
                     ),
                     timestamp("2026-01-01T00:00:00Z"),
                 )
-                .unwrap();
+                .unwrap()
+                .0;
+            if client == acme.id() {
+                assert_eq!(
+                    tracker.project_by_name("website").unwrap().id(),
+                    project.id()
+                );
+                tracker
+                    .archive_project(project.id(), None, timestamp("2026-01-01T12:00:00Z"))
+                    .unwrap();
+            }
         }
 
         assert!(matches!(

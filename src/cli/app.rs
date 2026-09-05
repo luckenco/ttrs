@@ -1,5 +1,4 @@
 use std::{
-    collections::HashMap,
     env, fmt, fs,
     io::{self, Write},
     path::PathBuf,
@@ -228,44 +227,19 @@ fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Erro
 }
 
 fn project_list(tracker: &Tracker, all: bool) -> Result<(), Error> {
-    let clients = tracker
-        .clients()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|client| (client.id(), client.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let projects = tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .filter(|project| all || project.is_active())
-        .collect::<Vec<_>>();
+    let projects = tracker.project_list(all).map_err(core_error)?;
     if projects.is_empty() {
         return line(format_args!("No projects."));
     }
-    let agreements = tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .filter(model::ServiceAgreement::is_current)
-        .map(|agreement| (agreement.project(), agreement.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-
     line(format_args!("ID\tNAME\tCLIENT\tAGREEMENT\tSTATUS"))?;
-    for project in projects {
-        let client = clients
-            .get(&project.client())
-            .expect("projects always reference a client");
-        let agreement = agreements
-            .get(&project.id())
-            .expect("projects always have a current agreement");
+    for row in projects {
         line(format_args!(
             "id:{}\t{}\t{}\t{}\t{}",
-            project.id(),
-            project.name(),
-            client,
-            agreement,
-            if project.is_active() {
+            row.agreement.project(),
+            row.project_name,
+            row.client_name,
+            row.agreement.name(),
+            if row.project_active {
                 "active"
             } else {
                 "archived"
@@ -279,30 +253,9 @@ fn agreement_list(tracker: &Tracker, client_ref: Option<&str>, all: bool) -> Res
     let selected_client = client_ref
         .map(|reference| resolve_client(tracker, reference).map(|client| client.id()))
         .transpose()?;
-    let clients = tracker
-        .clients()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|client| (client.id(), client.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let projects = tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|project| (project.id(), project))
-        .collect::<HashMap<_, _>>();
     let agreements = tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .filter(|agreement| {
-            let project = projects
-                .get(&agreement.project())
-                .expect("agreements always reference a project");
-            (all || (agreement.is_current() && project.is_active()))
-                && selected_client.is_none_or(|client| project.client() == client)
-        })
-        .collect::<Vec<_>>();
+        .agreement_list(selected_client, all)
+        .map_err(core_error)?;
     if agreements.is_empty() {
         return line(format_args!("No service agreements."));
     }
@@ -310,35 +263,30 @@ fn agreement_list(tracker: &Tracker, client_ref: Option<&str>, all: bool) -> Res
     line(format_args!(
         "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS"
     ))?;
-    for agreement in agreements {
-        let project = projects
-            .get(&agreement.project())
-            .expect("agreements always reference a project");
-        let client = clients
-            .get(&project.client())
-            .expect("projects always reference a client");
+    for row in agreements {
+        let agreement = &row.agreement;
         line(format_args!(
             "id:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             agreement.id(),
-            client,
-            project.name(),
+            row.client_name,
+            row.project_name,
             agreement.name(),
             terms::format_rate(agreement.hourly_rate()),
             agreement.hourly_rate().currency(),
             terms::format_hours(agreement.monthly_hours().minimum()),
             terms::format_hours(agreement.monthly_hours().maximum()),
             agreement.effective_on(),
-            agreement_status(project, &agreement)
+            agreement_status(&row)
         ))?;
     }
     Ok(())
 }
 
-fn agreement_status(project: &model::Project, agreement: &model::ServiceAgreement) -> &'static str {
-    if !project.is_active() {
+fn agreement_status(row: &model::AgreementListing) -> &'static str {
+    if !row.project_active {
         return "inactive";
     }
-    if agreement.is_current() {
+    if row.agreement.is_current() {
         "current"
     } else {
         "replaced"

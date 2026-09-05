@@ -266,6 +266,19 @@ impl ServiceAgreement {
     }
 }
 
+/// An agreement with the project and client labels used in list views.
+#[derive(Clone, Debug)]
+pub struct AgreementListing {
+    /// The agreement and its immutable terms.
+    pub agreement: ServiceAgreement,
+    /// The owning project's name.
+    pub project_name: String,
+    /// The owning client's name.
+    pub client_name: String,
+    /// Whether the project accepts work, independent of agreement replacement.
+    pub project_active: bool,
+}
+
 /// A client that may own multiple projects.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Client {

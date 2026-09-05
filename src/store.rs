@@ -7,6 +7,7 @@ use crate::{Error, Result, model};
 
 mod billing;
 mod dashboard;
+mod lists;
 mod timers;
 
 const SCHEMA: &str = "
@@ -23,6 +24,8 @@ const SCHEMA: &str = "
         archived_on      TEXT,
         UNIQUE (client_id, name)
     ) STRICT;
+
+    CREATE INDEX projects_name ON projects(name, id);
 
     CREATE TABLE service_agreements (
         id                  INTEGER PRIMARY KEY,
@@ -272,10 +275,11 @@ impl Store {
         find_project(&self.connection, id)
     }
 
+    /// Returns at most two matches: enough to distinguish unique and ambiguous names.
     pub(crate) fn projects_by_name(&self, name: &str) -> Result<Vec<model::Project>> {
         let mut statement = self.connection.prepare(
             "SELECT id, client_id, name, billing_timezone, archived_on
-             FROM projects WHERE name = ?1 ORDER BY id",
+             FROM projects WHERE name = ?1 ORDER BY id LIMIT 2",
         )?;
         let rows = statement.query_map([name], project_from_row)?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
