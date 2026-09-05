@@ -477,6 +477,90 @@ mod tests {
     }
 
     #[test]
+    fn uncapped_work_preserves_period_and_timer_validation() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let (project, old) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Old",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(0)).unwrap(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-16T00:00:00Z"),
+            )
+            .unwrap();
+        let agreement = tracker
+            .add_service_agreement(
+                project.id(),
+                terms(
+                    "Uncapped",
+                    100_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-16",
+                ),
+                timestamp("2026-01-16T00:00:00Z"),
+            )
+            .unwrap();
+        // Uncapped replacement coverage makes even the old agreement's month uncapped.
+        tracker
+            .log(
+                command::LogEntry::new(
+                    old.id(),
+                    "historical".into(),
+                    timestamp("2026-01-02T00:00:00Z"),
+                    timestamp("2026-01-03T00:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            tracker.log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "too early".into(),
+                    timestamp("2026-01-15T00:00:00Z"),
+                    timestamp("2026-01-17T00:00:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::WorkOutsideAgreementPeriod)
+        ));
+        assert!(matches!(
+            tracker.start(
+                command::Start::new(
+                    project.id(),
+                    "too early".into(),
+                    timestamp("2026-01-15T00:00:00Z"),
+                )
+                .unwrap()
+            ),
+            Err(Error::WorkOutsideAgreementPeriod)
+        ));
+        let start = timestamp("2026-01-16T00:00:00Z");
+        let end = timestamp("2026-04-01T00:00:00Z");
+        let timer = tracker
+            .start(command::Start::new(project.id(), "long timer".into(), start).unwrap())
+            .unwrap();
+        assert!(tracker.timer_limit(timer.id(), end).unwrap().is_none());
+        assert!(matches!(
+            tracker.end(command::End::new(timer.id(), start)),
+            Err(Error::InvalidInterval)
+        ));
+        assert!(matches!(
+            tracker
+                .log(command::LogEntry::new(agreement.id(), "blocked".into(), start, end).unwrap()),
+            Err(Error::ClientTimerRunning(_))
+        ));
+        let entry = tracker.end(command::End::new(timer.id(), end)).unwrap();
+        assert_eq!(entry.ended_at(), end);
+    }
+
+    #[test]
     fn monthly_maximum_caps_timers_and_logs() {
         let mut tracker = Tracker::memory().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();

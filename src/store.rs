@@ -44,6 +44,9 @@ const SCHEMA: &str = "
     CREATE UNIQUE INDEX service_agreements_one_current_per_project
         ON service_agreements(project_id) WHERE current = 1;
 
+    CREATE INDEX service_agreements_project_effective
+        ON service_agreements(project_id, effective_on);
+
     CREATE TABLE running_timers (
         id            INTEGER PRIMARY KEY,
         agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
@@ -210,7 +213,7 @@ impl Store {
             monthly_hours,
             effective_on,
         )?;
-        billing::validate_month_capacity(&transaction, &project_value, boundary)?;
+        billing::validate_month_capacity(&transaction, &project_value, &agreement, boundary)?;
         transaction.commit()?;
         Ok(agreement)
     }
@@ -307,7 +310,7 @@ impl Store {
         )?;
         let project =
             find_project(&transaction, project)?.expect("the archived project must still exist");
-        billing::validate_month_capacity(&transaction, &project, archived_at)?;
+        billing::validate_month_capacity(&transaction, &project, &current, archived_at)?;
         transaction.commit()?;
         Ok(project)
     }
@@ -421,7 +424,13 @@ impl Store {
             started_at,
             ended_at,
         )?;
-        billing::ensure_capacity(&transaction, &project, started_at, ended_at)?;
+        billing::ensure_capacity(
+            &transaction,
+            &project,
+            &agreement_value,
+            started_at,
+            ended_at,
+        )?;
 
         transaction.execute(
             "INSERT INTO time_entries (
@@ -458,9 +467,12 @@ impl Store {
         let running = find_timer(&self.connection, timer)?.ok_or(Error::TimerNotFound(timer))?;
         let agreement = find_agreement(&self.connection, running.agreement())?
             .expect("running timers always reference an agreement");
+        if agreement.monthly_hours().maximum().is_none() {
+            return Ok(None);
+        }
         let project = find_project(&self.connection, agreement.project())?
             .expect("agreements always reference a project");
-        billing::timer_limit(&self.connection, &project, &running, now)
+        billing::timer_limit(&self.connection, &project, &agreement, &running, now)
     }
 
     pub(crate) fn recent_scopes(
@@ -577,20 +589,6 @@ fn project_has_work_after(
             |row| row.get(0),
         )
         .map_err(Into::into)
-}
-
-fn project_agreements(
-    connection: &Connection,
-    project: model::ProjectId,
-) -> Result<Vec<model::ServiceAgreement>> {
-    let mut statement = connection.prepare(
-        "SELECT id, project_id, name, hourly_rate_micros, currency,
-                minimum_hours, maximum_hours, effective_on, current
-         FROM service_agreements WHERE project_id = ?1
-         ORDER BY effective_on, id",
-    )?;
-    let rows = statement.query_map([project.get()], agreement_from_row)?;
-    rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
 }
 
 fn current_agreement(

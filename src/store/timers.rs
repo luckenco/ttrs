@@ -27,7 +27,13 @@ pub(super) fn start(
     if started_at < agreement_start {
         return Err(Error::WorkOutsideAgreementPeriod);
     }
-    billing::ensure_capacity(transaction, &project_value, started_at, started_at)?;
+    billing::ensure_capacity(
+        transaction,
+        &project_value,
+        &agreement,
+        started_at,
+        started_at,
+    )?;
     transaction.execute(
         "INSERT INTO running_timers (agreement_id, scope, started_at_us)
          VALUES (?1, ?2, ?3)",
@@ -52,18 +58,20 @@ pub(super) fn end(
     }
     let agreement = super::find_agreement(transaction, running.agreement())?
         .expect("running timers always reference an agreement");
-    let project = super::find_project(transaction, agreement.project())?
-        .expect("agreements always reference a project");
-    let agreements = super::project_agreements(transaction, project.id())?;
-    let ended_at = billing::capped_end(
-        transaction,
-        &project,
-        &agreements,
-        running.started_at(),
-        requested_end,
-    )?;
+    let mut ended_at = requested_end;
+    if agreement.monthly_hours().maximum().is_some() {
+        let project = super::find_project(transaction, agreement.project())?
+            .expect("agreements always reference a project");
+        ended_at = billing::capped_end(
+            transaction,
+            &project,
+            &agreement,
+            running.started_at(),
+            requested_end,
+        )?;
+    }
     if ended_at <= running.started_at() {
-        return Err(Error::MonthlyMaximumReached(project.id()));
+        return Err(Error::MonthlyMaximumReached(agreement.project()));
     }
     transaction.execute(
         "INSERT INTO time_entries (
