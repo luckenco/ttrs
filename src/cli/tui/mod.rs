@@ -13,6 +13,7 @@ use tt::Tracker;
 
 use super::{Error, app, io_error};
 
+mod search;
 mod state;
 #[cfg(test)]
 mod tests;

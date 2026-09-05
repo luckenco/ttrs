@@ -4,6 +4,7 @@ use ratatui::{Terminal, backend::TestBackend};
 use tt::{Tracker, command, model};
 
 use super::{
+    search,
     state::{App, Picker},
     view,
 };
@@ -163,17 +164,103 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
 #[test]
 fn project_search_includes_the_client_and_scope_search_preserves_new_text() {
     let (_, app, _) = setup();
-    assert_eq!(
-        super::state::matching_projects(&app.snapshot.projects, "ACME").len(),
-        1
-    );
-    assert!(super::state::matching_projects(&app.snapshot.projects, "missing").is_empty());
+    let mut search = search::Projects::new(app.snapshot.projects);
+    for query in ["ACME", "wbst", "SPRT", "sprt wbst", ""] {
+        search.filter(query);
+        assert_eq!(search.matches().len(), 1, "{query}");
+    }
+    search.filter("missing");
+    assert_eq!(search.matches().len(), 0);
     let recent = vec!["ISSUE-123".into(), "Planning".into()];
     assert_eq!(
         super::state::scopes(&recent, "issue"),
         vec!["issue", "ISSUE-123"]
     );
     assert_eq!(super::state::scopes(&recent, "Planning"), vec!["Planning"]);
+}
+
+#[test]
+fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctuation() {
+    let (mut tracker, mut app, now) = setup();
+    let original = &app.snapshot.projects[0];
+    for name in ["axpxi", "api-one", "api-two", "Café界", "!Important"] {
+        tracker
+            .add_project(
+                original.client.id(),
+                name.into(),
+                "UTC".into(),
+                model::NewAgreement::new(
+                    "Support".into(),
+                    original.agreement.hourly_rate().clone(),
+                    model::MonthlyHours::default(),
+                    original.agreement.effective_on(),
+                )
+                .unwrap(),
+                now,
+            )
+            .unwrap();
+    }
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    let mut search = search::Projects::new(app.snapshot.projects.clone());
+    for (query, expected) in [
+        ("API", vec!["api-one", "api-two", "axpxi"]),
+        ("cafe界", vec!["Café界"]),
+        ("!imp", vec!["!Important"]),
+        ("^api", vec![]),
+        ("missing", vec![]),
+    ] {
+        search.filter(query);
+        assert_eq!(
+            search
+                .matches()
+                .map(|p| p.project.name())
+                .collect::<Vec<_>>(),
+            expected,
+            "{query}"
+        );
+    }
+    search.filter("");
+    assert_eq!(
+        search.matches().map(|p| p.project.id()).collect::<Vec<_>>(),
+        app.snapshot
+            .projects
+            .iter()
+            .map(|p| p.project.id())
+            .collect::<Vec<_>>()
+    );
+    for code in [
+        KeyCode::Char('s'),
+        KeyCode::Char('z'),
+        KeyCode::Enter,
+        KeyCode::Backspace,
+        KeyCode::Char('a'),
+        KeyCode::Char('p'),
+        KeyCode::Char('i'),
+        KeyCode::Down,
+    ] {
+        app.key(
+            KeyEvent::new(code, KeyModifiers::NONE),
+            &mut tracker,
+            now,
+            &TimeZone::UTC,
+        )
+        .unwrap();
+    }
+    let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("fuzzy_project_picker", terminal.backend());
+    app.key(
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(
+        matches!(app.picker, Some(Picker::Scope { project, .. }) if project.project.name() == "api-two")
+    );
 }
 
 #[test]

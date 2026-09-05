@@ -3,7 +3,10 @@ use jiff::{Timestamp, tz::TimeZone};
 use ratatui::widgets::ListState;
 use tt::{Tracker, command, model};
 
-use super::super::{Error, app::parse_time};
+use super::{
+    super::{Error, app::parse_time},
+    search,
+};
 
 pub(super) struct App {
     pub snapshot: model::Dashboard,
@@ -15,7 +18,7 @@ pub(super) struct App {
 
 pub(super) enum Picker {
     Project {
-        projects: Vec<model::ProjectSummary>,
+        projects: search::Projects,
         query: String,
         selection: ListState,
     },
@@ -106,7 +109,7 @@ impl App {
             KeyCode::Char('s') if !self.stale => {
                 self.message.clear();
                 self.picker = Some(Picker::Project {
-                    projects: self.snapshot.projects.clone(),
+                    projects: search::Projects::new(self.snapshot.projects.clone()),
                     query: String::new(),
                     selection: ListState::default().with_selected(Some(0)),
                 });
@@ -142,48 +145,48 @@ impl App {
                 projects,
                 query,
                 selection,
-            } => {
-                let matches = matching_projects(projects, query);
-                match key.code {
-                    KeyCode::Down => move_selection(selection, matches.len(), true),
-                    KeyCode::Up => move_selection(selection, matches.len(), false),
-                    KeyCode::Enter => {
-                        let Some(project) = selection.selected().and_then(|i| matches.get(i))
-                        else {
-                            return Ok(());
-                        };
-                        let project = (*project).clone();
-                        let recent = tracker
-                            .recent_scopes(project.project.id(), 3)
-                            .map_err(core_error)?;
-                        let previous = self
-                            .snapshot
-                            .timers
-                            .iter()
-                            .find(|status| {
-                                self.snapshot.projects.iter().any(|p| {
-                                    p.agreement.id() == status.timer.agreement()
-                                        && p.client.id() == project.client.id()
-                                })
+            } => match key.code {
+                KeyCode::Down => move_selection(selection, projects.matches().len(), true),
+                KeyCode::Up => move_selection(selection, projects.matches().len(), false),
+                KeyCode::Enter => {
+                    let Some(project) = selection
+                        .selected()
+                        .and_then(|i| projects.matches().nth(i))
+                        .cloned()
+                    else {
+                        return Ok(());
+                    };
+                    let recent = tracker
+                        .recent_scopes(project.project.id(), 3)
+                        .map_err(core_error)?;
+                    let previous = self
+                        .snapshot
+                        .timers
+                        .iter()
+                        .find(|status| {
+                            self.snapshot.projects.iter().any(|p| {
+                                p.agreement.id() == status.timer.agreement()
+                                    && p.client.id() == project.client.id()
                             })
-                            .map(|s| s.timer.clone());
-                        self.picker = Some(Picker::Scope {
-                            project: Box::new(project),
-                            previous,
-                            recent,
-                            input: String::new(),
-                            selection: ListState::default().with_selected(Some(0)),
-                            at: String::new(),
-                            field: Field::Scope,
-                        });
-                    }
-                    _ => {
-                        if edit_text(query, key) {
-                            selection.select(Some(0));
-                        }
+                        })
+                        .map(|s| s.timer.clone());
+                    self.picker = Some(Picker::Scope {
+                        project: Box::new(project),
+                        previous,
+                        recent,
+                        input: String::new(),
+                        selection: ListState::default().with_selected(Some(0)),
+                        at: String::new(),
+                        field: Field::Scope,
+                    });
+                }
+                _ => {
+                    if edit_text(query, key) {
+                        projects.filter(query);
+                        selection.select(Some(0));
                     }
                 }
-            }
+            },
             Picker::Scope {
                 project,
                 previous,
@@ -253,26 +256,6 @@ impl App {
         }
         Ok(())
     }
-}
-
-pub(super) fn matching_projects<'a>(
-    projects: &'a [model::ProjectSummary],
-    query: &str,
-) -> Vec<&'a model::ProjectSummary> {
-    let query = query.to_lowercase();
-    projects
-        .iter()
-        .filter(|p| {
-            format!(
-                "{} {} {}",
-                p.project.name(),
-                p.client.name(),
-                p.agreement.name()
-            )
-            .to_lowercase()
-            .contains(&query)
-        })
-        .collect()
 }
 
 pub(super) fn scopes<'a>(recent: &'a [String], input: &'a str) -> Vec<&'a str> {

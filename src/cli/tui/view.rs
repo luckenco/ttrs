@@ -174,9 +174,8 @@ fn draw_picker(frame: &mut Frame, picker: &mut Picker) {
             ])
             .areas(inner);
             input_field(frame, " Project search ", query, input, true);
-            let matches = state::matching_projects(projects, query);
-            let items = matches
-                .iter()
+            let items = projects
+                .matches()
                 .map(|p| {
                     widgets::ListItem::new(format!(
                         "{} / {} · {}",

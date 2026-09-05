@@ -12,6 +12,7 @@ jiff = { version = "0.2.35", default-features = false, features = ["std", "perf-
 rusqlite = { version = "0.40.1", default-features = false, features = ["bundled", "cache"] }
 tempfile = "3.27.0"
 thiserror = "2"
+nucleo-matcher = "0.3.1"
 
 [dev-dependencies]
 assert_cmd = "2"

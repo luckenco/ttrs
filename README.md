@@ -153,7 +153,7 @@ The dashboard shows running timers with their project, client, agreement, elapse
 | `q` or `Ctrl-C` | Quit; timers keep running |
 | `Esc` | Cancel a picker without making changes |
 
-The picker searches active projects by project, client, or agreement name. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use arrow keys to select suggestions. `Backspace` deletes and `Ctrl-U` clears the field.
+The picker fuzzy-searches active projects by project, client, or agreement name, ignoring case. For example, `wbst` matches `website`. Space-separated words match independently in any order; punctuation such as `!` and `^` is literal, not search syntax. Best matches appear first; ties and an empty query preserve project order. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use arrow keys to select suggestions. `Backspace` deletes and `Ctrl-U` clears the field.
 
 Press `Enter` to start at **now**, or `Tab` to enter an optional timestamp using the same time formats as the CLI. Future start times are rejected in the dashboard. If that client already has a running timer, the action explicitly reads **Switch from [scope]**: the old timer stops and the new one starts at the chosen instant in one transaction. If either operation fails, nothing changes. Other clients' timers are untouched.
 
@@ -169,7 +169,7 @@ Stopping or switching reports any time discarded at a monthly cap. A timer stopp
 
 Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
 
-The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed, but very large catalogs or months with many entries can delay input while a refresh runs. Paginated catalogs and incremental summaries would be needed before scaling this to large shared datasets.
+The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed, but very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
 
 ## Time input and storage
 
