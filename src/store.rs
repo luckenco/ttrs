@@ -6,13 +6,8 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::{Error, Result, model};
 
 mod billing;
-
-const SCHEMA_VERSION: u32 = 4;
-
-const CAPACITY_INDEX: &str = "
-    CREATE INDEX time_entries_agreement_ended
-        ON time_entries(agreement_id, ended_at_us, started_at_us);
-";
+mod dashboard;
+mod timers;
 
 const SCHEMA: &str = "
     CREATE TABLE clients (
@@ -70,6 +65,11 @@ const SCHEMA: &str = "
 
     CREATE INDEX time_entries_agreement_started
         ON time_entries(agreement_id, started_at_us DESC);
+
+    CREATE INDEX time_entries_agreement_ended
+        ON time_entries(agreement_id, ended_at_us, started_at_us);
+
+    CREATE INDEX time_entries_ended ON time_entries(ended_at_us);
 ";
 
 pub(crate) struct Store {
@@ -343,30 +343,9 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let project_value = active_project(&transaction, project)?;
-        reject_client_timer(&transaction, project_value.client())?;
-        let agreement = current_agreement(&transaction, project)?
-            .ok_or(Error::ProjectAgreementMissing(project))?;
-        let agreement_start =
-            day_start(agreement.effective_on(), project_value.billing_timezone())?;
-        if started_at < agreement_start {
-            return Err(Error::WorkOutsideAgreementPeriod);
-        }
-        billing::ensure_capacity(&transaction, &project_value, started_at, started_at)?;
-
-        transaction.execute(
-            "INSERT INTO running_timers (agreement_id, scope, started_at_us)
-             VALUES (?1, ?2, ?3)",
-            params![agreement.id().get(), scope, started_at.as_microsecond()],
-        )?;
-        let id = model::TimerId::from_raw(transaction.last_insert_rowid());
+        let timer = timers::start(&transaction, project, scope, started_at)?;
         transaction.commit()?;
-        Ok(model::RunningTimer::new(
-            id,
-            agreement.id(),
-            scope,
-            started_at,
-        ))
+        Ok(timer)
     }
 
     pub(crate) fn end(
@@ -377,52 +356,48 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let running = find_timer(&transaction, timer)?.ok_or(Error::TimerNotFound(timer))?;
-        if requested_end <= running.started_at() {
-            return Err(Error::InvalidInterval);
-        }
-        let agreement = find_agreement(&transaction, running.agreement())?
-            .expect("running timers always reference an agreement");
-        let project = find_project(&transaction, agreement.project())?
-            .expect("agreements always reference a project");
-        let agreements = project_agreements(&transaction, project.id())?;
-        let ended_at = billing::capped_end(
-            &transaction,
-            &project,
-            &agreements,
-            running.started_at(),
-            requested_end,
-        )?;
-        if ended_at <= running.started_at() {
-            return Err(Error::MonthlyMaximumReached(project.id()));
-        }
-
-        transaction.execute(
-            "INSERT INTO time_entries (
-                 agreement_id, scope, started_at_us, ended_at_us
-             ) VALUES (?1, ?2, ?3, ?4)",
-            params![
-                agreement.id().get(),
-                running.scope(),
-                running.started_at().as_microsecond(),
-                ended_at.as_microsecond()
-            ],
-        )?;
-        let entry = model::EntryId::from_raw(transaction.last_insert_rowid());
-        let removed =
-            transaction.execute("DELETE FROM running_timers WHERE id = ?1", [timer.get()])?;
-        assert_eq!(
-            removed, 1,
-            "the selected timer must be removed exactly once"
-        );
+        let entry = timers::end(&transaction, timer, requested_end)?;
         transaction.commit()?;
-        Ok(model::TimeEntry::new(
-            entry,
-            agreement.id(),
-            running.scope().to_owned(),
-            running.started_at(),
-            ended_at,
-        ))
+        Ok(entry)
+    }
+
+    pub(crate) fn end_if_current(
+        &mut self,
+        expected: &model::RunningTimer,
+        ended_at: Timestamp,
+    ) -> Result<model::TimeEntry> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        timers::check(&transaction, expected)?;
+        let entry = timers::end(&transaction, expected.id(), ended_at)?;
+        transaction.commit()?;
+        Ok(entry)
+    }
+
+    pub(crate) fn switch(
+        &mut self,
+        expected: &model::RunningTimer,
+        project: model::ProjectId,
+        scope: String,
+        at: Timestamp,
+    ) -> Result<(model::TimeEntry, model::RunningTimer)> {
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        timers::check(&transaction, expected)?;
+        let old = find_agreement(&transaction, expected.agreement())?
+            .expect("running timers always reference an agreement");
+        let old_project = find_project(&transaction, old.project())?
+            .expect("agreements always reference a project");
+        let target = active_project(&transaction, project)?;
+        if target.client() != old_project.client() {
+            return Err(Error::SwitchClientMismatch);
+        }
+        let entry = timers::end(&transaction, expected.id(), at)?;
+        let timer = timers::start(&transaction, project, scope, at)?;
+        transaction.commit()?;
+        Ok((entry, timer))
     }
 
     pub(crate) fn log(
@@ -641,25 +616,28 @@ fn configure(connection: &Connection) -> Result<()> {
 }
 
 fn initialize(connection: &mut Connection) -> Result<bool> {
-    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    if version == SCHEMA_VERSION {
+    if initialized(connection)? {
         return Ok(false);
     }
 
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-    // Another process may have initialized or upgraded while we waited for the writer lock.
-    let version = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    match version {
-        0 => transaction.execute_batch(SCHEMA)?,
-        3 | SCHEMA_VERSION => {}
-        version => return Err(Error::UnsupportedSchema(version)),
+    // Another process may have initialized while we waited for the writer lock.
+    if initialized(&transaction)? {
+        return Ok(false);
     }
-    if version != SCHEMA_VERSION {
-        transaction.execute_batch(CAPACITY_INDEX)?;
-        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-    }
+    transaction.execute_batch(SCHEMA)?;
     transaction.commit()?;
-    Ok(version == 0)
+    Ok(true)
+}
+
+fn initialized(connection: &Connection) -> Result<bool> {
+    connection
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_schema WHERE type = 'table' AND name = 'clients')",
+            [],
+            |row| row.get(0),
+        )
+        .map_err(Into::into)
 }
 
 fn find_client(connection: &Connection, id: model::ClientId) -> Result<Option<model::Client>> {
@@ -801,63 +779,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn upgrades_v3_without_changing_recorded_work() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("tt.sqlite3");
-        let connection = Connection::open(&path).unwrap();
-        connection.execute_batch(SCHEMA).unwrap();
-        connection.pragma_update(None, "user_version", 3).unwrap();
-        connection
-            .execute_batch(
-                "INSERT INTO clients VALUES (1, 'Acme');
-                 INSERT INTO projects VALUES (1, 1, 'website', 'UTC', NULL);
-                 INSERT INTO service_agreements VALUES (
-                     1, 1, 'Support', 100000000, 'EUR', NULL, NULL, '1970-01-01', 1
-                 );
-                 INSERT INTO time_entries VALUES (1, 1, 'completed', 10, 20);
-                 INSERT INTO running_timers VALUES (1, 1, 'running', 30);",
+    fn indexes_daily_entry_lookups() {
+        let store = Store::memory().unwrap();
+        let plan: String = store
+            .connection
+            .query_row(
+                "EXPLAIN QUERY PLAN SELECT started_at_us, ended_at_us FROM time_entries
+             WHERE ended_at_us > 0 AND started_at_us < 10",
+                [],
+                |row| row.get(3),
             )
             .unwrap();
-        drop(connection);
-
-        for _ in 0..2 {
-            let store = Store::open(&path).unwrap();
-            assert_eq!(store.clients().unwrap()[0].name(), "Acme");
-            assert_eq!(store.running().unwrap()[0].scope(), "running");
-            let entry = store
-                .connection
-                .query_row(
-                    "SELECT scope, started_at_us, ended_at_us FROM time_entries",
-                    [],
-                    |row| {
-                        Ok((
-                            row.get::<_, String>(0)?,
-                            row.get::<_, i64>(1)?,
-                            row.get::<_, i64>(2)?,
-                        ))
-                    },
-                )
-                .unwrap();
-            assert_eq!(entry, ("completed".into(), 10, 20));
-            let version: u32 = store
-                .connection
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .unwrap();
-            assert_eq!(version, SCHEMA_VERSION);
-            let index: String = store
-                .connection
-                .query_row(
-                    "SELECT sql FROM sqlite_schema WHERE name = 'time_entries_agreement_ended'",
-                    [],
-                    |row| row.get(0),
-                )
-                .unwrap();
-            assert!(index.contains("agreement_id, ended_at_us, started_at_us"));
-        }
+        assert!(plan.contains("time_entries_ended"), "{plan}");
     }
 
     #[test]
-    fn opens_current_database_while_another_connection_is_writing() {
+    fn opens_database_while_another_connection_is_writing() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tt.sqlite3");
         let mut writer = Store::open(&path).unwrap();
@@ -874,22 +811,5 @@ mod tests {
         let clients = reader.clients().unwrap();
         assert_eq!(clients.len(), 1);
         assert_eq!(clients[0].name(), "Acme");
-    }
-
-    #[test]
-    fn rejects_unsupported_versions_without_upgrading() {
-        for version in [1, 2, SCHEMA_VERSION + 1] {
-            let mut connection = Connection::open_in_memory().unwrap();
-            connection
-                .pragma_update(None, "user_version", version)
-                .unwrap();
-            assert!(
-                matches!(initialize(&mut connection), Err(Error::UnsupportedSchema(found)) if found == version)
-            );
-            let unchanged: u32 = connection
-                .pragma_query_value(None, "user_version", |row| row.get(0))
-                .unwrap();
-            assert_eq!(unchanged, version);
-        }
     }
 }

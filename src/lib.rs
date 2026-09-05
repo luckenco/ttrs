@@ -34,7 +34,13 @@
 //!     "ISSUE-123".into(),
 //!     started_at,
 //! )?)?;
-//! let entry = tracker.end(command::End::new(timer.id(), ended_at))?;
+//! let (entry, next) = tracker.switch(&timer, command::Start::new(
+//!     project.id(), "ISSUE-124".into(), ended_at,
+//! )?)?;
+//! let stopped_at = "2026-01-02T09:02:00Z".parse()?;
+//! tracker.end_if_current(&next, stopped_at)?;
+//! let dashboard = tracker.dashboard(stopped_at, &jiff::tz::TimeZone::UTC)?;
+//! assert_eq!(dashboard.today.worked_us, 120_000_000);
 //!
 //! assert_eq!(agreement.project(), project.id());
 //! assert_eq!(entry.scope(), "ISSUE-123");

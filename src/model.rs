@@ -2,6 +2,9 @@ use std::{error, fmt, str::FromStr};
 
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
+mod dashboard;
+pub use dashboard::{DailyTotal, Dashboard, ProjectSummary, TimerStatus};
+
 /// Returned when an identifier is not a positive integer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct InvalidId;

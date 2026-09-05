@@ -12,8 +12,8 @@ pub struct Tracker {
 impl Tracker {
     /// Opens or creates a tracker database at `path`.
     ///
-    /// Version 3 databases are upgraded in place by adding an index. Older
-    /// schemas and versions newer than this library supports are rejected.
+    /// Existing databases must use the current schema. Schema changes during
+    /// development require recreating the database; no migrations are provided.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         store::Store::open(path.as_ref()).map(|store| Self { store })
     }
@@ -168,6 +168,55 @@ impl Tracker {
     pub fn end(&mut self, command: command::End) -> Result<model::TimeEntry> {
         let (timer, ended_at) = command.into_parts();
         self.store.end(timer, ended_at)
+    }
+
+    /// Ends exactly the displayed timer, rejecting a stopped or replaced value.
+    ///
+    /// This guards long-lived frontends against concurrent CLI changes and
+    /// reused database IDs. The timestamp is stored at microsecond precision.
+    pub fn end_if_current(
+        &mut self,
+        timer: &model::RunningTimer,
+        ended_at: Timestamp,
+    ) -> Result<model::TimeEntry> {
+        let (_, ended_at) = command::End::new(timer.id(), ended_at).into_parts();
+        self.store.end_if_current(timer, ended_at)
+    }
+
+    /// Atomically ends the displayed timer and starts work for the same client.
+    ///
+    /// Both operations use the start command's timestamp. The completed entry
+    /// may end earlier at a cap; callers should report the discarded overflow.
+    /// Any failure (including a stale timer, different client, or exhausted
+    /// target project) leaves both timers and completed entries unchanged.
+    pub fn switch(
+        &mut self,
+        timer: &model::RunningTimer,
+        command: command::Start,
+    ) -> Result<(model::TimeEntry, model::RunningTimer)> {
+        let (project, scope, at) = command.into_parts();
+        self.store.switch(timer, project, scope, at)
+    }
+
+    /// Returns a consistent snapshot of active projects, timers, and today's work.
+    ///
+    /// Today begins at midnight in `zone`, not the projects' billing timezones.
+    /// Intervals crossing midnight are clipped; concurrent work is summed.
+    /// Live work stops contributing at its cap. Only time through `now` counts,
+    /// including for future-dated completed entries. DST days are not assumed
+    /// to contain 24 hours. No monthly minimum or billing rounding is applied.
+    ///
+    /// ```
+    /// use jiff::tz::TimeZone;
+    /// use tt::{Tracker, Timestamp};
+    /// let tracker = Tracker::memory()?;
+    /// let dashboard = tracker.dashboard(Timestamp::UNIX_EPOCH, &TimeZone::UTC)?;
+    /// assert_eq!(dashboard.today.worked_us, 0);
+    /// assert!(dashboard.today.earnings_micros.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn dashboard(&self, now: Timestamp, zone: &jiff::tz::TimeZone) -> Result<model::Dashboard> {
+        self.store.dashboard(now, zone)
     }
 
     /// Creates a completed time entry without starting a timer.

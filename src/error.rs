@@ -69,8 +69,10 @@ pub enum Error {
     MonthlyMaximumReached(model::ProjectId),
     /// No running timer exists with this identifier.
     TimerNotFound(model::TimerId),
-    /// The database was created by a newer, unsupported version.
-    UnsupportedSchema(u32),
+    /// A displayed timer was stopped or replaced by another operation.
+    TimerChanged(model::TimerId),
+    /// Switching cannot stop a timer belonging to a different client.
+    SwitchClientMismatch,
     /// Persistence failed.
     Storage(Box<dyn error::Error + Send + Sync>),
 }
@@ -155,11 +157,11 @@ impl fmt::Display for Error {
                 write!(formatter, "project {id} reached its monthly maximum")
             }
             Self::TimerNotFound(id) => write!(formatter, "running timer {id} does not exist"),
-            Self::UnsupportedSchema(version) => {
-                write!(
-                    formatter,
-                    "database schema version {version} is not supported"
-                )
+            Self::TimerChanged(id) => {
+                write!(formatter, "timer {id} changed; select it again")
+            }
+            Self::SwitchClientMismatch => {
+                formatter.write_str("switching must stay within one client")
             }
             Self::Storage(error) => write!(formatter, "storage failed: {error}"),
         }
