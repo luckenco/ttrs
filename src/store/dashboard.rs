@@ -61,7 +61,7 @@ impl super::Store {
             }
         };
         // The ended-at index excludes historical entries on each live refresh.
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT entry.started_at_us, entry.ended_at_us,
                     agreement.hourly_rate_micros, agreement.currency
              FROM time_entries entry

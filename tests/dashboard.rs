@@ -30,6 +30,49 @@ fn project(
 }
 
 #[test]
+fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tt.sqlite3");
+    let mut writer = Tracker::open(&path).unwrap();
+    let client = writer.add_client("Acme".into()).unwrap();
+    let (p, _) = project(&mut writer, client.id(), "website", "EUR", Some(2));
+    let reader = Tracker::open(&path).unwrap();
+    let start = ts("2026-01-02T09:00:00Z");
+    for _ in 0..2 {
+        assert!(
+            reader
+                .dashboard(start, &TimeZone::UTC)
+                .unwrap()
+                .timers
+                .is_empty()
+        );
+    }
+    let timer = writer
+        .start(command::Start::new(p.id(), "live".into(), start).unwrap())
+        .unwrap();
+    for minutes in [30, 60, 30] {
+        let now = start
+            .checked_add(jiff::SignedDuration::from_mins(minutes))
+            .unwrap();
+        let snapshot = reader.dashboard(now, &TimeZone::UTC).unwrap();
+        assert_eq!(snapshot.timers[0].timer, timer);
+        assert_eq!(snapshot.today.worked_us, i128::from(minutes) * 60_000_000);
+        assert_eq!(
+            snapshot.timers[0].limit.unwrap().remaining_us(),
+            (120 - minutes) * 60_000_000
+        );
+    }
+    let end = ts("2026-01-02T10:00:00Z");
+    writer.end_if_current(&timer, end).unwrap();
+    for _ in 0..2 {
+        let snapshot = reader.dashboard(end, &TimeZone::UTC).unwrap();
+        assert!(snapshot.timers.is_empty());
+        assert_eq!(snapshot.today.worked_us, 3_600_000_000);
+        assert_eq!(snapshot.today.earnings_micros["EUR"], 100_000_000);
+    }
+}
+
+#[test]
 fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
     let mut tracker = Tracker::memory().unwrap();
     let acme = tracker.add_client("Acme".into()).unwrap();

@@ -14,10 +14,12 @@ pub(super) fn validate_agreement_period(
 ) -> Result<()> {
     let start = super::day_start(agreement.effective_on(), project.billing_timezone())?;
     let next = connection
-        .query_row(
+        .prepare_cached(
             "SELECT effective_on FROM service_agreements
              WHERE project_id = ?1 AND effective_on > ?2
              ORDER BY effective_on LIMIT 1",
+        )?
+        .query_row(
             params![project.id().get(), agreement.effective_on().to_string()],
             |row| super::date_from_row(row, 0),
         )
@@ -234,7 +236,7 @@ fn month_maximum_us(
 
     // Only the agreement in force at month start and replacements within the
     // month can contribute. Later agreements cannot shorten this month's end.
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT effective_on, maximum_hours FROM service_agreements
          WHERE project_id = ?1
            AND effective_on >= coalesce(
@@ -280,7 +282,7 @@ fn used_us(
     start: Timestamp,
     end: Timestamp,
 ) -> Result<i128> {
-    let mut statement = connection.prepare(
+    let mut statement = connection.prepare_cached(
         "SELECT entry.started_at_us, entry.ended_at_us
          FROM time_entries entry
          JOIN service_agreements agreement ON agreement.id = entry.agreement_id

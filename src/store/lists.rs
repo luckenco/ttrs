@@ -15,7 +15,7 @@ const SELECT: &str = "
 
 impl super::Store {
     pub(crate) fn project_list(&self, all: bool) -> Result<Vec<model::AgreementListing>> {
-        let mut statement = self.connection.prepare(&format!(
+        let mut statement = self.connection.prepare_cached(&format!(
             "{SELECT} WHERE agreement.current = 1 AND (?1 OR project.archived_on IS NULL)
              ORDER BY project.name, project.id"
         ))?;
@@ -37,7 +37,7 @@ impl super::Store {
             sql.push_str(" AND agreement.current = 1 AND project.archived_on IS NULL");
         }
         sql.push_str(" ORDER BY agreement.project_id, agreement.effective_on, agreement.id");
-        let mut statement = self.connection.prepare(&sql)?;
+        let mut statement = self.connection.prepare_cached(&sql)?;
         let rows =
             statement.query_map(params![client.map(model::ClientId::get)], listing_from_row)?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)

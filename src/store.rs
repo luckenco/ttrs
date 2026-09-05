@@ -113,7 +113,7 @@ impl Store {
     pub(crate) fn clients(&self) -> Result<Vec<model::Client>> {
         let mut statement = self
             .connection
-            .prepare("SELECT id, name FROM clients ORDER BY name")?;
+            .prepare_cached("SELECT id, name FROM clients ORDER BY name")?;
         let rows = statement.query_map([], client_from_row)?;
         rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
     }
@@ -124,11 +124,8 @@ impl Store {
 
     pub(crate) fn client_by_name(&self, name: &str) -> Result<Option<model::Client>> {
         self.connection
-            .query_row(
-                "SELECT id, name FROM clients WHERE name = ?1",
-                [name],
-                client_from_row,
-            )
+            .prepare_cached("SELECT id, name FROM clients WHERE name = ?1")?
+            .query_row([name], client_from_row)
             .optional()
             .map_err(Into::into)
     }
@@ -222,7 +219,7 @@ impl Store {
     }
 
     pub(crate) fn agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
                     minimum_hours, maximum_hours, effective_on, current
              FROM service_agreements ORDER BY project_id, effective_on, id",
@@ -244,13 +241,12 @@ impl Store {
         name: &str,
     ) -> Result<Option<model::ServiceAgreement>> {
         self.connection
-            .query_row(
+            .prepare_cached(
                 "SELECT id, project_id, name, hourly_rate_micros, currency,
                         minimum_hours, maximum_hours, effective_on, current
                  FROM service_agreements WHERE project_id = ?1 AND name = ?2",
-                params![project.get(), name],
-                agreement_from_row,
-            )
+            )?
+            .query_row(params![project.get(), name], agreement_from_row)
             .optional()
             .map_err(Into::into)
     }
@@ -263,7 +259,7 @@ impl Store {
     }
 
     pub(crate) fn projects(&self) -> Result<Vec<model::Project>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT id, client_id, name, billing_timezone, archived_on
              FROM projects ORDER BY name, id",
         )?;
@@ -277,7 +273,7 @@ impl Store {
 
     /// Returns at most two matches: enough to distinguish unique and ambiguous names.
     pub(crate) fn projects_by_name(&self, name: &str) -> Result<Vec<model::Project>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT id, client_id, name, billing_timezone, archived_on
              FROM projects WHERE name = ?1 ORDER BY id LIMIT 2",
         )?;
@@ -455,7 +451,7 @@ impl Store {
     }
 
     pub(crate) fn running(&self) -> Result<Vec<model::RunningTimer>> {
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT id, agreement_id, scope, started_at_us
              FROM running_timers ORDER BY started_at_us, id",
         )?;
@@ -491,7 +487,7 @@ impl Store {
             return Ok(Vec::new());
         }
         let limit = i64::try_from(limit).unwrap_or(i64::MAX);
-        let mut statement = self.connection.prepare(
+        let mut statement = self.connection.prepare_cached(
             "SELECT scope
              FROM (
                  SELECT work.scope, work.started_at_us
@@ -559,17 +555,17 @@ fn active_project(connection: &Connection, id: model::ProjectId) -> Result<model
 }
 
 fn reject_client_timer(connection: &Connection, client: model::ClientId) -> Result<()> {
-    let exists = connection.query_row(
-        "SELECT EXISTS(
-             SELECT 1
-             FROM running_timers timer
-             JOIN service_agreements agreement ON agreement.id = timer.agreement_id
-             JOIN projects project ON project.id = agreement.project_id
-             WHERE project.client_id = ?1
-         )",
-        [client.get()],
-        |row| row.get(0),
-    )?;
+    let exists = connection
+        .prepare_cached(
+            "SELECT EXISTS(
+                 SELECT 1
+                 FROM running_timers timer
+                 JOIN service_agreements agreement ON agreement.id = timer.agreement_id
+                 JOIN projects project ON project.id = agreement.project_id
+                 WHERE project.client_id = ?1
+             )",
+        )?
+        .query_row([client.get()], |row| row.get(0))?;
     if exists {
         return Err(Error::ClientTimerRunning(client));
     }
@@ -582,16 +578,17 @@ fn project_has_work_after(
     boundary: Timestamp,
 ) -> Result<bool> {
     connection
-        .query_row(
+        .prepare_cached(
             "SELECT EXISTS(
                  SELECT 1
                  FROM time_entries entry
                  JOIN service_agreements agreement ON agreement.id = entry.agreement_id
                  WHERE agreement.project_id = ?1 AND entry.ended_at_us > ?2
              )",
-            params![project.get(), boundary.as_microsecond()],
-            |row| row.get(0),
-        )
+        )?
+        .query_row(params![project.get(), boundary.as_microsecond()], |row| {
+            row.get(0)
+        })
         .map_err(Into::into)
 }
 
@@ -600,13 +597,12 @@ fn current_agreement(
     project: model::ProjectId,
 ) -> Result<Option<model::ServiceAgreement>> {
     connection
-        .query_row(
+        .prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
                     minimum_hours, maximum_hours, effective_on, current
              FROM service_agreements WHERE project_id = ?1 AND current = 1",
-            [project.get()],
-            agreement_from_row,
-        )
+        )?
+        .query_row([project.get()], agreement_from_row)
         .optional()
         .map_err(Into::into)
 }
@@ -644,23 +640,19 @@ fn initialized(connection: &Connection) -> Result<bool> {
 
 fn find_client(connection: &Connection, id: model::ClientId) -> Result<Option<model::Client>> {
     connection
-        .query_row(
-            "SELECT id, name FROM clients WHERE id = ?1",
-            [id.get()],
-            client_from_row,
-        )
+        .prepare_cached("SELECT id, name FROM clients WHERE id = ?1")?
+        .query_row([id.get()], client_from_row)
         .optional()
         .map_err(Into::into)
 }
 
 fn find_project(connection: &Connection, id: model::ProjectId) -> Result<Option<model::Project>> {
     connection
-        .query_row(
+        .prepare_cached(
             "SELECT id, client_id, name, billing_timezone, archived_on
              FROM projects WHERE id = ?1",
-            [id.get()],
-            project_from_row,
-        )
+        )?
+        .query_row([id.get()], project_from_row)
         .optional()
         .map_err(Into::into)
 }
@@ -670,24 +662,22 @@ fn find_agreement(
     id: model::ServiceAgreementId,
 ) -> Result<Option<model::ServiceAgreement>> {
     connection
-        .query_row(
+        .prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
                     minimum_hours, maximum_hours, effective_on, current
              FROM service_agreements WHERE id = ?1",
-            [id.get()],
-            agreement_from_row,
-        )
+        )?
+        .query_row([id.get()], agreement_from_row)
         .optional()
         .map_err(Into::into)
 }
 
 fn find_timer(connection: &Connection, id: model::TimerId) -> Result<Option<model::RunningTimer>> {
     connection
-        .query_row(
+        .prepare_cached(
             "SELECT id, agreement_id, scope, started_at_us FROM running_timers WHERE id = ?1",
-            [id.get()],
-            timer_from_row,
-        )
+        )?
+        .query_row([id.get()], timer_from_row)
         .optional()
         .map_err(Into::into)
 }
