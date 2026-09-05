@@ -36,9 +36,15 @@ impl TargetArgs {
 
 #[derive(Args)]
 struct AgreementTermsArgs {
-    /// Hourly price in currency units, with up to six decimal places.
-    #[arg(long)]
-    rate: String,
+    /// Hourly price, or a retainer's overage rate, with up to six decimal places.
+    #[arg(long, visible_alias = "hourly-rate", required_unless_present = "fee")]
+    rate: Option<String>,
+    /// Fixed monthly base fee, with up to six decimal places.
+    #[arg(long, requires = "included_hours", conflicts_with = "minimum_hours")]
+    fee: Option<String>,
+    /// Whole hours included in the monthly fee; not a hard cap.
+    #[arg(long, requires = "fee")]
+    included_hours: Option<String>,
     /// Three-letter uppercase currency code.
     #[arg(long)]
     currency: String,
@@ -155,7 +161,7 @@ enum ProjectCommand {
         #[arg(long)]
         agreement: String,
         #[command(flatten)]
-        terms: AgreementTermsArgs,
+        terms: Box<AgreementTermsArgs>,
     },
     /// Lock a project after its final active calendar day.
     Archive {
@@ -212,7 +218,7 @@ pub fn parse_env() -> Result<Parse, Error> {
 
 fn parse(result: Result<Cli, clap::Error>) -> Result<Parse, Error> {
     match result {
-        Ok(cli) => Ok(Parse::Run(cli.into())),
+        Ok(cli) => Ok(Parse::Run(Box::new(cli.into()))),
         Err(info)
             if matches!(
                 info.kind(),
@@ -257,6 +263,8 @@ impl From<Cli> for Command {
                         terms:
                             AgreementTermsArgs {
                                 rate,
+                                fee,
+                                included_hours,
                                 currency,
                                 minimum_hours,
                                 maximum_hours,
@@ -267,6 +275,8 @@ impl From<Cli> for Command {
                 project,
                 name,
                 rate,
+                fee,
+                included_hours,
                 currency,
                 minimum_hours,
                 maximum_hours,
@@ -282,26 +292,32 @@ impl From<Cli> for Command {
                         client,
                         timezone,
                         agreement,
-                        terms:
-                            AgreementTermsArgs {
-                                rate,
-                                currency,
-                                minimum_hours,
-                                maximum_hours,
-                                effective_on,
-                            },
+                        terms,
                     },
-            }) => Self::ProjectAdd {
-                name,
-                client,
-                agreement,
-                rate,
-                currency,
-                minimum_hours,
-                maximum_hours,
-                timezone,
-                effective_on,
-            },
+            }) => {
+                let AgreementTermsArgs {
+                    rate,
+                    fee,
+                    included_hours,
+                    currency,
+                    minimum_hours,
+                    maximum_hours,
+                    effective_on,
+                } = *terms;
+                Self::ProjectAdd {
+                    name,
+                    client,
+                    agreement,
+                    rate,
+                    fee,
+                    included_hours,
+                    currency,
+                    minimum_hours,
+                    maximum_hours,
+                    timezone,
+                    effective_on,
+                }
+            }
             Some(TopCommand::Project {
                 command: ProjectCommand::Archive { project, on },
             }) => Self::ProjectArchive { project, on },

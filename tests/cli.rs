@@ -236,11 +236,12 @@ fn list_queries_preserve_filters_labels_and_order() {
         case.ok(&["project", "list", "--all"]),
         format!("{projects}id:3\twebsite\tThird\tOriginal\tarchived\n")
     );
-    let header = "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS\n";
-    let old = "id:1\tAcme\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\treplaced\n";
-    let current = "id:4\tAcme\twebsite\tReplacement\t100\tEUR\t-\t-\t2026-03-05\tcurrent\n";
-    let other = "id:2\tOther\tapi\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tcurrent\n";
-    let archived = "id:3\tThird\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tinactive\n";
+    let header =
+        "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS\tFEE\tINCLUDED\n";
+    let old = "id:1\tAcme\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\treplaced\t-\t-\n";
+    let current = "id:4\tAcme\twebsite\tReplacement\t100\tEUR\t-\t-\t2026-03-05\tcurrent\t-\t-\n";
+    let other = "id:2\tOther\tapi\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tcurrent\t-\t-\n";
+    let archived = "id:3\tThird\twebsite\tOriginal\t100\tEUR\t-\t-\t2026-03-01\tinactive\t-\t-\n";
     assert_eq!(
         case.ok(&["agreement", "list"]),
         format!("{header}{current}{other}")
@@ -269,6 +270,143 @@ fn list_queries_preserve_filters_labels_and_order() {
         case.fails(1, &["agreement", "list", "--client", "Missing"])
             .contains("does not exist")
     );
+}
+
+#[test]
+fn retainer_terms_round_trip_through_cli_creation_replacement_and_reopening() {
+    let case = Case::new();
+    case.ok(&["client", "add", "--name", "Vertex GmbH"]);
+    case.ok(&[
+        "project",
+        "add",
+        "--client",
+        "Vertex GmbH",
+        "--name",
+        "shapeID",
+        "--timezone",
+        "Europe/Berlin",
+        "--agreement",
+        "Retainer",
+        "--fee",
+        "5000",
+        "--included-hours",
+        "20",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-01",
+    ]);
+    assert!(
+        case.ok(&["agreement", "list"])
+            .contains("shapeID\tRetainer\t-\tEUR\t-\t-\t2026-03-01\tcurrent\t5000\t20\n")
+    );
+    // Exceeding included hours is valid without a hard maximum.
+    case.ok(&[
+        "log",
+        "-p",
+        "shapeID",
+        "-s",
+        "work",
+        "-f",
+        "2026-03-02T00:00:00Z",
+        "-e",
+        "2026-03-03T00:00:00Z",
+    ]);
+    case.ok(&[
+        "agreement",
+        "add",
+        "--project",
+        "shapeID",
+        "--name",
+        "Overage",
+        "--fee",
+        "6000.000001",
+        "--included-hours",
+        "20",
+        "--hourly-rate",
+        "125.50",
+        "--maximum-hours",
+        "40",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-05",
+    ]);
+    let listed = case.ok(&["agreement", "list", "--all"]);
+    assert!(listed.contains("Retainer\t-\tEUR\t-\t-\t2026-03-01\treplaced\t5000\t20"));
+    assert!(listed.contains("Overage\t125.5\tEUR\t-\t40\t2026-03-05\tcurrent\t6000.000001\t20"));
+    let tracker = tt::Tracker::open(case.root.path().join("data/tt.sqlite3")).unwrap();
+    let project = tracker.project_by_name("shapeID").unwrap();
+    assert!(matches!(
+        tracker
+            .current_service_agreement(project.id())
+            .unwrap()
+            .pricing(),
+        tt::model::Pricing::Retainer(_)
+    ));
+    assert_eq!(
+        tracker
+            .service_agreement_by_name(project.id(), "Retainer")
+            .unwrap()
+            .pricing()
+            .hourly_rate(),
+        None
+    );
+    assert_eq!(tracker.project_list(false).unwrap().len(), 1);
+    assert_eq!(
+        tracker
+            .dashboard(
+                "2026-03-12T12:00:00Z".parse().unwrap(),
+                &jiff::tz::TimeZone::UTC
+            )
+            .unwrap()
+            .retainers
+            .len(),
+        2
+    );
+}
+
+#[test]
+fn retainer_flags_reject_incomplete_or_conflicting_terms_without_creating_projects() {
+    let case = Case::new();
+    case.ok(&["client", "add", "--name", "Vertex"]);
+    let base = [
+        "project",
+        "add",
+        "--client",
+        "Vertex",
+        "--name",
+        "shapeID",
+        "--timezone",
+        "UTC",
+        "--agreement",
+        "Retainer",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-01",
+    ];
+    for extra in [
+        vec![],
+        vec!["--fee", "5000"],
+        vec!["--included-hours", "20", "--rate", "125"],
+        vec![
+            "--fee",
+            "5000",
+            "--included-hours",
+            "20",
+            "--minimum-hours",
+            "1",
+        ],
+        vec!["--fee", "bad", "--included-hours", "20"],
+        vec!["--fee", "1.0000001", "--included-hours", "20"],
+        vec!["--fee", "9223372036854.775808", "--included-hours", "20"],
+        vec!["--fee", "5000", "--included-hours", "20.5"],
+        vec!["--fee", "5000", "--included-hours", "4294967296"],
+    ] {
+        case.fails(2, &[base.as_slice(), extra.as_slice()].concat());
+        assert_eq!(case.ok(&["project", "list"]), "No projects.\n");
+    }
 }
 
 #[test]

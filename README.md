@@ -6,11 +6,33 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 
 `tt` currently supports macOS and Linux. Native Windows is not supported.
 
+## Installation
+
+With Rust and Cargo installed, run from this repository:
+
+```sh
+cargo install --path . --locked
+```
+
+This builds a release binary and installs `tt` into `~/.cargo/bin` by default, so you can run it from any directory. If `tt` isn't found, add this to your shell config (`~/.zshrc` for Zsh) and open a new terminal:
+
+```sh
+export PATH="$HOME/.cargo/bin:$PATH"
+```
+
+Verify the installation:
+
+```sh
+tt --help
+```
+
+After changing the code, rerun the install command to update `tt`.
+
 ## Is it for you?
 
 `tt` is useful when all of these match how you operate:
 
-- All tracked work is billable under a service agreement.
+- All tracked work is covered by hourly or retainer agreement pricing.
 - Agreement terms do not change; a rate or limit change creates a new agreement.
 - Every project belongs to one client and always has one current agreement.
 - Every agreement belongs to one project; historical work keeps its original agreement.
@@ -25,7 +47,8 @@ A small terminal utility for tracking time against projects and scopes. A scope 
 - Every project belongs to exactly one client.
 - Every agreement belongs to exactly one project.
 - Projects define their client and immutable billing timezone.
-- Agreements define an hourly rate, currency, optional monthly minimum and maximum, and explicit effective date.
+- Agreements define hourly or retainer pricing, an optional monthly maximum, and an explicit effective date. Hourly agreements may also have a monthly billing minimum.
+- Retainers define a fixed monthly `fee`, `included_hours`, and an optional `hourly_rate` for excess work. Included hours are not a recording cap. Fee and rate use the same currency.
 - Creating a project atomically creates its initial agreement.
 - Creating replacement terms marks the previous agreement as replaced.
 - Agreement replacement, logging, and project archival are blocked while that client has a running timer.
@@ -112,6 +135,22 @@ tt agreement add --project <project-name|id:project-id> --name <name> \
 tt agreement list [--client <client-name|id:client-id>] [--all]
 ```
 
+For a retainer, replace `--rate <amount>` with `--fee <amount> --included-hours <whole-hours>`. Optionally add `--hourly-rate <amount>` (`--rate` is also accepted) to charge for excess hours. `--maximum-hours` remains an independent hard cap; `--minimum-hours` cannot be used with a retainer. Fees and rates accept up to six decimal places.
+
+For example:
+
+```console
+tt client add --name "Vertex GmbH"
+tt project add --client "Vertex GmbH" --name Flyeralarm \
+  --timezone Europe/Berlin --agreement Hourly \
+  --rate 125 --currency EUR --effective-on 2026-03-01
+tt project add --client "Vertex GmbH" --name shapeID \
+  --timezone Europe/Berlin --agreement Retainer \
+  --fee 5000 --included-hours 20 --currency EUR --effective-on 2026-03-01
+```
+
+At 24 hours in a full month, shapeID still costs €5,000. With an optional `--hourly-rate 125`, that same work would cost €5,500. Neither configuration stops tracking unless `--maximum-hours` is set. `tt agreement list` shows the optional rate plus `FEE` and `INCLUDED` columns; `-` means absent, not zero.
+
 Project creation atomically creates the initial agreement and prints both IDs. Effective dates are required and cannot be future. Replacement is rejected if conflicting work already exists. Project archival defaults to today in the project timezone; the archival day remains active. Unarchiving restores continuous coverage retroactively.
 
 ### Configure the timezone
@@ -141,7 +180,7 @@ Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashb
 
 During development, schema changes require recreating the local database. There are no migrations or backward-compatibility guarantees.
 
-The dashboard shows running timers with their project, client, agreement, elapsed time, and monthly allowance. Above them, **worked today** and **earned today** update once per second. Changes made through another CLI process appear automatically.
+The dashboard shows running timers with their project, client, agreement, elapsed time, and monthly allowance. Above them, **worked today** and **earned today** update once per second. Retainers have a separate monthly estimate section showing actual versus included hours and the fee plus any overage. Changes made through another CLI process appear automatically.
 
 ### Controls
 
@@ -164,15 +203,25 @@ Success feedback clears after three seconds. Form errors appear beside the relev
 - Today begins at midnight in the display timezone loaded at launch, with daylight-saving transitions respected.
 - Completed entries and running timers contribute only their portion between midnight and now. Concurrent and overlapping work is summed, not deduplicated.
 - Live work stops earning at its monthly cap, even if the timer remains running.
-- Earnings use each interval's original agreement rate. Monthly minimums and invoice rounding do not apply.
+- Hourly earnings use each interval's original agreement rate. Retainers contribute only the increase in monthly overage during today, accounting for earlier work in that billing month. Fixed fees are never allocated into daily earnings. Monthly minimums and invoice rounding do not apply.
 - Different currencies are shown separately, never converted or added together. Display amounts round to two decimal places; this does not change stored work.
 - Daily work displays hours and minutes; individual timers retain seconds. Uncapped timers omit allowance text. Colors reinforce text labels rather than replacing them, and selected rows use an explicit high-contrast foreground/background pair.
+
+### Monthly retainer estimates
+
+- Each agreement is shown separately for the current calendar month in its project's billing timezone. Replaced agreements and archived projects remain visible if they covered part of that month.
+- Actual hours include completed entries and capped live timers through now, summing overlaps. Unused or excess hours never carry between months or agreements.
+- For full-month coverage: `charge = fee + max(0, worked_hours - included_hours) × hourly_rate`. Without an hourly rate, the charge stays at the fee.
+- Partial months prorate both the fee and included hours by local calendar days of agreement coverage, just like existing maximums. Replacement dates end the previous agreement's coverage; the archival day is included. Unarchiving restores continuous coverage retroactively.
+- The base fee covers the whole agreed period in that month, not just elapsed days. Consequently, replacement or archival can revise the month's estimate and overage threshold. These are live estimates, not issued invoices.
+- Prorated included durations truncate to microseconds; base fees and overage charges truncate separately to millionths of currency. The UI rounds money to two decimal places and durations to whole displayed minutes. Invoice rounding is not applied.
+- Small terminals show how many retainer rows fit and ask you to resize for the rest. This section does not yet scroll independently.
 
 Keyboard actions remain instant. The dashboard has no decorative animation or pulsing indicators.
 
 Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
 
-The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed, but very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
+The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed; retainer totals also read each relevant agreement-month's entries on every refresh (at most two billing months intersect a display day). Very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
 
 ## Time input and storage
 

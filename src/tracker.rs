@@ -223,13 +223,17 @@ impl Tracker {
         self.store.switch(timer, project, scope, at)
     }
 
-    /// Returns a consistent snapshot of active projects, timers, and today's work.
+    /// Returns a consistent snapshot of projects, timers, daily work and retainers.
     ///
     /// Today begins at midnight in `zone`, not the projects' billing timezones.
     /// Intervals crossing midnight are clipped; concurrent work is summed.
     /// Live work stops contributing at its cap. Only time through `now` counts,
     /// including for future-dated completed entries. DST days are not assumed
     /// to contain 24 hours. No monthly minimum or billing rounding is applied.
+    /// Retainer fees stay in separate [`model::RetainerMonth`] estimates; daily
+    /// earnings include only today's increase in hourly overage. Fees and included
+    /// hours are prorated by local calendar days of agreement coverage, not elapsed
+    /// days. Retainer months follow each project's billing timezone.
     ///
     /// ```
     /// use jiff::tz::TimeZone;
@@ -238,6 +242,7 @@ impl Tracker {
     /// let dashboard = tracker.dashboard(Timestamp::UNIX_EPOCH, &TimeZone::UTC)?;
     /// assert_eq!(dashboard.today.worked_us, 0);
     /// assert!(dashboard.today.earnings_micros.is_empty());
+    /// assert!(dashboard.retainers.is_empty());
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dashboard(&self, now: Timestamp, zone: &jiff::tz::TimeZone) -> Result<model::Dashboard> {

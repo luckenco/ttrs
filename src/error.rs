@@ -31,6 +31,15 @@ pub enum Error {
     /// An hourly rate was negative.
     #[error("hourly rate must not be negative")]
     InvalidHourlyRate,
+    /// A monthly fee was negative.
+    #[error("monthly fee must not be negative")]
+    InvalidMonthlyFee,
+    /// A retainer's fee and hourly rate used different currencies.
+    #[error("retainer fee and hourly rate must use the same currency")]
+    RetainerCurrencyMismatch,
+    /// Hourly billing minimums do not apply to retainers.
+    #[error("retainers cannot have monthly minimum hours; use included hours")]
+    RetainerMinimum,
     /// A currency code was not three uppercase ASCII letters.
     #[error("currency '{0}' must be three uppercase letters")]
     InvalidCurrency(String),

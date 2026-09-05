@@ -37,7 +37,9 @@ pub enum Command {
     AgreementAdd {
         project: String,
         name: String,
-        rate: String,
+        rate: Option<String>,
+        fee: Option<String>,
+        included_hours: Option<String>,
         currency: String,
         minimum_hours: Option<String>,
         maximum_hours: Option<String>,
@@ -51,7 +53,9 @@ pub enum Command {
         name: String,
         client: String,
         agreement: String,
-        rate: String,
+        rate: Option<String>,
+        fee: Option<String>,
+        included_hours: Option<String>,
         currency: String,
         minimum_hours: Option<String>,
         maximum_hours: Option<String>,
@@ -76,7 +80,7 @@ pub enum Command {
 
 #[derive(Debug)]
 pub enum Parse {
-    Run(Command),
+    Run(Box<Command>),
     Print(String),
 }
 
@@ -115,7 +119,7 @@ impl std::error::Error for Error {}
 
 pub fn main(parse: Result<Parse, Error>) -> ExitCode {
     match parse.and_then(|parsed| match parsed {
-        Parse::Run(command) => app::run(command),
+        Parse::Run(command) => app::run(*command),
         Parse::Print(text) => io::stdout()
             .lock()
             .write_all(text.as_bytes())

@@ -10,20 +10,20 @@ impl super::Store {
         // All reads share one SQLite snapshot, including CLI writes between refreshes.
         let transaction = self.connection.unchecked_transaction()?;
         let clients: HashMap<_, _> = self.clients()?.into_iter().map(|c| (c.id(), c)).collect();
-        let agreements: HashMap<_, _> = self
-            .agreements()?
-            .into_iter()
-            .filter(model::ServiceAgreement::is_current)
+        let agreements = self.agreements()?;
+        let current: HashMap<_, _> = agreements
+            .iter()
+            .filter(|a| a.is_current())
             .map(|a| (a.project(), a))
             .collect();
-        let projects = self
-            .projects()?
-            .into_iter()
-            .filter(model::Project::is_active)
+        let all_projects = self.projects()?;
+        let projects = all_projects
+            .iter()
+            .filter(|p| p.is_active())
             .map(|project| model::ProjectSummary {
                 client: clients[&project.client()].clone(),
-                agreement: agreements[&project.id()].clone(),
-                project,
+                agreement: current[&project.id()].clone(),
+                project: project.clone(),
             })
             .collect::<Vec<_>>();
         let timers = self
@@ -35,12 +35,15 @@ impl super::Store {
             })
             .collect::<Result<Vec<_>>>()?;
         let start = super::day_start(now.to_zoned(zone.clone()).date(), zone)?;
-        let today = self.daily_total(start, now, &projects, &timers)?;
+        let (retainers, earnings) =
+            self.retainer_totals(&all_projects, &agreements, &clients, &timers, start, now)?;
+        let today = self.daily_total(start, now, &projects, &timers, earnings)?;
         transaction.commit()?;
         Ok(model::Dashboard {
             projects,
             timers,
             today,
+            retainers,
         })
     }
 
@@ -50,12 +53,15 @@ impl super::Store {
         now: Timestamp,
         projects: &[model::ProjectSummary],
         timers: &[model::TimerStatus],
+        mut earnings: BTreeMap<String, i128>,
     ) -> Result<model::DailyTotal> {
         let mut total = model::DailyTotal::default();
-        let mut earnings = BTreeMap::<String, i128>::new();
-        let mut add = |duration: i64, rate: i64, currency: &str| {
-            if duration > 0 {
-                total.worked_us += i128::from(duration);
+        let mut add = |duration: i64, rate: Option<i64>, currency: &str| {
+            if duration <= 0 {
+                return;
+            }
+            total.worked_us += i128::from(duration);
+            if let Some(rate) = rate {
                 *earnings.entry(currency.to_owned()).or_default() +=
                     i128::from(duration) * i128::from(rate);
             }
@@ -63,7 +69,8 @@ impl super::Store {
         // The ended-at index excludes historical entries on each live refresh.
         let mut statement = self.connection.prepare_cached(
             "SELECT entry.started_at_us, entry.ended_at_us,
-                    agreement.hourly_rate_micros, agreement.currency
+                    CASE WHEN agreement.fee_micros IS NULL THEN agreement.hourly_rate_micros END,
+                    agreement.currency
              FROM time_entries entry
              JOIN service_agreements agreement ON agreement.id = entry.agreement_id
              WHERE entry.ended_at_us > ?1 AND entry.started_at_us < ?2",
@@ -74,7 +81,7 @@ impl super::Store {
                 Ok((
                     row.get::<_, i64>(0)?,
                     row.get::<_, i64>(1)?,
-                    row.get::<_, i64>(2)?,
+                    row.get::<_, Option<i64>>(2)?,
                     row.get::<_, String>(3)?,
                 ))
             },
@@ -93,7 +100,11 @@ impl super::Store {
                 .iter()
                 .find(|p| p.agreement.id() == timer.agreement())
                 .expect("running timers belong to active projects and current agreements");
-            let rate = project.agreement.hourly_rate();
+            let pricing = project.agreement.pricing();
+            let rate = match pricing {
+                model::Pricing::Hourly(rate) => Some(rate.amount_micros()),
+                model::Pricing::Retainer(_) => None,
+            };
             let end = status
                 .limit
                 .and_then(model::TimerLimit::cap_at)
@@ -101,7 +112,7 @@ impl super::Store {
                 .min(now);
             let duration =
                 (end.as_microsecond() - timer.started_at().max(start).as_microsecond()).max(0);
-            add(duration, rate.amount_micros(), rate.currency());
+            add(duration, rate, pricing.currency());
         }
         total.earnings_micros = earnings
             .into_iter()

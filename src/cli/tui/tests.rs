@@ -198,7 +198,7 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
                 "UTC".into(),
                 model::NewAgreement::new(
                     "Support".into(),
-                    original.agreement.hourly_rate().clone(),
+                    original.agreement.pricing().clone(),
                     model::MonthlyHours::default(),
                     original.agreement.effective_on(),
                 )
@@ -449,7 +449,7 @@ fn cap_warnings_persist_until_dismissed_but_successes_expire() {
             "UTC".into(),
             model::NewAgreement::new(
                 "Support".into(),
-                original.agreement.hourly_rate().clone(),
+                original.agreement.pricing().clone(),
                 model::MonthlyHours::new(None, Some(1)).unwrap(),
                 original.agreement.effective_on(),
             )
@@ -546,6 +546,68 @@ fn selection_has_explicit_contrast_on_light_and_dark_backgrounds() {
         let selected = cells.iter().find(|cell| cell.symbol() == "›").unwrap();
         assert_eq!(selected.fg, style::Color::Rgb(18, 22, 28));
         assert_eq!(selected.bg, style::Color::Rgb(232, 236, 240));
+    }
+}
+
+#[test]
+fn retainer_estimates_render_separately_from_daily_earnings() {
+    let (mut tracker, app, now) = setup();
+    let client = app.snapshot.projects[0].client.id();
+    for (name, rate, maximum) in [
+        ("shapeID", None, None),
+        ("Support", Some(125_000_000), Some(30)),
+    ] {
+        let (project, agreement) = tracker
+            .add_project(
+                client,
+                name.into(),
+                "UTC".into(),
+                model::NewAgreement::new(
+                    "Monthly".into(),
+                    model::Retainer::new(
+                        model::MonthlyFee::new(5_000_000_000, "EUR".into()).unwrap(),
+                        20,
+                        rate.map(|rate| model::HourlyRate::new(rate, "EUR".into()).unwrap()),
+                    )
+                    .unwrap(),
+                    model::MonthlyHours::new(None, maximum).unwrap(),
+                    "2026-01-01".parse().unwrap(),
+                )
+                .unwrap(),
+                now,
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "Development".into(),
+                    "2026-01-01T00:00:00Z".parse().unwrap(),
+                    "2026-01-02T00:00:00Z".parse().unwrap(),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        if maximum.is_some() {
+            tracker
+                .start(
+                    command::Start::new(
+                        project.id(),
+                        "Live support".into(),
+                        "2026-01-02T09:00:00Z".parse().unwrap(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+    }
+    let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
+    for (width, height) in [(100, 24), (50, 16), (32, 10)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
+            .unwrap();
+        insta::assert_snapshot!(format!("retainers_{width}x{height}"), terminal.backend());
     }
 }
 

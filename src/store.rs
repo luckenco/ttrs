@@ -8,6 +8,7 @@ use crate::{Error, Result, model};
 mod billing;
 mod dashboard;
 mod lists;
+mod retainers;
 mod timers;
 
 const SCHEMA: &str = "
@@ -31,13 +32,19 @@ const SCHEMA: &str = "
         id                  INTEGER PRIMARY KEY,
         project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
         name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        hourly_rate_micros  INTEGER NOT NULL CHECK (hourly_rate_micros >= 0),
+        hourly_rate_micros   INTEGER CHECK (hourly_rate_micros >= 0),
+        fee_micros          INTEGER CHECK (fee_micros >= 0),
+        included_hours      INTEGER CHECK (included_hours BETWEEN 0 AND 4294967295),
         currency            TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
         minimum_hours       INTEGER CHECK (minimum_hours >= 0),
         maximum_hours       INTEGER CHECK (maximum_hours >= 0),
         effective_on        TEXT NOT NULL,
         current             INTEGER NOT NULL CHECK (current IN (0, 1)),
         UNIQUE (project_id, name),
+        CHECK (
+            (fee_micros IS NULL AND included_hours IS NULL AND hourly_rate_micros IS NOT NULL)
+            OR (fee_micros IS NOT NULL AND included_hours IS NOT NULL AND minimum_hours IS NULL)
+        ),
         CHECK (
             minimum_hours IS NULL OR maximum_hours IS NULL
             OR minimum_hours <= maximum_hours
@@ -137,7 +144,7 @@ impl Store {
         timezone: TimeZone,
         agreement: model::NewAgreement,
     ) -> Result<(model::Project, model::ServiceAgreement)> {
-        let (agreement_name, hourly_rate, monthly_hours, effective_on) = agreement.into_parts();
+        let (agreement_name, pricing, monthly_hours, effective_on) = agreement.into_parts();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -171,7 +178,7 @@ impl Store {
             &transaction,
             project.id(),
             agreement_name,
-            hourly_rate,
+            pricing,
             monthly_hours,
             effective_on,
         )?;
@@ -184,7 +191,7 @@ impl Store {
         project: model::ProjectId,
         agreement: model::NewAgreement,
     ) -> Result<model::ServiceAgreement> {
-        let (name, hourly_rate, monthly_hours, effective_on) = agreement.into_parts();
+        let (name, pricing, monthly_hours, effective_on) = agreement.into_parts();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -209,7 +216,7 @@ impl Store {
             &transaction,
             project,
             name,
-            hourly_rate,
+            pricing,
             monthly_hours,
             effective_on,
         )?;
@@ -221,7 +228,7 @@ impl Store {
     pub(crate) fn agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
         let mut statement = self.connection.prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
-                    minimum_hours, maximum_hours, effective_on, current
+                    minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
              FROM service_agreements ORDER BY project_id, effective_on, id",
         )?;
         let rows = statement.query_map([], agreement_from_row)?;
@@ -243,7 +250,7 @@ impl Store {
         self.connection
             .prepare_cached(
                 "SELECT id, project_id, name, hourly_rate_micros, currency,
-                        minimum_hours, maximum_hours, effective_on, current
+                        minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
                  FROM service_agreements WHERE project_id = ?1 AND name = ?2",
             )?
             .query_row(params![project.get(), name], agreement_from_row)
@@ -513,23 +520,32 @@ fn insert_agreement(
     transaction: &Transaction<'_>,
     project: model::ProjectId,
     name: String,
-    hourly_rate: model::HourlyRate,
+    pricing: model::Pricing,
     monthly_hours: model::MonthlyHours,
     effective_on: Date,
 ) -> Result<model::ServiceAgreement> {
+    let (fee, included) = match &pricing {
+        model::Pricing::Hourly(_) => (None, None),
+        model::Pricing::Retainer(terms) => (
+            Some(terms.fee().amount_micros()),
+            Some(terms.included_hours()),
+        ),
+    };
     let changed = transaction.execute(
         "INSERT OR IGNORE INTO service_agreements (
              project_id, name, hourly_rate_micros, currency,
-             minimum_hours, maximum_hours, effective_on, current
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1)",
+             minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9)",
         params![
             project.get(),
             name,
-            hourly_rate.amount_micros(),
-            hourly_rate.currency(),
+            pricing.hourly_rate().map(model::HourlyRate::amount_micros),
+            pricing.currency(),
             monthly_hours.minimum(),
             monthly_hours.maximum(),
             effective_on.to_string(),
+            fee,
+            included,
         ],
     )?;
     if changed == 0 {
@@ -539,7 +555,7 @@ fn insert_agreement(
         model::ServiceAgreementId::from_raw(transaction.last_insert_rowid()),
         project,
         name,
-        hourly_rate,
+        pricing,
         monthly_hours,
         effective_on,
         true,
@@ -599,7 +615,7 @@ fn current_agreement(
     connection
         .prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
-                    minimum_hours, maximum_hours, effective_on, current
+                    minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
              FROM service_agreements WHERE project_id = ?1 AND current = 1",
         )?
         .query_row([project.get()], agreement_from_row)
@@ -664,7 +680,7 @@ fn find_agreement(
     connection
         .prepare_cached(
             "SELECT id, project_id, name, hourly_rate_micros, currency,
-                    minimum_hours, maximum_hours, effective_on, current
+                    minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
              FROM service_agreements WHERE id = ?1",
         )?
         .query_row([id.get()], agreement_from_row)
@@ -702,15 +718,29 @@ fn project_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::Project>
 }
 
 fn agreement_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::ServiceAgreement> {
-    let hourly_rate = model::HourlyRate::new(row.get(3)?, row.get(4)?)
-        .expect("agreement rate constraints must hold");
+    let currency = row.get::<_, String>(4)?;
+    let hourly_rate = row.get::<_, Option<i64>>(3)?.map(|amount| {
+        model::HourlyRate::new(amount, currency.clone())
+            .expect("agreement rate constraints must hold")
+    });
+    let pricing = if let Some(fee) = row.get::<_, Option<i64>>(9)? {
+        model::Retainer::new(
+            model::MonthlyFee::new(fee, currency).expect("agreement fee constraints must hold"),
+            row.get(10)?,
+            hourly_rate,
+        )
+        .expect("retainer currency constraints must hold")
+        .into()
+    } else {
+        model::Pricing::Hourly(hourly_rate.expect("hourly agreements require a rate"))
+    };
     let monthly_hours = model::MonthlyHours::new(row.get(5)?, row.get(6)?)
         .expect("agreement hour constraints must hold");
     Ok(model::ServiceAgreement::new(
         model::ServiceAgreementId::from_raw(row.get(0)?),
         model::ProjectId::from_raw(row.get(1)?),
         row.get(2)?,
-        hourly_rate,
+        pricing,
         monthly_hours,
         date_from_row(row, 7)?,
         row.get(8)?,
@@ -769,6 +799,33 @@ fn timestamp(microseconds: i64) -> rusqlite::Result<Timestamp> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn schema_rejects_incomplete_or_conflicting_pricing() {
+        let store = Store::memory().unwrap();
+        store.connection.execute_batch(
+            "INSERT INTO clients (id, name) VALUES (1, 'Vertex');
+             INSERT INTO projects (id, client_id, name, billing_timezone) VALUES (1, 1, 'shapeID', 'UTC');"
+        ).unwrap();
+        for (rate, fee, included, minimum) in [
+            (None, None, None, None),
+            (Some(125), None, Some(20), None),
+            (None, Some(5000), None, None),
+            (None, Some(5000), Some(20), Some(1)),
+            (Some(-1), Some(5000), Some(20), None),
+            (None, Some(-1), Some(20), None),
+            (None, Some(5000), Some(4_294_967_296_i64), None),
+        ] {
+            let result = store.connection.execute(
+                "INSERT INTO service_agreements (
+                    project_id, name, hourly_rate_micros, fee_micros, included_hours,
+                    minimum_hours, currency, effective_on, current
+                ) VALUES (1, 'invalid', ?1, ?2, ?3, ?4, 'EUR', '2026-01-01', 1)",
+                params![rate, fee, included, minimum],
+            );
+            assert!(result.is_err(), "{rate:?} {fee:?} {included:?} {minimum:?}");
+        }
+    }
 
     #[test]
     fn indexes_daily_entry_lookups() {

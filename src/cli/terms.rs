@@ -3,23 +3,48 @@ use tt::model;
 use super::Error;
 
 pub(super) fn parse(
-    rate: &str,
+    rate: Option<&str>,
+    fee: Option<&str>,
+    included_hours: Option<&str>,
     currency: String,
     minimum_hours: Option<&str>,
     maximum_hours: Option<&str>,
-) -> Result<(model::HourlyRate, model::MonthlyHours), Error> {
-    let rate = model::HourlyRate::new(parse_rate(rate)?, currency).map_err(domain_error)?;
+) -> Result<(model::Pricing, model::MonthlyHours), Error> {
+    let rate = rate
+        .map(|value| {
+            model::HourlyRate::new(parse_amount(value, "hourly rate")?, currency.clone())
+                .map_err(domain_error)
+        })
+        .transpose()?;
+    let pricing = match (fee, included_hours) {
+        (Some(fee), Some(included)) => model::Retainer::new(
+            model::MonthlyFee::new(parse_amount(fee, "monthly fee")?, currency)
+                .map_err(domain_error)?,
+            parse_hours(included)?,
+            rate,
+        )
+        .map_err(domain_error)?
+        .into(),
+        (None, None) => model::Pricing::Hourly(
+            rate.ok_or_else(|| Error::usage("an hourly rate or monthly fee is required"))?,
+        ),
+        _ => {
+            return Err(Error::usage(
+                "monthly fee and included hours must be specified together",
+            ));
+        }
+    };
     let monthly_hours = model::MonthlyHours::new(
         minimum_hours.map(parse_hours).transpose()?,
         maximum_hours.map(parse_hours).transpose()?,
     )
     .map_err(domain_error)?;
-    Ok((rate, monthly_hours))
+    Ok((pricing, monthly_hours))
 }
 
-pub(super) fn format_rate(rate: &model::HourlyRate) -> String {
-    let whole = rate.amount_micros() / 1_000_000;
-    let remainder = rate.amount_micros() % 1_000_000;
+pub(super) fn format_amount(micros: i64) -> String {
+    let whole = micros / 1_000_000;
+    let remainder = micros % 1_000_000;
     if remainder == 0 {
         return whole.to_string();
     }
@@ -37,27 +62,27 @@ fn parse_hours(value: &str) -> Result<u32, Error> {
         .map_err(|_| Error::usage(format!("invalid whole monthly hours '{value}'")))
 }
 
-fn parse_rate(value: &str) -> Result<i64, Error> {
+fn parse_amount(value: &str, label: &str) -> Result<i64, Error> {
     let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
         || fraction.len() > 6
     {
-        return Err(Error::usage(format!("invalid hourly rate '{value}'")));
+        return Err(Error::usage(format!("invalid {label} '{value}'")));
     }
     let padding = 6 - u32::try_from(fraction.len()).expect("six digits fit in u32");
     let whole = whole
         .parse::<i128>()
-        .map_err(|_| Error::usage(format!("invalid hourly rate '{value}'")))?;
+        .map_err(|_| Error::usage(format!("invalid {label} '{value}'")))?;
     let fraction = fraction
         .bytes()
         .fold(0_i128, |value, digit| value * 10 + i128::from(digit - b'0'));
     let micros = whole
         .checked_mul(1_000_000)
         .and_then(|whole| whole.checked_add(fraction * 10_i128.pow(padding)))
-        .ok_or_else(|| Error::usage("hourly rate is too large"))?;
-    i64::try_from(micros).map_err(|_| Error::usage("hourly rate is too large"))
+        .ok_or_else(|| Error::usage(format!("{label} is too large")))?;
+    i64::try_from(micros).map_err(|_| Error::usage(format!("{label} is too large")))
 }
 
 fn domain_error(error: tt::Error) -> Error {
@@ -77,9 +102,12 @@ mod tests {
             ("0.000001", 1, "0.000001"),
             ("9223372036854.775807", i64::MAX, "9223372036854.775807"),
         ] {
-            assert_eq!(parse_rate(input).unwrap(), micros, "{input}");
-            let rate = model::HourlyRate::new(micros, "EUR".into()).unwrap();
-            assert_eq!(format_rate(&rate), formatted);
+            assert_eq!(
+                parse_amount(input, "hourly rate").unwrap(),
+                micros,
+                "{input}"
+            );
+            assert_eq!(format_amount(micros), formatted);
         }
     }
 
@@ -97,7 +125,7 @@ mod tests {
             "170141183460469231731687303715884105728",
         ] {
             assert_eq!(
-                parse_rate(input).unwrap_err().to_string(),
+                parse_amount(input, "hourly rate").unwrap_err().to_string(),
                 format!("invalid hourly rate '{input}'")
             );
         }
@@ -106,7 +134,7 @@ mod tests {
             "170141183460469231731687303715884105727",
         ] {
             assert_eq!(
-                parse_rate(input).unwrap_err().to_string(),
+                parse_amount(input, "hourly rate").unwrap_err().to_string(),
                 "hourly rate is too large"
             );
         }
@@ -114,10 +142,19 @@ mod tests {
 
     #[test]
     fn parses_exact_rates_and_monthly_hours() {
-        let (rate, hours) = parse("125.50", "EUR".into(), Some("37"), Some("80")).unwrap();
+        let (pricing, hours) = parse(
+            Some("125.50"),
+            None,
+            None,
+            "EUR".into(),
+            Some("37"),
+            Some("80"),
+        )
+        .unwrap();
+        let rate = pricing.hourly_rate().unwrap();
         assert_eq!(rate.amount_micros(), 125_500_000);
         assert_eq!(hours.minimum(), Some(37));
-        assert_eq!(format_rate(&rate), "125.5");
-        assert!(parse("125", "EUR".into(), Some("37.5"), None).is_err());
+        assert_eq!(format_amount(rate.amount_micros()), "125.5");
+        assert!(parse(Some("125"), None, None, "EUR".into(), Some("37.5"), None).is_err());
     }
 }

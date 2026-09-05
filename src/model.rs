@@ -3,7 +3,9 @@ use std::{error, fmt, str::FromStr};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 mod dashboard;
-pub use dashboard::{DailyTotal, Dashboard, ProjectSummary, TimerStatus};
+mod pricing;
+pub use dashboard::{DailyTotal, Dashboard, ProjectSummary, RetainerMonth, TimerStatus};
+pub use pricing::{MonthlyFee, Pricing, Retainer};
 
 /// Returned when an identifier is not a positive integer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -102,9 +104,7 @@ impl HourlyRate {
         if amount_micros < 0 {
             return Err(crate::Error::InvalidHourlyRate);
         }
-        if currency.len() != 3 || !currency.bytes().all(|byte| byte.is_ascii_uppercase()) {
-            return Err(crate::Error::InvalidCurrency(currency));
-        }
+        pricing::validate_currency(&currency)?;
         Ok(Self {
             amount_micros,
             currency,
@@ -156,16 +156,19 @@ impl MonthlyHours {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NewAgreement {
     name: String,
-    hourly_rate: HourlyRate,
+    pricing: Pricing,
     monthly_hours: MonthlyHours,
     effective_on: Date,
 }
 
 impl NewAgreement {
     /// Creates agreement terms effective on a local project date.
+    ///
+    /// Retainers cannot have hourly billing minimums. Their optional monthly
+    /// maximum is enforced independently of included hours and pricing.
     pub fn new(
         name: String,
-        hourly_rate: HourlyRate,
+        pricing: impl Into<Pricing>,
         monthly_hours: MonthlyHours,
         effective_on: Date,
     ) -> crate::Result<Self> {
@@ -173,9 +176,13 @@ impl NewAgreement {
         if name.is_empty() {
             return Err(crate::Error::EmptyAgreementName);
         }
+        let pricing = pricing.into();
+        if matches!(pricing, Pricing::Retainer(_)) && monthly_hours.minimum().is_some() {
+            return Err(crate::Error::RetainerMinimum);
+        }
         Ok(Self {
             name: name.to_owned(),
-            hourly_rate,
+            pricing,
             monthly_hours,
             effective_on,
         })
@@ -186,10 +193,10 @@ impl NewAgreement {
         self.effective_on
     }
 
-    pub(crate) fn into_parts(self) -> (String, HourlyRate, MonthlyHours, Date) {
+    pub(crate) fn into_parts(self) -> (String, Pricing, MonthlyHours, Date) {
         (
             self.name,
-            self.hourly_rate,
+            self.pricing,
             self.monthly_hours,
             self.effective_on,
         )
@@ -202,7 +209,7 @@ pub struct ServiceAgreement {
     id: ServiceAgreementId,
     project: ProjectId,
     name: String,
-    hourly_rate: HourlyRate,
+    pricing: Pricing,
     monthly_hours: MonthlyHours,
     effective_on: Date,
     current: bool,
@@ -213,17 +220,21 @@ impl ServiceAgreement {
         id: ServiceAgreementId,
         project: ProjectId,
         name: String,
-        hourly_rate: HourlyRate,
+        pricing: Pricing,
         monthly_hours: MonthlyHours,
         effective_on: Date,
         current: bool,
     ) -> Self {
         assert!(!name.trim().is_empty(), "agreement names must not be empty");
+        assert!(
+            !matches!(pricing, Pricing::Retainer(_)) || monthly_hours.minimum().is_none(),
+            "retainers cannot have hourly minimums"
+        );
         Self {
             id,
             project,
             name,
-            hourly_rate,
+            pricing,
             monthly_hours,
             effective_on,
             current,
@@ -245,9 +256,9 @@ impl ServiceAgreement {
         &self.name
     }
 
-    /// Returns the immutable hourly rate.
-    pub const fn hourly_rate(&self) -> &HourlyRate {
-        &self.hourly_rate
+    /// Returns the immutable hourly or retainer pricing.
+    pub const fn pricing(&self) -> &Pricing {
+        &self.pricing
     }
 
     /// Returns the monthly working-hour limits.

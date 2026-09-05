@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/tests.rs
+expression: terminal.backend()
+---
+"tt  ·  Fri 02 Jan 10:00  UTC                                                                        "
+"Worked today                                      Earned today                                      "
+"01:00                                             EUR 125.00                                        "
+"                                                                                                    "
+"Running · 1                                                                                         "
+"› Live support                                                                              01:00:00"
+"  Acme / Support · Monthly · since 09:00                                                  05:00 left"
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"Retainers · monthly estimate                                                                        "
+"Acme / shapeID · Monthly                                                                 EUR 5000.00"
+"Jan 2026 · 24:00 / 20:00 incl · EUR 0.00 overage                                                    "
+"Acme / Support · Monthly                                                                 EUR 5625.00"
+"Jan 2026 · 25:00 / 20:00 incl · EUR 625.00 overage                                                  "
+"↑↓/jk select   s start/switch   x stop   q quit                                                     "

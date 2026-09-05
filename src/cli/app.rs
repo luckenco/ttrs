@@ -117,20 +117,24 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             project,
             name,
             rate,
+            fee,
+            included_hours,
             currency,
             minimum_hours,
             maximum_hours,
             effective_on,
         } => {
             let project = resolve_project(&tracker, &project)?;
-            let (rate, monthly_hours) = terms::parse(
-                &rate,
+            let (pricing, monthly_hours) = terms::parse(
+                rate.as_deref(),
+                fee.as_deref(),
+                included_hours.as_deref(),
                 currency,
                 minimum_hours.as_deref(),
                 maximum_hours.as_deref(),
             )?;
             let agreement =
-                model::NewAgreement::new(name, rate, monthly_hours, parse_date(&effective_on)?)
+                model::NewAgreement::new(name, pricing, monthly_hours, parse_date(&effective_on)?)
                     .map_err(core_error)?;
             let agreement = tracker
                 .add_service_agreement(project.id(), agreement, now()?)
@@ -147,6 +151,8 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             client,
             agreement,
             rate,
+            fee,
+            included_hours,
             currency,
             minimum_hours,
             maximum_hours,
@@ -154,15 +160,17 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             effective_on,
         } => {
             let client = resolve_client(&tracker, &client)?;
-            let (rate, monthly_hours) = terms::parse(
-                &rate,
+            let (pricing, monthly_hours) = terms::parse(
+                rate.as_deref(),
+                fee.as_deref(),
+                included_hours.as_deref(),
                 currency,
                 minimum_hours.as_deref(),
                 maximum_hours.as_deref(),
             )?;
             let agreement = model::NewAgreement::new(
                 agreement,
-                rate,
+                pricing,
                 monthly_hours,
                 parse_date(&effective_on)?,
             )
@@ -261,22 +269,34 @@ fn agreement_list(tracker: &Tracker, client_ref: Option<&str>, all: bool) -> Res
     }
 
     line(format_args!(
-        "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS"
+        "ID\tCLIENT\tPROJECT\tNAME\tRATE\tCURRENCY\tMIN\tMAX\tEFFECTIVE\tSTATUS\tFEE\tINCLUDED"
     ))?;
     for row in agreements {
         let agreement = &row.agreement;
+        let (fee, included) = match agreement.pricing() {
+            model::Pricing::Hourly(_) => ("-".into(), "-".into()),
+            model::Pricing::Retainer(terms) => (
+                terms::format_amount(terms.fee().amount_micros()),
+                terms.included_hours().to_string(),
+            ),
+        };
         line(format_args!(
-            "id:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+            "id:{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
             agreement.id(),
             row.client_name,
             row.project_name,
             agreement.name(),
-            terms::format_rate(agreement.hourly_rate()),
-            agreement.hourly_rate().currency(),
+            agreement.pricing().hourly_rate().map_or_else(
+                || "-".into(),
+                |rate| terms::format_amount(rate.amount_micros())
+            ),
+            agreement.pricing().currency(),
             terms::format_hours(agreement.monthly_hours().minimum()),
             terms::format_hours(agreement.monthly_hours().maximum()),
             agreement.effective_on(),
-            agreement_status(&row)
+            agreement_status(&row),
+            fee,
+            included,
         ))?;
     }
     Ok(())

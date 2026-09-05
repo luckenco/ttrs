@@ -6,7 +6,7 @@ const SELECT: &str = "
     SELECT agreement.id, agreement.project_id, agreement.name,
            agreement.hourly_rate_micros, agreement.currency,
            agreement.minimum_hours, agreement.maximum_hours,
-           agreement.effective_on, agreement.current,
+           agreement.effective_on, agreement.current, agreement.fee_micros, agreement.included_hours,
            project.name, client.name, project.archived_on IS NULL
     FROM service_agreements agreement
     JOIN projects project ON project.id = agreement.project_id
@@ -47,8 +47,8 @@ impl super::Store {
 fn listing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::AgreementListing> {
     Ok(model::AgreementListing {
         agreement: super::agreement_from_row(row)?,
-        project_name: row.get(9)?,
-        client_name: row.get(10)?,
-        project_active: row.get(11)?,
+        project_name: row.get(11)?,
+        client_name: row.get(12)?,
+        project_active: row.get(13)?,
     })
 }

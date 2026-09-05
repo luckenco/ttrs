@@ -108,32 +108,39 @@ fn draw_dashboard(
         .today
         .earnings_micros
         .iter()
-        .map(|(currency, micros)| {
-            let cents = (micros + 5_000) / 10_000;
-            format!("{currency} {}.{:02}", cents / 100, cents % 100)
-        })
+        .map(|(currency, micros)| money(currency, *micros))
         .collect::<Vec<_>>();
     if earnings.is_empty() {
         earnings.push("—".into());
     }
+    let mut retainer_height = 0;
+    if !app.snapshot.retainers.is_empty() {
+        retainer_height = u16::try_from(app.snapshot.retainers.len())
+            .unwrap_or(u16::MAX)
+            .saturating_mul(2)
+            .saturating_add(1)
+            .min(area.height / 2)
+            .min(area.height.saturating_sub(5));
+    }
     let gap = u16::from(area.height >= 10);
     let summary_height = (earnings.len() as u16 + 1 + gap)
-        .min(area.height.saturating_sub(4))
+        .min(area.height.saturating_sub(4 + retainer_height))
         .max(2 + gap);
-    let [summary, title, timers] = layout::Layout::vertical([
+    let [summary, title, timers, retainers] = layout::Layout::vertical([
         layout::Constraint::Length(summary_height),
         layout::Constraint::Length(1),
         layout::Constraint::Min(2),
+        layout::Constraint::Length(retainer_height),
     ])
     .areas(area);
+    draw_retainers(frame, &app.snapshot.retainers, retainers);
     let visible = usize::from(summary_height - 1 - gap);
     if earnings.len() > visible {
         let hidden = earnings.len() - visible + 1;
         earnings.truncate(visible);
         earnings[visible - 1] = format!("+{hidden} currencies; resize");
     }
-    let minutes = app.snapshot.today.worked_us / 60_000_000;
-    let worked = format!("{:02}:{:02}", minutes / 60, minutes % 60);
+    let worked = hours(app.snapshot.today.worked_us);
     if compact {
         let mut lines = vec![text::Line::from(vec![
             text::Span::raw("Worked today  "),
@@ -211,7 +218,7 @@ fn draw_dashboard(
                 cap = cap.yellow();
             }
         }
-        if compact && status.limit.is_some() {
+        if compact && status.limit.is_some() && timers.height >= 3 {
             lines.push(text::Line::from(truncate(&metadata, width)));
             lines.push(text::Line::from(cap));
         } else {
@@ -226,6 +233,62 @@ fn draw_dashboard(
         timers,
         &mut app.selection,
     );
+}
+
+fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: layout::Rect) {
+    if area.height == 0 {
+        return;
+    }
+    let visible = usize::from(area.height.saturating_sub(1) / 2);
+    let mut title = "Retainers · monthly estimate".to_owned();
+    if visible < totals.len() {
+        title = format!("Retainers · {visible}/{} · resize", totals.len());
+    }
+    let mut lines = vec![text::Line::from(title).dim()];
+    for total in totals.iter().take(visible) {
+        let currency = total.agreement.pricing().currency();
+        let mut label = format!("{} #{}", total.project.name(), total.project.id());
+        if area.width >= 60 {
+            label = format!(
+                "{} / {} · {}",
+                total.client.name(),
+                total.project.name(),
+                total.agreement.name()
+            );
+        }
+        lines.push(
+            columns(
+                &label,
+                text::Span::raw(money(currency, total.charge_micros())),
+                usize::from(area.width),
+            )
+            .bold(),
+        );
+        let mut detail = format!(
+            "{} · {} / {} incl",
+            total.month.strftime("%b %Y"),
+            hours(total.worked_us),
+            hours(total.included_us),
+        );
+        if area.width >= 60 {
+            detail.push_str(&format!(
+                " · {} overage",
+                money(currency, total.overage_micros)
+            ));
+        }
+        lines.push(text::Line::from(truncate(&detail, usize::from(area.width))).dim());
+    }
+    frame.render_widget(widgets::Paragraph::new(lines), area);
+}
+
+fn hours(micros: i128) -> String {
+    let minutes = micros / 60_000_000;
+    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+}
+
+fn money(currency: &str, micros: i128) -> String {
+    let cents = (micros + 5_000) / 10_000;
+    format!("{currency} {}.{:02}", cents / 100, cents % 100)
 }
 
 fn draw_picker(
