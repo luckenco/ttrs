@@ -3,6 +3,7 @@ use std::{fmt, io, io::Write, process::ExitCode};
 mod app;
 pub mod clap;
 mod terms;
+mod tui;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum TrackingTarget {

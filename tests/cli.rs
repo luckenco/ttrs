@@ -260,8 +260,25 @@ fn timezone_configuration_handles_named_and_unnamed_zones() {
 
 #[cfg(target_os = "macos")]
 fn pty(case: &Case, interaction: &str) -> Output {
-    Command::new("expect")
-        .args(["-c", interaction])
+    let script = format!(
+        r#"
+set timeout 5
+proc await {{text}} {{
+    expect {{
+        -exact $text {{}}
+        timeout {{exit 90}}
+        eof {{exit 91}}
+    }}
+}}
+spawn -noecho sh -c {{stty rows 24 columns 100; before=$(stty -g); "$TT_BIN"; result=$?; test "$(stty -g)" = "$before" || exit 92; exit "$result"}}
+{interaction}
+expect {{ eof {{}} timeout {{exit 93}} }}
+exit [lindex [wait] 3]
+"#
+    );
+    let output = Command::new("expect")
+        .args(["-c", &script])
+        .env("TERM", "xterm-256color")
         .env("TT_BIN", test_binary())
         .env("TT_DATA_DIR", case.root.path().join("data"))
         .env("TT_CONFIG_DIR", case.root.path().join("config"))
@@ -269,12 +286,20 @@ fn pty(case: &Case, interaction: &str) -> Output {
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .output()
-        .unwrap()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "status: {:?}\n{}\n{}",
+        output.status,
+        String::from_utf8_lossy(&output.stdout),
+        stderr(&output)
+    );
+    output
 }
 
 #[test]
 #[cfg(target_os = "macos")]
-fn bare_interaction_starts_cancels_and_stops() {
+fn dashboard_starts_cancels_switches_and_stops_without_exiting() {
     let case = Case::new();
     case.ok(&["client", "add", "--name", "Acme"]);
     case.ok(&[
@@ -295,44 +320,75 @@ fn bare_interaction_starts_cancels_and_stops() {
         "--effective-on",
         "2026-03-01",
     ]);
-
-    let started = pty(
+    pty(
         &case,
-        r#"spawn $env(TT_BIN)
-expect "Project:"
-expect "> "
-send "1\r"
-expect "Scope:"
-expect "> "
-send "n\r"
-expect "New scope: "
-send "Planning\r"
-expect -exact {Start time [now]: }
-send "1100\r"
-expect eof"#,
+        r#"
+await "timers."
+send "s"
+await "Project"
+send "web\r"
+await "Scope"
+send "Planning\t1100\r"
+await "Started"
+send "q"
+"#,
     );
-    assert!(String::from_utf8_lossy(&started.stdout).contains("Started Planning"));
-
-    let cancelled = pty(
-        &case,
-        r#"spawn $env(TT_BIN)
-expect "Running:"
-expect "> "
-send "q\r"
-expect eof"#,
-    );
-    assert!(String::from_utf8_lossy(&cancelled.stdout).contains("Cancelled"));
     assert!(case.ok(&["status"]).contains("Planning"));
-
-    let stopped = pty(
+    pty(
         &case,
-        r#"spawn $env(TT_BIN)
-expect "Running:"
-expect "> "
-send "1\r"
-expect eof"#,
+        r#"
+await "Planning"
+send "s"
+await "Project"
+send "\033"
+after 100
+send "s"
+await "Project"
+send "\r"
+await "Switch"
+send "Review\t1130\r"
+await "Switched"
+send "xq"
+"#,
     );
-    assert!(String::from_utf8_lossy(&stopped.stdout).contains("Stopped Planning"));
+    assert!(case.ok(&["status"]).contains("No running timers"));
+    let tracker = tt::Tracker::open(case.root.path().join("data/tt.sqlite3")).unwrap();
+    let today = tracker
+        .dashboard(
+            "2026-03-12T12:00:00Z".parse().unwrap(),
+            &jiff::tz::TimeZone::UTC,
+        )
+        .unwrap()
+        .today;
+    assert_eq!(today.worked_us, 3_600_000_000);
+    assert_eq!(today.earnings_micros["EUR"], 100_000_000);
+}
+
+#[test]
+#[cfg(target_os = "macos")]
+fn empty_dashboard_refreshes_cli_changes_and_restores_terminal_on_interrupts() {
+    let case = Case::new();
+    pty(
+        &case,
+        r#"
+await "projects."
+exec $env(TT_BIN) client add --name Acme
+exec $env(TT_BIN) project add --name website --client Acme --agreement Support --rate 100 --currency EUR --timezone UTC --effective-on 2026-03-01
+await "running"
+exec $env(TT_BIN) start -p website -s External --at 1100
+await "External"
+send "\003"
+"#,
+    );
+    assert!(case.ok(&["status"]).contains("External"));
+    pty(
+        &case,
+        r#"
+await "External"
+exec kill -TERM [exec pgrep -P [exp_pid]]
+"#,
+    );
+    assert!(case.ok(&["status"]).contains("External"));
 }
 
 #[test]

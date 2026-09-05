@@ -135,53 +135,41 @@ files on startup and keeps rules consistent across machines running the same
 build. Timezone-rule updates arrive through application updates; maintainers
 update the bundle with `cargo update -p jiff-tzdb` and rebuild.
 
-## Interactive convenience command
+## Interactive dashboard
 
-Bare `tt` provides a small interactive dialog when attached to a terminal. Explicit commands remain the stable interface for scripts and other frontends.
+Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashboard. It requires a terminal of at least 50 columns × 16 rows. Explicit CLI commands remain unchanged; bare `tt` without a terminal returns a usage error.
 
-### No timers are running
+During development, schema changes require recreating the local database. There are no migrations or backward-compatibility guarantees.
 
-The dialog walks through starting a timer:
+The dashboard shows running timers with their project, client, agreement, elapsed time, and monthly allowance. Above them, **worked today** and **earned today** update once per second. Changes made through another CLI process appear automatically.
 
-```text
-$ tt
+### Controls
 
-Project:
-1. website (Acme; Support 2026)
-2. API (Acme; Retainer 2026)
-> 1
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` or `j` / `k` | Select a running timer |
+| `s` | Open the project-and-scope picker to start or switch |
+| `x` | Stop the selected timer immediately at now, without confirmation |
+| `q` or `Ctrl-C` | Quit; timers keep running |
+| `Esc` | Cancel a picker without making changes |
 
-Scope:
-1. ISSUE-12
-2. ISSUE-08
-3. Planning
-n. New scope
-> 2
+The picker searches active projects by project, client, or agreement name. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use arrow keys to select suggestions. `Backspace` deletes and `Ctrl-U` clears the field.
 
-Start time [now]:
->
+Press `Enter` to start at **now**, or `Tab` to enter an optional timestamp using the same time formats as the CLI. Future start times are rejected in the dashboard. If that client already has a running timer, the action explicitly reads **Switch from [scope]**: the old timer stops and the new one starts at the chosen instant in one transaction. If either operation fails, nothing changes. Other clients' timers are untouched.
 
-Started ISSUE-08 for website at 09:32 (id:1)
-```
+Stopping or switching reports any time discarded at a monthly cap. A timer stopped or replaced externally cannot be accidentally stopped or switched using its stale displayed value. Refresh failures disable mutations until the database can be read again.
 
-The scope list contains the three most recently used distinct scopes for the selected project across replacement agreements. Starting a concurrent timer for a different client uses the explicit `tt start` command.
+### Daily totals
 
-### One or more timers are running
+- Today begins at midnight in the display timezone loaded at launch, with daylight-saving transitions respected.
+- Completed entries and running timers contribute only their portion between midnight and now. Concurrent and overlapping work is summed, not deduplicated.
+- Live work stops earning at its monthly cap, even if the timer remains running.
+- Earnings use each interval's original agreement rate. Monthly minimums and invoice rounding do not apply.
+- Different currencies are shown separately, never converted or added together. Display amounts round to two decimal places; this does not change stored work.
 
-The dialog lists the running timers. Selecting one stops it:
+Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
 
-```text
-$ tt
-
-Running:
-1. ISSUE-02    Support 2026    website    00:42
-2. ISSUE-05    Support 2026    API        00:18
-> 2
-
-Stopped ISSUE-05 at 12:32 (id:1)
-```
-
-Cancelling the dialog makes no changes.
+The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed, but very large catalogs or months with many entries can delay input while a refresh runs. Paginated catalogs and incremental summaries would be needed before scaling this to large shared datasets.
 
 ## Time input and storage
 

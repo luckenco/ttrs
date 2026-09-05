@@ -1,7 +1,7 @@
 use std::{
     collections::HashMap,
     env, fmt, fs,
-    io::{self, IsTerminal, Write},
+    io::{self, Write},
     path::PathBuf,
 };
 
@@ -28,7 +28,7 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
     let mut tracker = Tracker::open(path).map_err(core_error)?;
 
     match command {
-        Command::Bare => interactive(&mut tracker, &zone),
+        Command::Bare => super::tui::run(&mut tracker, &zone),
         Command::Start { project, scope, at } => {
             let project = resolve_project(&tracker, &project)?;
             let reference = now()?;
@@ -433,7 +433,7 @@ fn print_limit(
     }
 }
 
-fn format_limit(limit: Option<model::TimerLimit>) -> String {
+pub(super) fn format_limit(limit: Option<model::TimerLimit>) -> String {
     let Some(limit) = limit else {
         return "-".into();
     };
@@ -462,186 +462,7 @@ fn parse_date(value: &str) -> Result<civil::Date, Error> {
         .map_err(|_| Error::usage(format!("invalid date '{value}'")))
 }
 
-fn interactive(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
-    if !io::stdin().is_terminal() || !io::stdout().is_terminal() {
-        return Err(Error::usage(
-            "interactive mode requires a terminal; use an explicit command",
-        ));
-    }
-
-    let timers = tracker.running().map_err(core_error)?;
-    if timers.is_empty() {
-        interactive_start(tracker, zone)
-    } else {
-        interactive_stop(tracker, zone, &timers)
-    }
-}
-
-fn interactive_start(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
-    let projects = tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .filter(model::Project::is_active)
-        .collect::<Vec<_>>();
-    if projects.is_empty() {
-        return Err(Error::runtime(
-            "no projects exist; add one with 'tt project add'",
-        ));
-    }
-    let clients = tracker
-        .clients()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|client| (client.id(), client.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-    let agreements = tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .filter(model::ServiceAgreement::is_current)
-        .map(|agreement| (agreement.project(), agreement.name().to_owned()))
-        .collect::<HashMap<_, _>>();
-
-    line(format_args!("Project:"))?;
-    for (index, project) in projects.iter().enumerate() {
-        let client = clients
-            .get(&project.client())
-            .expect("projects always reference a client");
-        let agreement = agreements
-            .get(&project.id())
-            .expect("projects always have a current agreement");
-        line(format_args!(
-            "{}. {} ({client}; {agreement})",
-            index + 1,
-            project.name()
-        ))?;
-    }
-    let Some(index) = selection(projects.len())? else {
-        return cancelled();
-    };
-    let project = &projects[index];
-    let scopes = tracker.recent_scopes(project.id(), 3).map_err(core_error)?;
-
-    line(format_args!("\nScope:"))?;
-    for (index, scope) in scopes.iter().enumerate() {
-        line(format_args!("{}. {scope}", index + 1))?;
-    }
-    line(format_args!("n. New scope"))?;
-    let Some(choice) = prompt("> ")? else {
-        return cancelled();
-    };
-    if choice.eq_ignore_ascii_case("q") {
-        return cancelled();
-    }
-    let scope = if choice.eq_ignore_ascii_case("n") {
-        let Some(scope) = prompt("New scope: ")? else {
-            return cancelled();
-        };
-        scope
-    } else {
-        let index = parse_selection(&choice, scopes.len())?;
-        scopes[index].clone()
-    };
-
-    let Some(at) = prompt("\nStart time [now]: ")? else {
-        return cancelled();
-    };
-    let reference = now()?;
-    let started_at = if at.is_empty() {
-        reference
-    } else {
-        parse_time(&at, zone, reference)?
-    };
-    let timer = tracker
-        .start(command::Start::new(project.id(), scope, started_at).map_err(core_error)?)
-        .map_err(core_error)?;
-    line(format_args!(
-        "\nStarted {} for {} at {} (id:{})",
-        timer.scope(),
-        project.name(),
-        clock(timer.started_at(), zone),
-        timer.id()
-    ))?;
-    print_limit(tracker, &timer, reference, zone)
-}
-
-fn interactive_stop(
-    tracker: &mut Tracker,
-    zone: &TimeZone,
-    timers: &[model::RunningTimer],
-) -> Result<(), Error> {
-    let displayed_at = now()?;
-    line(format_args!("Running:"))?;
-    for (index, timer) in timers.iter().enumerate() {
-        let (agreement, project) = work_names(tracker, timer.agreement())?;
-        line(format_args!(
-            "{}. {}\t{}\t{}\t{}",
-            index + 1,
-            timer.scope(),
-            agreement,
-            project,
-            elapsed(timer.started_at(), displayed_at)
-        ))?;
-    }
-    let Some(index) = selection(timers.len())? else {
-        return cancelled();
-    };
-    let requested_end = now()?;
-    let entry = tracker
-        .end(command::End::new(timers[index].id(), requested_end))
-        .map_err(core_error)?;
-    line(format_args!(
-        "\nStopped {} at {} (id:{})",
-        entry.scope(),
-        clock(entry.ended_at(), zone),
-        entry.id()
-    ))?;
-    if entry.ended_at() < requested_end {
-        line(format_args!(
-            "Maximum reached; {} after the cap was not recorded.",
-            duration(entry.ended_at(), requested_end)
-        ))?;
-    }
-    Ok(())
-}
-
-fn selection(count: usize) -> Result<Option<usize>, Error> {
-    let Some(value) = prompt("> ")? else {
-        return Ok(None);
-    };
-    if value.eq_ignore_ascii_case("q") {
-        return Ok(None);
-    }
-    parse_selection(&value, count).map(Some)
-}
-
-fn parse_selection(value: &str, count: usize) -> Result<usize, Error> {
-    let selected = value
-        .parse::<usize>()
-        .map_err(|_| Error::usage("selection must be a listed number or 'q'"))?;
-    if selected == 0 || selected > count {
-        return Err(Error::usage("selection is out of range"));
-    }
-    Ok(selected - 1)
-}
-
-fn prompt(label: &str) -> Result<Option<String>, Error> {
-    let mut stdout = io::stdout().lock();
-    write!(stdout, "{label}").map_err(io_error)?;
-    stdout.flush().map_err(io_error)?;
-    let mut value = String::new();
-    if io::stdin().read_line(&mut value).map_err(io_error)? == 0 {
-        return Ok(None);
-    }
-    Ok(Some(value.trim().to_owned()))
-}
-
-fn cancelled() -> Result<(), Error> {
-    line(format_args!("\nCancelled."))
-}
-
-fn parse_time(value: &str, zone: &TimeZone, now: Timestamp) -> Result<Timestamp, Error> {
+pub(super) fn parse_time(value: &str, zone: &TimeZone, now: Timestamp) -> Result<Timestamp, Error> {
     if value == "now" {
         return Ok(now);
     }
@@ -687,7 +508,7 @@ fn digits(high: u8, low: u8) -> u8 {
     (high - b'0') * 10 + low - b'0'
 }
 
-fn clock(timestamp: Timestamp, zone: &TimeZone) -> String {
+pub(super) fn clock(timestamp: Timestamp, zone: &TimeZone) -> String {
     timestamp
         .to_zoned(zone.clone())
         .strftime("%H:%M")
@@ -699,7 +520,7 @@ fn elapsed(started_at: Timestamp, now: Timestamp) -> String {
     format!("{:02}:{:02}", seconds / 3600, seconds % 3600 / 60)
 }
 
-fn now() -> Result<Timestamp, Error> {
+pub(super) fn now() -> Result<Timestamp, Error> {
     match env::var("TT_NOW") {
         Ok(value) => value
             .parse()
