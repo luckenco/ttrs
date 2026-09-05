@@ -1,0 +1,20 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Clients  : menu                              "
+"Clients · All clients                             "
+"Search · / to focus                               "
+"All items                                         "
+"› Acme                                            "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"n new  / search  : menu  ? help                   "

@@ -56,13 +56,13 @@ pub(super) fn format_hours(hours: Option<u32>) -> String {
     hours.map_or_else(|| "-".into(), |hours| hours.to_string())
 }
 
-fn parse_hours(value: &str) -> Result<u32, Error> {
+pub(super) fn parse_hours(value: &str) -> Result<u32, Error> {
     value
         .parse()
         .map_err(|_| Error::usage(format!("invalid whole monthly hours '{value}'")))
 }
 
-fn parse_amount(value: &str, label: &str) -> Result<i64, Error> {
+pub(super) fn parse_amount(value: &str, label: &str) -> Result<i64, Error> {
     let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())

@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dashboard  2 Projects  3 Clients  [4 Agreements]  5 Settings                                     "
+"Current · All clients                                                                               "
+"Search · / to focus                                                                                 "
+"All items                                                                                           "
+"› Acme / website · Support · Current         │ Acme / website                                       "
+"                                             │ Agreement: Support · id:1                            "
+"                                             │ Effective: 2026-01-01 · Current                      "
+"                                             │ Hourly: EUR 100                                      "
+"                                             │ Billing minimum: None                                "
+"                                             │ Recording cap: None                                  "
+"                                             │ From 2026-01-01                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │ Tab: list/details · : actions                        "
+"↑↓/jk select   n new   Enter open   / search   : actions   ? help   q quit                          "

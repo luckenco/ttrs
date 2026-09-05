@@ -1,0 +1,20 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Agreements  : menu                           "
+"Current · All clients                             "
+"Search · / to focus                               "
+"All items                                         "
+"› Acme / website · Support · Current              "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"n new  / search  : menu  ? help                   "

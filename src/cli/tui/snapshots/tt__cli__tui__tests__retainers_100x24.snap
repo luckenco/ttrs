@@ -2,7 +2,7 @@
 source: src/cli/tui/tests.rs
 expression: terminal.backend()
 ---
-"tt  ·  Fri 02 Jan 10:00  UTC                                                                        "
+" [1 Dashboard]  2 Projects  3 Clients  4 Agreements  5 Settings                                     "
 "Worked today                     Earned today                      This month · estimate            "
 "01:00                            EUR 125.00                        EUR 10625.00                     "
 "                                                                                                    "
@@ -25,4 +25,4 @@ expression: terminal.backend()
 "Jan 2026 · 24:00 / 20:00 incl · EUR 0.00 overage                                                    "
 "Acme / Support · Monthly                                                                 EUR 5625.00"
 "Jan 2026 · 25:00 / 20:00 incl · EUR 625.00 overage                                                  "
-"↑↓/jk select   s start/switch   x stop   q quit                                                     "
+"↑↓/jk select   s start/switch   x stop now   l log   : actions   ? help   q quit                    "

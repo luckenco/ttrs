@@ -174,9 +174,9 @@ files on startup and keeps rules consistent across machines running the same
 build. Timezone-rule updates arrive through application updates; maintainers
 update the bundle with `cargo update -p jiff-tzdb` and rebuild.
 
-## Interactive dashboard
+## Interactive workspace
 
-Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashboard. It supports terminal splits down to 32 columns × 10 rows, using stacked totals and compact forms at smaller sizes. Explicit CLI commands remain unchanged; bare `tt` without a terminal returns a usage error.
+Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) workspace. **Dashboard, Projects, Clients, Agreements, and Settings** cover every CLI operation without leaving the TUI. It supports terminal splits down to 32 columns × 10 rows, using stacked totals and scrolling forms at smaller sizes. Explicit CLI commands remain unchanged; bare `tt` without a terminal returns a usage error.
 
 During development, schema changes require recreating the local database. There are no migrations or backward-compatibility guarantees.
 
@@ -186,21 +186,51 @@ The dashboard shows running timers with their project, client, agreement, elapse
 
 | Key | Action |
 | --- | --- |
-| `↑` / `↓` or `j` / `k` | Select a running timer |
+| `1`–`5` | Dashboard, Projects, Clients, Agreements, Settings |
+| `↑` / `↓` or `j` / `k` | Select a list row; scroll focused details |
+| `Enter` | Open details, browse a client's projects, or activate a focused control |
+| `/` | Search the current catalog; `Enter` / `Esc` returns to list navigation |
+| `Tab` / `Shift-Tab` | Focus list/details, or move between form fields |
+| `n` | Create an item in the current section; on an empty dashboard, begin setup |
+| `a` / `f` | Toggle current/all items or filter by client in Projects and Agreements |
 | `s` | Open the project-and-scope picker to start or switch |
-| `x` | Stop the selected timer immediately at now, without confirmation |
-| `q` or `Ctrl-C` | Quit; timers keep running |
-| `Esc` | Cancel a picker; on the dashboard, dismiss feedback |
+| `l` | Log completed time, including against historical agreements |
+| `x` | On Dashboard, stop the selected timer immediately at now, without confirmation |
+| `X` | On Dashboard, review a specified stop time |
+| `t` | On Dashboard, browse all totals and retainer estimates |
+| `:` | Search actions, including administration and section navigation |
+| `?` | Contextual workspace help |
+| `F1` | Full field values, help, and errors inside administrative forms |
+| `Esc` | Close the current layer; cancel the quick timer picker; dismiss dashboard feedback |
+| `q` | Quit from workspace screens; timers keep running |
+| `Ctrl-C` | Quit immediately, including from forms; unsaved drafts are discarded |
+
+Letters and numbers are literal text inside search and text fields, not shortcuts. Action menus show why an operation is unavailable. Wide catalogs show a selection preview; `Tab` focuses its scrolling details. In a small split, focused details occupy the full body. `Enter` also opens a full-detail view. Details and reviews support arrows, `j`/`k`, `PageUp`/`PageDown`, `Home`, and `End`. Lists preserve selection by identity, along with their search, client/status filters, and scroll state across section changes and refreshes.
 
 The picker fuzzy-searches active projects by project, client, or agreement name, ignoring case. For example, `wbst` matches `website`. Space-separated words match independently in any order; punctuation such as `!` and `^` is literal, not search syntax. Best matches appear first; ties and an empty query preserve project order. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use `↑`/`↓` to select suggestions. `←`/`→`, `Home`, and `End` move the cursor; `Backspace` and `Delete` remove characters, including whole Unicode graphemes. `Ctrl-U` clears the field. Bracketed paste inserts literal text without triggering shortcuts or submitting forms; pasted line breaks and tabs become spaces. Shortcut hints follow the current screen.
 
-Press `Enter` to start at **now**, or `Tab` to enter an optional timestamp using the same time formats as the CLI. Future start times are rejected in the dashboard. If that client already has a running timer, the action explicitly reads **Switch from [scope]**: the old timer stops and the new one starts at the chosen instant in one transaction. If either operation fails, nothing changes. Other clients' timers are untouched.
+Press `Enter` to start at **now**, or `Tab` to enter an optional timestamp using the same time formats as the CLI. The quick picker rejects future starts; use **: → Start timer at… (without switching)** for a reviewed start at any CLI-supported timestamp. Its review explicitly labels future starts, and the dashboard labels those timers **Scheduled** until their start time. This reviewed action never stops an existing timer.
+
+In the **quick `s` picker**, if that client already has a running timer, the action explicitly reads **Switch from [scope]**: the old timer stops and the new one starts at the chosen instant in one transaction. If either operation fails, nothing changes. Other clients' timers are untouched.
 
 Success feedback clears after three seconds. Form errors appear beside the relevant field and preserve your input. Stopping or switching reports any time discarded at a monthly cap; these warnings remain until dismissed with `Esc` on the dashboard, even after another successful action. A timer stopped or replaced externally cannot be accidentally stopped or switched using its stale displayed value. Refresh failures disable mutations until the database can be read again.
 
+### Setup and administration
+
+An empty dashboard offers **n → New client**, followed by a project in **2 Projects → n**. You do not need to know CLI syntax or type entity IDs. Client, project, and agreement fields open searchable choices, including client labels and historical agreement coverage dates.
+
+- **New project:** choose a client, enter the name and immutable billing timezone, then enter its initial agreement. Review and create both in one transaction.
+- **Pricing:** choose Hourly or Retainer. Hourly terms show a required rate and optional billing minimum. Retainers show a fee, included hours, and optional overage rate; hourly minimums are hidden and never submitted. Both support an independent optional hard monthly maximum. Monetary fields preserve up to six decimal places.
+- **Replace agreement:** select a project and review its current terms alongside the new terms and effective date. Existing agreements are never edited in place.
+- **Log time:** select a project and agreement, then scope and From/To timestamps. The current agreement is the default; choosing a historical agreement explicitly keeps backfills on their original terms. Reviews show resolved timestamps and duration.
+- **Archive/unarchive:** select a project and open `:`. Archival asks for the last active day, defaulting to today in the billing timezone. Unarchival explicitly confirms retroactive continuous coverage. Both explain possible changes to monthly estimates.
+- **Settings:** `5`, then `Enter`, changes the display timezone. A successful save immediately updates local input interpretation and dashboard totals, without changing stored UTC timestamps or immutable project billing timezones.
+
+In these forms, `Enter` chooses or advances; it does **not** submit from a text field. Focus the named Continue/Review action, inspect the review, then press `Enter` to confirm. Time values such as `now` are resolved when opening the review, so saving records exactly the reviewed interval. Use `Esc` to edit it again if you want a newer instant. Errors preserve drafts and focus invalid fields. `F1` exposes full help and long error messages at any size. `Esc` goes back; leaving a changed draft asks for **Enter/Esc to keep editing** or **d to discard**. Refresh failures disable saves, not editing. The quick `s` timer picker retains its fast `Enter`-to-start behavior.
+
 ### Daily totals
 
-- Today begins at midnight in the display timezone loaded at launch, with daylight-saving transitions respected.
+- Today begins at midnight in the active display timezone (loaded at launch or saved in Settings), with daylight-saving transitions respected.
 - Completed entries and running timers contribute only their portion between midnight and now. Concurrent and overlapping work is summed, not deduplicated.
 - Live work stops earning at its monthly cap, even if the timer remains running.
 - Hourly earnings use each interval's original agreement rate. Retainers contribute only the increase in monthly overage during today, accounting for earlier work in that billing month. Fixed fees are never allocated into daily earnings. Monthly minimums and invoice rounding do not apply.
@@ -226,13 +256,13 @@ For Vertex, this is **€5,000 + Flyeralarm hours × €125**, with no shapeID o
 - Partial months prorate both the fee and included hours by local calendar days of agreement coverage, just like existing maximums. Replacement dates end the previous agreement's coverage; the archival day is included. Unarchiving restores continuous coverage retroactively.
 - The base fee covers the whole agreed period in that month, not just elapsed days. Consequently, replacement or archival can revise the month's estimate and overage threshold. These are live estimates, not issued invoices.
 - Prorated included durations truncate to microseconds; base fees and overage charges truncate separately to millionths of currency. The UI rounds money to two decimal places and durations to whole displayed minutes. Invoice rounding is not applied.
-- Small terminals show how many retainer rows fit and ask you to resize for the rest. This section does not yet scroll independently.
+- Small terminals show how many retainer rows fit. Press `t` on Dashboard, or choose **Browse all totals and retainers** in `:`, to scroll through every currency and retainer without resizing.
 
 Keyboard actions remain instant. The dashboard has no decorative animation or pulsing indicators.
 
-Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
+Completed-entry history browsing, entry editing, mouse support, and configurable keys remain deferred. Historical **agreements** are browsable and usable for logging, but there is currently **no entry-editing workflow**, including in the CLI.
 
-The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. Daily entry lookup is indexed; one additional indexed range query totals monthly hourly work, clipping to each project's month. The combined estimate reuses existing retainer totals rather than querying each day. Retainer totals read each relevant agreement-month's entries on every refresh (at most two billing months intersect a display day). Very large catalogs or months with many entries can delay input while a refresh runs. Project search uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
+The dashboard targets a personal workspace: it loads project/agreement catalogs and calculates current cap usage synchronously each second. After administration is first opened, the workspace also reloads its client/project/agreement catalogs and rebuilds their searchable rows on refresh. Catalog forms retain their choices and drafts until explicitly changed or reopened. Catalog joins and previews use in-memory scans, not pagination; large catalogs can stall keyboard input. Detail scrolling uses Ratatui's rendered-line counting feature to bound scrolling to the same Unicode wrapping used for display. Daily entry lookup is indexed; one additional indexed range query totals monthly hourly work, clipping to each project's month. The combined estimate reuses existing retainer totals rather than querying each day. Retainer totals read each relevant agreement-month's entries on every refresh (at most two billing months intersect a display day). Very large catalogs or months with many entries can delay input while a refresh runs. The quick project picker uses `nucleo-matcher` synchronously, reusing labels and matcher scratch space and ranking only when the query changes. Large catalogs can still delay typing during a search. Paginated catalogs, background matching (for example, the higher-level `nucleo` crate), and incremental summaries would be needed before scaling this to large shared datasets.
 
 ## Time input and storage
 
@@ -271,6 +301,6 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 TUI layout and picker cursor snapshots live in `src/cli/tui/snapshots/`.
 They use a fixed clock and timezone, and run without a real terminal. For intentional
-rendering changes, run `cargo test --bin tt cli::tui::tests`, then review the pending
+rendering changes, run `cargo test --bin tt cli::tui`, then review the pending
 snapshots with `cargo insta review` (install once with `cargo install cargo-insta --locked`).
 Commit the accepted `.snap` files, not the pending `.snap.new` files, and rerun the tests.

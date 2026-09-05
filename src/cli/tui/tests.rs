@@ -10,7 +10,7 @@ use super::{
     view,
 };
 
-fn setup() -> (Tracker, App, Timestamp) {
+pub(super) fn setup() -> (Tracker, App, Timestamp) {
     let mut tracker = Tracker::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
@@ -656,7 +656,7 @@ fn retainer_estimates_render_separately_from_daily_earnings() {
 }
 
 #[test]
-fn empty_dashboard_shows_cli_setup_instructions() {
+fn empty_dashboard_offers_in_app_setup() {
     let tracker = Tracker::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());

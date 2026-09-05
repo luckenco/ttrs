@@ -1,0 +1,20 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Dashboard  : menu                            "
+"New client                                        "
+"Required                                          "
+"› Client name · 1/1                               "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"[ Review ]                                        "
+"Tab field  Enter next  F1 help                    "

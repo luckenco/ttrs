@@ -14,12 +14,16 @@ use super::{
     duration,
     input::Input,
     state::{self, App, Failure, Field, Message, Picker},
+    workspace::Overlay,
+    workspace_view,
 };
 
 pub(super) const MIN_WIDTH: u16 = 32;
 pub(super) const MIN_HEIGHT: u16 = 10;
 
 pub(super) fn draw(frame: &mut Frame, app: &mut App, now: Timestamp, zone: &TimeZone) {
+    let zone = app.workspace.zone.clone().unwrap_or_else(|| zone.clone());
+    let zone = &zone;
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
@@ -48,7 +52,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, now: Timestamp, zone: &Time
         now.to_zoned(zone.clone()).strftime("%a %d %b %H:%M"),
         zone.iana_name().unwrap_or("local")
     );
-    frame.render_widget(widgets::Paragraph::new(heading).dim(), header);
+    if app.picker.is_some() {
+        frame.render_widget(widgets::Paragraph::new(heading).dim(), header);
+    } else {
+        workspace_view::header(frame, app, header);
+    }
     frame.render_widget(
         widgets::Paragraph::new(clean(feedback))
             .style(feedback_style)
@@ -60,6 +68,9 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, now: Timestamp, zone: &Time
         hints,
     );
 
+    if app.picker.is_none() && workspace_view::draw(frame, app, now, zone, body) {
+        return;
+    }
     // Small splits use the whole body for forms, rather than nesting cramped boxes.
     if let Some(picker) = &mut app.picker
         && (compact || area.height < 22)
@@ -189,7 +200,7 @@ fn draw_dashboard(
     if app.snapshot.timers.is_empty() {
         let mut empty = "No running timers. Press s to start work.";
         if app.snapshot.projects.is_empty() {
-            empty = "No active projects. Set up in the CLI:\ntt client add --name <client>\ntt project add --help\nNew projects appear automatically.";
+            empty = "No active projects.\nn Create a client or project\n: Browse setup actions";
         }
         frame.render_widget(
             widgets::Paragraph::new(empty).wrap(widgets::Wrap { trim: false }),
@@ -217,7 +228,9 @@ fn draw_dashboard(
         if !compact {
             metadata.push_str(&format!(" · {}", clean(project.agreement.name())));
         }
-        if area.width >= 90 {
+        if timer.started_at() > now {
+            metadata = format!("Scheduled · {metadata}");
+        } else if area.width >= 90 {
             metadata.push_str(&format!(" · since {}", clock(timer.started_at(), zone)));
         }
         let mut lines = vec![columns(timer.scope(), text::Span::raw(elapsed), width).bold()];
@@ -255,7 +268,7 @@ fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: 
     let visible = usize::from(area.height.saturating_sub(1) / 2);
     let mut title = "Retainers · monthly estimate".to_owned();
     if visible < totals.len() {
-        title = format!("Retainers · {visible}/{} · resize", totals.len());
+        title = format!("Retainers · {visible}/{} · : totals", totals.len());
     }
     let mut lines = vec![text::Line::from(title).dim()];
     for total in totals.iter().take(visible) {
@@ -312,7 +325,7 @@ fn limit_amounts(values: &mut Vec<String>, rows: usize) {
     if values.len() > rows {
         let hidden = values.len() - rows + 1;
         values.truncate(rows);
-        values[rows - 1] = format!("+{hidden} curr.; resize");
+        values[rows - 1] = format!("+{hidden} curr.; : totals");
     }
 }
 
@@ -321,7 +334,7 @@ fn hours(micros: i128) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
-fn money(currency: &str, micros: i128) -> String {
+pub(super) fn money(currency: &str, micros: i128) -> String {
     let cents = (micros + 5_000) / 10_000;
     format!("{currency} {}.{:02}", cents / 100, cents % 100)
 }
@@ -498,7 +511,7 @@ fn draw_picker(
     }
 }
 
-fn input_field(
+pub(super) fn input_field(
     frame: &mut Frame,
     label: &str,
     input: &Input,
@@ -555,6 +568,7 @@ fn feedback(app: &App) -> (&str, style::Style) {
         return (error, style::Style::new().yellow());
     }
     if app.picker.is_none()
+        && !matches!(app.workspace.overlay, Some(Overlay::Form(_)))
         && let Some(error) = &app.error
     {
         return (&error.text, style::Style::new().red());
@@ -572,6 +586,11 @@ fn feedback(app: &App) -> (&str, style::Style) {
 }
 
 fn shortcuts(app: &App, compact: bool) -> &'static str {
+    if app.picker.is_none()
+        && let Some(hints) = workspace_view::shortcuts(app, compact)
+    {
+        return hints;
+    }
     if app.refresh_error.is_some() {
         if app.picker.is_some() {
             return "Read-only  Esc back  Ctrl-C quit";
@@ -586,13 +605,13 @@ fn shortcuts(app: &App, compact: bool) -> &'static str {
             "↑↓ recent   Tab field   Enter submit   Esc cancel   Ctrl-C quit"
         }
         None if app.error.is_some() || app.message.is_some() => "s new x stop Esc dismiss q quit",
-        None if app.snapshot.projects.is_empty() => "CLI setup required  q quit",
-        None if compact => "↑↓ select  s new  x stop  q quit",
-        None => "↑↓/jk select   s start/switch   x stop   q quit",
+        None if app.snapshot.projects.is_empty() => "n setup  : actions  ? help  q quit",
+        None if compact => "s start x stop : menu q quit",
+        None => "↑↓/jk select   s start/switch   x stop now   l log   : actions   ? help   q quit",
     }
 }
 
-fn selection() -> style::Style {
+pub(super) fn selection() -> style::Style {
     // Explicit paired RGB colors keep selection legible in light and dark themes.
     style::Style::new()
         .fg(style::Color::Rgb(18, 22, 28))
@@ -610,7 +629,7 @@ fn columns(left: &str, right: text::Span<'static>, width: usize) -> text::Line<'
     ])
 }
 
-fn truncate(value: &str, width: usize) -> String {
+pub(super) fn truncate(value: &str, width: usize) -> String {
     let value = clean(value);
     if value.width() <= width {
         return value;
@@ -631,7 +650,11 @@ fn truncate(value: &str, width: usize) -> String {
     clipped
 }
 
-fn clean(value: &str) -> String {
+pub(super) fn clean_lines(value: &str) -> String {
+    value.lines().map(clean).collect::<Vec<_>>().join("\n")
+}
+
+pub(super) fn clean(value: &str) -> String {
     value
         .chars()
         .map(|c| if c.is_control() { ' ' } else { c })

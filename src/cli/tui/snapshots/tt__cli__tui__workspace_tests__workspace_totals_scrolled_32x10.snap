@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Dashboard  : menu          "
+"Totals · monthly estimates · 49…"
+"C43 100.00                      "
+"C44 100.00                      "
+"C45 100.00                      "
+"C46 100.00                      "
+"C47 100.00                      "
+"C48 100.00                      "
+"C49 100.00                      "
+"↑↓ scroll  : actions  Esc back  "

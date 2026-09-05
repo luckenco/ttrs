@@ -586,6 +586,39 @@ send "xq"
 
 #[test]
 #[cfg(target_os = "macos")]
+fn workspace_setup_and_timezone_changes_work_without_leaving_the_terminal() {
+    for size in [(32, 10), (100, 24)] {
+        let case = Case::new();
+        pty(
+            &case,
+            size,
+            r#"
+await "projects."
+send "nAcme\r\r\r"
+send "2n\twebsite\t\t\r"
+send "Support\t\tEUR\t125.50\t\t\t\t\r\r"
+send "5\r\025Europe/Berlin\t\r\r"
+send "1s\rLocal\t1200\rq"
+"#,
+        );
+        assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");
+        let tracker = tt::Tracker::open(case.root.path().join("data/tt.sqlite3")).unwrap();
+        assert_eq!(tracker.clients().unwrap()[0].name(), "Acme");
+        assert_eq!(
+            tracker.projects().unwrap()[0]
+                .billing_timezone()
+                .iana_name(),
+            Some("UTC")
+        );
+        assert_eq!(
+            tracker.running().unwrap()[0].started_at().to_string(),
+            "2026-03-12T11:00:00Z"
+        );
+    }
+}
+
+#[test]
+#[cfg(target_os = "macos")]
 fn empty_dashboard_refreshes_cli_changes_and_restores_terminal_on_interrupts() {
     let case = Case::new();
     pty(

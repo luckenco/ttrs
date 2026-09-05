@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Dashboard  : menu          "
+"Log completed time              "
+"Enter: search and choose        "
+"› Project                       "
+"Acme / website                  "
+"Agreement · 2/5                 "
+"Support · id:1 · From 2026-01-01"
+"                                "
+"[ Review ]                      "
+"Tab field  Enter next  F1 help  "

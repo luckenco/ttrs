@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dashboard  [2 Projects]  3 Clients  4 Agreements  5 Settings                                     "
+"Actions                                                                                             "
+"› Search                                                                                            "
+"archive                                                                                             "
+"› Archive project…                                                                                  "
+"  Toggle current / all (archived and replaced) · a                                                  "
+"  Unarchive project… · unavailable                                                                  "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"Enter: open action · Esc: back                                                                      "
+"                                                                                                    "
+"↑↓ choose  Enter open  Esc back                                                                     "

@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Projects  : menu           "
+"Details · Tab: list · 5/11      "
+"Active                          "
+"                                "
+"Agreement: Support · id:1       "
+"Effective: 2026-01-01 · Current "
+"Hourly: EUR 100                 "
+"Billing minimum: None           "
+"Recording cap: None             "
+"↑↓ scroll  Tab list  : actions  "

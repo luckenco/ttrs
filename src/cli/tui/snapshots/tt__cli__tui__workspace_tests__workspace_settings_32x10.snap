@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Settings  : menu           "
+"Settings · 1/12                 "
+"Display timezone                "
+"UTC                             "
+"Source: Device timezone         "
+"                                "
+"Local time: 2026-01-02 10:00:00 "
+"                                "
+"Enter: change timezone          "
+"↑↓ scroll  Enter change  : menu "

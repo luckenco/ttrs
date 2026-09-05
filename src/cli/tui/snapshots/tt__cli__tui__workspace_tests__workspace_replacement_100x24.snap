@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" [1 Dashboard]  2 Projects  3 Clients  4 Agreements  5 Settings                                     "
+"Replace agreement                                                                                   "
+"Enter: search and choose                                                                            "
+"› Project                                                                                           "
+"Acme / website                                                                                      "
+"Agreement name · 2/8                                                                                "
+"                                                                                                    "
+"Pricing · 3/8                                                                                       "
+"Hourly                                                                                              "
+"Currency · 4/8                                                                                      "
+"EUR                                                                                                 "
+"Hourly rate · 5/8                                                                                   "
+"100                                                                                                 "
+"Billing minimum · 6/8                                                                               "
+"                                                                                                    "
+"Monthly maximum · 7/8                                                                               "
+"                                                                                                    "
+"Effective on · 8/8                                                                                  "
+"2026-01-02                                                                                          "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"[ Review ]                                                                                          "
+"Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details                                   "

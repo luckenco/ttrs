@@ -8,10 +8,11 @@ use tt::{Tracker, command, model};
 use super::{
     super::{Error, app::parse_time},
     input::Input,
-    search,
+    search, workspace,
 };
 
 pub(super) struct App {
+    pub workspace: workspace::Workspace,
     pub snapshot: model::Dashboard,
     pub selection: ListState,
     pub picker: Option<Picker>,
@@ -68,6 +69,7 @@ impl App {
             selection.select(Some(0));
         }
         Self {
+            workspace: workspace::Workspace::default(),
             snapshot,
             selection,
             picker: None,
@@ -78,7 +80,12 @@ impl App {
     }
 
     pub fn refresh(&mut self, tracker: &Tracker, now: Timestamp, zone: &TimeZone) {
-        match tracker.dashboard(now, zone) {
+        let zone = self.workspace.zone.clone().unwrap_or_else(|| zone.clone());
+        let result = tracker
+            .dashboard(now, &zone)
+            .map_err(core_error)
+            .and_then(|snapshot| self.workspace.refresh(tracker).map(|()| snapshot));
+        match result {
             Ok(snapshot) => {
                 let selected = self
                     .selection
@@ -103,7 +110,7 @@ impl App {
         }
     }
 
-    fn notify(&mut self, text: String, warning: Option<String>) {
+    pub(super) fn notify(&mut self, text: String, warning: Option<String>) {
         if let Some(warning) = warning {
             self.message = Some(Message::Warning(format!("{warning}. {text}")));
         } else if !matches!(self.message, Some(Message::Warning(_))) {
@@ -140,7 +147,7 @@ impl App {
                     selection.select(Some(0));
                 }
             }
-            None => {}
+            None => self.workspace.paste(text),
         }
     }
 
@@ -152,7 +159,8 @@ impl App {
         now: Timestamp,
         zone: &TimeZone,
     ) -> Result<bool, Error> {
-        let result = self.handle(key, tracker, now, zone);
+        let zone = self.workspace.zone.clone().unwrap_or_else(|| zone.clone());
+        let result = self.handle(key, tracker, now, &zone);
         if let Err(error) = &result {
             let field = match &self.picker {
                 Some(Picker::Scope { field, .. }) => Some(*field),
@@ -175,6 +183,11 @@ impl App {
     ) -> Result<bool, Error> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
+        }
+        if self.picker.is_none()
+            && let Some(quit) = self.workspace_key(key, tracker, now, zone)?
+        {
+            return Ok(quit);
         }
         if key.code == KeyCode::Esc {
             if self.picker.take().is_none() {
@@ -319,7 +332,9 @@ impl App {
                     let time = parse_time(time, zone, now).inspect_err(|_| *field = Field::Time)?;
                     if time > now {
                         *field = Field::Time;
-                        return Err(Error::usage("start time must not be future"));
+                        return Err(Error::usage(
+                            "Future start: use : Start timer at for review.",
+                        ));
                     }
                     let start = command::Start::new(project.project.id(), scope.to_owned(), time)
                         .map_err(core_error)?;
@@ -368,7 +383,7 @@ pub(super) fn scopes<'a>(recent: &'a [String], input: &'a str) -> Vec<&'a str> {
     choices
 }
 
-fn move_selection(selection: &mut ListState, count: usize, down: bool) {
+pub(super) fn move_selection(selection: &mut ListState, count: usize, down: bool) {
     if count == 0 {
         selection.select(None);
         return;
@@ -381,7 +396,7 @@ fn move_selection(selection: &mut ListState, count: usize, down: bool) {
     selection.select(Some(next));
 }
 
-fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> Option<String> {
+pub(super) fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> Option<String> {
     let us = requested.as_microsecond() - entry.ended_at().as_microsecond();
     if us <= 0 {
         return None;
@@ -392,6 +407,6 @@ fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> Option<String> {
     ))
 }
 
-fn core_error(error: tt::Error) -> Error {
+pub(super) fn core_error(error: tt::Error) -> Error {
     Error::runtime(error.to_string())
 }

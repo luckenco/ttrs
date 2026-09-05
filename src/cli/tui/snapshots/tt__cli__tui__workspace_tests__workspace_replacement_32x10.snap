@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Dashboard  : menu          "
+"Replace agreement               "
+"Enter: search and choose        "
+"› Project                       "
+"Acme / website                  "
+"Agreement name · 2/8            "
+"                                "
+"                                "
+"[ Review ]                      "
+"Tab field  Enter next  F1 help  "

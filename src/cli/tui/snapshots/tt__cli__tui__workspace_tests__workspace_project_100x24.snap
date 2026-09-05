@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" [1 Dashboard]  2 Projects  3 Clients  4 Agreements  5 Settings                                     "
+"New project · step 1/2                                                                              "
+"Enter: search and choose                                                                            "
+"› Client                                                                                            "
+"Acme                                                                                                "
+"Project name · 2/3                                                                                  "
+"                                                                                                    "
+"Billing timezone · 3/3                                                                              "
+"UTC                                                                                                 "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"[ Continue to agreement ]                                                                           "
+"Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details                                   "

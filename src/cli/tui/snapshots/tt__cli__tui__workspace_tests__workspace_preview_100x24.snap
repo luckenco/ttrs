@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dashboard  [2 Projects]  3 Clients  4 Agreements  5 Settings                                     "
+"Current · All clients                                                                               "
+"Search · / to focus                                                                                 "
+"All items                                                                                           "
+"› Acme / website                             │ › Details · 1/11                                     "
+"                                             │ website                                              "
+"                                             │ id:1                                                 "
+"                                             │ Client: Acme                                         "
+"                                             │ Billing timezone: UTC                                "
+"                                             │ Active                                               "
+"                                             │                                                      "
+"                                             │ Agreement: Support · id:1                            "
+"                                             │ Effective: 2026-01-01 · Current                      "
+"                                             │ Hourly: EUR 100                                      "
+"                                             │ Billing minimum: None                                "
+"                                             │ Recording cap: None                                  "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │                                                      "
+"                                             │ Tab: list/details · : actions                        "
+"↑↓ scroll  Tab list  : actions                                                                      "

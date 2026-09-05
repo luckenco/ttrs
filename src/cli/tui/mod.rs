@@ -13,12 +13,20 @@ use tt::Tracker;
 
 use super::{Error, app, io_error};
 
+mod catalog;
+mod choose;
+mod form;
 mod input;
 mod search;
 mod state;
 #[cfg(test)]
 mod tests;
 mod view;
+mod workflow;
+mod workspace;
+#[cfg(test)]
+mod workspace_tests;
+mod workspace_view;
 
 fn duration(us: i128) -> String {
     let seconds = us.max(0) / 1_000_000;

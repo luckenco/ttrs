@@ -424,7 +424,7 @@ fn duration(start: Timestamp, end: Timestamp) -> String {
     format_us(end.as_microsecond().saturating_sub(start.as_microsecond()))
 }
 
-fn parse_date(value: &str) -> Result<civil::Date, Error> {
+pub(super) fn parse_date(value: &str) -> Result<civil::Date, Error> {
     value
         .parse()
         .map_err(|_| Error::usage(format!("invalid date '{value}'")))
@@ -537,7 +537,14 @@ fn write_timezone(path: &std::path::Path, name: &str) -> Result<TimeZone, Error>
     Ok(zone)
 }
 
-fn iana_timezone(name: &str) -> Option<TimeZone> {
+pub(super) fn timezone_source() -> Result<&'static str, Error> {
+    if config_path()?.try_exists().map_err(io_error)? {
+        return Ok("Configured");
+    }
+    Ok("Device timezone")
+}
+
+pub(super) fn iana_timezone(name: &str) -> Option<TimeZone> {
     TimeZone::get(name)
         .ok()
         .filter(|zone| zone.iana_name().is_some())

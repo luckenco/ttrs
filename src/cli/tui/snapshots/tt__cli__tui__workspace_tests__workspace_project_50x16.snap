@@ -1,0 +1,20 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+"tt · Dashboard  : menu                            "
+"New project · step 1/2                            "
+"Enter: search and choose                          "
+"› Client                                          "
+"Acme                                              "
+"Project name · 2/3                                "
+"                                                  "
+"Billing timezone · 3/3                            "
+"UTC                                               "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"                                                  "
+"[ Continue to agreement ]                         "
+"Tab field  Enter next  F1 help                    "
