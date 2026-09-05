@@ -137,7 +137,7 @@ update the bundle with `cargo update -p jiff-tzdb` and rebuild.
 
 ## Interactive dashboard
 
-Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashboard. It requires a terminal of at least 50 columns × 16 rows. Explicit CLI commands remain unchanged; bare `tt` without a terminal returns a usage error.
+Bare `tt` opens a persistent, keyboard-only [Ratatui](https://ratatui.rs/) dashboard. It supports terminal splits down to 32 columns × 10 rows, using stacked totals and compact forms at smaller sizes. Explicit CLI commands remain unchanged; bare `tt` without a terminal returns a usage error.
 
 During development, schema changes require recreating the local database. There are no migrations or backward-compatibility guarantees.
 
@@ -151,13 +151,13 @@ The dashboard shows running timers with their project, client, agreement, elapse
 | `s` | Open the project-and-scope picker to start or switch |
 | `x` | Stop the selected timer immediately at now, without confirmation |
 | `q` or `Ctrl-C` | Quit; timers keep running |
-| `Esc` | Cancel a picker without making changes |
+| `Esc` | Cancel a picker; on the dashboard, dismiss feedback |
 
-The picker fuzzy-searches active projects by project, client, or agreement name, ignoring case. For example, `wbst` matches `website`. Space-separated words match independently in any order; punctuation such as `!` and `^` is literal, not search syntax. Best matches appear first; ties and an empty query preserve project order. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use arrow keys to select suggestions. `Backspace` deletes and `Ctrl-U` clears the field.
+The picker fuzzy-searches active projects by project, client, or agreement name, ignoring case. For example, `wbst` matches `website`. Space-separated words match independently in any order; punctuation such as `!` and `^` is literal, not search syntax. Best matches appear first; ties and an empty query preserve project order. Press `Enter` to choose one, then select one of its three most recent distinct scopes or type a new scope. Recent scopes span replacement agreements. Inside text fields, letters—including `j`, `k`, and `q`—are text; use `↑`/`↓` to select suggestions. `←`/`→`, `Home`, and `End` move the cursor; `Backspace` and `Delete` remove characters, including whole Unicode graphemes. `Ctrl-U` clears the field. Bracketed paste inserts literal text without triggering shortcuts or submitting forms; pasted line breaks and tabs become spaces. Shortcut hints follow the current screen.
 
 Press `Enter` to start at **now**, or `Tab` to enter an optional timestamp using the same time formats as the CLI. Future start times are rejected in the dashboard. If that client already has a running timer, the action explicitly reads **Switch from [scope]**: the old timer stops and the new one starts at the chosen instant in one transaction. If either operation fails, nothing changes. Other clients' timers are untouched.
 
-Stopping or switching reports any time discarded at a monthly cap. A timer stopped or replaced externally cannot be accidentally stopped or switched using its stale displayed value. Refresh failures disable mutations until the database can be read again.
+Success feedback clears after three seconds. Form errors appear beside the relevant field and preserve your input. Stopping or switching reports any time discarded at a monthly cap; these warnings remain until dismissed with `Esc` on the dashboard, even after another successful action. A timer stopped or replaced externally cannot be accidentally stopped or switched using its stale displayed value. Refresh failures disable mutations until the database can be read again.
 
 ### Daily totals
 
@@ -166,6 +166,9 @@ Stopping or switching reports any time discarded at a monthly cap. A timer stopp
 - Live work stops earning at its monthly cap, even if the timer remains running.
 - Earnings use each interval's original agreement rate. Monthly minimums and invoice rounding do not apply.
 - Different currencies are shown separately, never converted or added together. Display amounts round to two decimal places; this does not change stored work.
+- Daily work displays hours and minutes; individual timers retain seconds. Uncapped timers omit allowance text. Colors reinforce text labels rather than replacing them, and selected rows use an explicit high-contrast foreground/background pair.
+
+Keyboard actions remain instant. The dashboard has no decorative animation or pulsing indicators.
 
 Client, project, and agreement administration remains in the CLI. An empty dashboard points to `tt client add` and `tt project add --help`; new projects appear on refresh. History browsing, entry editing, mouse support, and configurable keys are deferred to the future full workspace. There is currently **no entry-editing workflow**, including in the CLI.
 

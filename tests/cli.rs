@@ -338,20 +338,24 @@ fn timezone_configuration_handles_named_and_unnamed_zones() {
 }
 
 #[cfg(target_os = "macos")]
-fn pty(case: &Case, interaction: &str) {
+fn pty(case: &Case, (columns, rows): (u16, u16), interaction: &str) {
     let script = format!(
         r#"
 set timeout 5
+proc fail {{code}} {{
+    catch {{exec pkill -KILL -P [exp_pid]}}
+    exit $code
+}}
 proc await {{text}} {{
     expect {{
         -exact $text {{}}
-        timeout {{exit 90}}
-        eof {{exit 91}}
+        timeout {{puts "Timed out waiting for $text"; fail 90}}
+        eof {{fail 91}}
     }}
 }}
-spawn -noecho sh -c {{stty rows 24 columns 100; before=$(stty -g); "$TT_BIN"; result=$?; test "$(stty -g)" = "$before" || exit 92; exit "$result"}}
+spawn -noecho sh -c {{stty rows {rows} columns {columns}; before=$(stty -g); "$TT_BIN"; result=$?; test "$(stty -g)" = "$before" || exit 92; exit "$result"}}
 {interaction}
-expect {{ eof {{}} timeout {{exit 93}} }}
+expect {{ eof {{}} timeout {{fail 93}} }}
 exit [lindex [wait] 3]
 "#
     );
@@ -363,7 +367,9 @@ exit [lindex [wait] 3]
         .env("TT_CONFIG_DIR", case.root.path().join("config"))
         .env("TT_NOW", "2026-03-12T12:00:00Z")
         .assert()
-        .success();
+        .success()
+        .stdout(predicates::str::contains("\x1b[?2004h"))
+        .stdout(predicates::str::contains("\x1b[?2004l"));
 }
 
 #[test]
@@ -391,13 +397,19 @@ fn dashboard_starts_cancels_switches_and_stops_without_exiting() {
     ]);
     pty(
         &case,
+        (32, 10),
         r#"
 await "timers."
 send "s"
 await "Project"
 send "web\r"
-await "Scope"
-send "Planning\t1100\r"
+await "Enter:"
+send "\033\[200~Planning\nqxs\033\[201~"
+after 100
+if {[string first "No running timers" [exec $env(TT_BIN) status]] < 0} {fail 94}
+send "\025"
+send "\033\[200~Plannig\033\[201~"
+send "\033\[Dn\033\[F\t1100\r"
 await "Started"
 send "q"
 "#,
@@ -405,12 +417,13 @@ send "q"
     assert!(case.ok(&["status"]).contains("Planning"));
     pty(
         &case,
+        (100, 24),
         r#"
 await "Planning"
 send "s"
 await "Project"
 send "\033"
-after 100
+await "\033\[?25l"
 send "s"
 await "Project"
 send "\r"
@@ -439,6 +452,7 @@ fn empty_dashboard_refreshes_cli_changes_and_restores_terminal_on_interrupts() {
     let case = Case::new();
     pty(
         &case,
+        (100, 24),
         r#"
 await "projects."
 exec $env(TT_BIN) client add --name Acme
@@ -452,6 +466,7 @@ send "\003"
     assert!(case.ok(&["status"]).contains("External"));
     pty(
         &case,
+        (100, 24),
         r#"
 await "External"
 exec kill -TERM [exec pgrep -P [exp_pid]]

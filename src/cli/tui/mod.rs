@@ -13,6 +13,7 @@ use tt::Tracker;
 
 use super::{Error, app, io_error};
 
+mod input;
 mod search;
 mod state;
 #[cfg(test)]
@@ -27,6 +28,14 @@ fn duration(us: i128) -> String {
         seconds / 60 % 60,
         seconds % 60
     )
+}
+
+struct PasteMode;
+
+impl Drop for PasteMode {
+    fn drop(&mut self) {
+        let _ = crossterm::execute!(io::stdout(), event::DisableBracketedPaste);
+    }
 }
 
 pub(super) fn run(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
@@ -55,35 +64,44 @@ pub(super) fn run(tracker: &mut Tracker, zone: &TimeZone) -> Result<(), Error> {
     let result = ratatui::try_init()
         .map_err(io_error)
         .and_then(|mut terminal| {
+            let _paste = PasteMode;
+            crossterm::execute!(io::stdout(), event::EnableBracketedPaste).map_err(io_error)?;
             let mut refresh = Instant::now() + Duration::from_secs(1);
             let mut now = now;
             loop {
                 if quit.load(Ordering::Relaxed) {
                     return Ok(());
                 }
+                app.expire(Instant::now());
                 terminal
                     .draw(|frame| view::draw(frame, &mut app, now, zone))
                     .map_err(io_error)?;
-                if event::poll(refresh.saturating_duration_since(Instant::now()))
-                    .map_err(io_error)?
-                    && let Event::Key(key) = event::read().map_err(io_error)?
-                    && key.kind == KeyEventKind::Press
-                {
+                let mut wake = refresh;
+                if let Some(state::Message::Success { until, .. }) = &app.message {
+                    wake = wake.min(*until);
+                }
+                if event::poll(wake.saturating_duration_since(Instant::now())).map_err(io_error)? {
+                    let event = event::read().map_err(io_error)?;
                     let size = terminal.size().map_err(io_error)?;
-                    if size.width < 50 || size.height < 16 {
-                        if key.code == KeyCode::Char('q')
-                            || (key.code == KeyCode::Char('c')
-                                && key.modifiers.contains(KeyModifiers::CONTROL))
+                    if size.width < view::MIN_WIDTH || size.height < view::MIN_HEIGHT {
+                        if let Event::Key(key) = event
+                            && (key.code == KeyCode::Char('q')
+                                || (key.code == KeyCode::Char('c')
+                                    && key.modifiers.contains(KeyModifiers::CONTROL)))
                         {
                             return Ok(());
                         }
                         continue;
                     }
                     now = super::app::now()?;
-                    match app.key(key, tracker, now, zone) {
-                        Ok(true) => return Ok(()),
-                        Ok(false) => {}
-                        Err(error) => app.message = format!("Error: {error}"),
+                    match event {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            if matches!(app.key(key, tracker, now, zone), Ok(true)) {
+                                return Ok(());
+                            }
+                        }
+                        Event::Paste(text) => app.paste(&text),
+                        _ => {}
                     }
                 }
                 if Instant::now() >= refresh {

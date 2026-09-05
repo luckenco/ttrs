@@ -1185,6 +1185,8 @@ dependencies = [
  "signal-hook",
  "tempfile",
  "thiserror",
+ "unicode-segmentation",
+ "unicode-width",
 ]
 
 [[package]]

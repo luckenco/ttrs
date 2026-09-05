@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/tests.rs
+expression: terminal.backend()
+---
+"tt  ·  Fri 02 Jan 10:00  UTC    "
+"Scope: Planning                 "
+"› Planning                      "
+"› Time: bad time                "
+"Error: invalid time 'bad time'  "
+"                                "
+"Enter: Start                    "
+"                                "
+"                                "
+"↑↓ recent  Tab field  Esc back  "

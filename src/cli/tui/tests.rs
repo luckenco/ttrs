@@ -4,8 +4,9 @@ use ratatui::{Terminal, backend::TestBackend};
 use tt::{Tracker, command, model};
 
 use super::{
+    input::Input,
     search,
-    state::{App, Picker},
+    state::{App, Field, Message, Picker},
     view,
 };
 
@@ -64,7 +65,7 @@ fn form_errors_and_cancel_do_not_mutate_work_and_shortcuts_are_text_in_fields() 
             .unwrap()
         );
     }
-    assert!(matches!(&app.picker, Some(Picker::Scope { input, .. }) if input == "qxsjk"));
+    assert!(matches!(&app.picker, Some(Picker::Scope { input, .. }) if input.as_str() == "qxsjk"));
     assert!(tracker.running().unwrap().is_empty());
     app.key(
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
@@ -112,7 +113,13 @@ fn enter_starts_a_recent_scope_and_x_stops_immediately() {
     )
     .unwrap();
     assert!(tracker.running().unwrap().is_empty());
-    assert!(app.message.contains("Stopped Recent"));
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text()
+            .contains("Stopped Recent")
+    );
 }
 
 #[test]
@@ -237,6 +244,7 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
         KeyCode::Char('p'),
         KeyCode::Char('i'),
         KeyCode::Down,
+        KeyCode::Home, // Moving the cursor must not reset the selected fuzzy result.
     ] {
         app.key(
             KeyEvent::new(code, KeyModifiers::NONE),
@@ -278,7 +286,7 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
         )
         .unwrap();
     app.refresh(&tracker, now, &TimeZone::UTC);
-    for (width, height) in [(100, 24), (50, 16), (20, 5)] {
+    for (width, height) in [(100, 24), (50, 16), (32, 10), (20, 5)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
@@ -304,6 +312,240 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
             .unwrap();
         let cursor = terminal.get_cursor_position().unwrap();
         insta::assert_snapshot!(name, format!("{}Cursor: {cursor:?}", terminal.backend()));
+    }
+}
+
+#[test]
+fn text_editing_moves_by_grapheme_and_keeps_the_cursor_visible() {
+    let mut input = Input::default();
+    input.insert("cafe\u{301}界👩‍💻");
+    assert!(!input.key(KeyCode::Left.into()));
+    assert!(input.key(KeyCode::Backspace.into()));
+    assert_eq!(input.as_str(), "cafe\u{301}👩‍💻");
+    input.key(KeyCode::Home.into());
+    input.key(KeyCode::Right.into());
+    input.key(KeyCode::Delete.into());
+    assert_eq!(input.as_str(), "cfe\u{301}👩‍💻");
+    input.key(KeyCode::End.into());
+    input.key(KeyCode::Backspace.into());
+    input.key(KeyCode::Backspace.into());
+    assert_eq!(input.as_str(), "cf");
+    input.key(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+    input.insert("🇦x🇧");
+    input.key(KeyCode::Home.into());
+    input.key(KeyCode::Right.into());
+    input.key(KeyCode::Delete.into());
+    input.key(KeyCode::Backspace.into());
+    assert_eq!(input.as_str(), ""); // Deletion joined two indicators into one flag.
+    input.insert("abcdefgh界");
+    assert_eq!(input.window(5), ("gh界", 4));
+    input.key(KeyCode::Home.into());
+    assert_eq!(input.window(5), ("abcde", 0));
+    input.insert("X");
+    assert_eq!(input.as_str(), "Xabcdefgh界");
+}
+
+#[test]
+fn paste_is_literal_updates_fuzzy_search_and_never_submits() {
+    let (mut tracker, mut app, now) = setup();
+    app.paste("sqx\n");
+    assert!(app.picker.is_none());
+    app.key(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("wbst");
+    assert!(
+        matches!(&app.picker, Some(Picker::Project { projects, .. }) if projects.matches().len() == 1)
+    );
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("ISSUE-123\nqxs\t界\u{1b}\u{7}");
+    assert!(
+        matches!(&app.picker, Some(Picker::Scope { input, .. }) if input.as_str() == "ISSUE-123 qxs 界")
+    );
+    assert!(tracker.running().unwrap().is_empty());
+    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("0900");
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert_eq!(tracker.running().unwrap()[0].scope(), "ISSUE-123 qxs 界");
+    assert!(app.picker.is_none());
+}
+
+#[test]
+fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
+    let (mut tracker, mut app, now) = setup();
+    for code in [KeyCode::Char('s'), KeyCode::Enter] {
+        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+            .unwrap();
+    }
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert!(matches!(&app.error, Some(error) if error.field == Some(Field::Scope)));
+    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    for (width, height) in [(32, 10), (50, 16), (100, 24)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+            .unwrap();
+        insta::assert_snapshot!(format!("scope_error_{width}x{height}"), terminal.backend());
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Error:"));
+        assert!(screen.contains("Enter: Start"));
+        assert!(!screen.contains("q quit"));
+        assert!(!screen.contains("x stop"));
+    }
+    app.paste("Planning");
+    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("bad time");
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert!(matches!(
+        app.picker,
+        Some(Picker::Scope {
+            field: Field::Time,
+            ..
+        })
+    ));
+    let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("time_error_compact", terminal.backend());
+    assert!(terminal.backend().to_string().contains("bad time"));
+    assert!(tracker.running().unwrap().is_empty());
+    app.refresh_error = Some("Refresh failed; actions disabled".into());
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("Waiting for database")
+    );
+    assert!(!terminal.backend().to_string().contains("Enter: Start"));
+    assert!(tracker.running().unwrap().is_empty());
+}
+
+#[test]
+fn cap_warnings_persist_until_dismissed_but_successes_expire() {
+    let (mut tracker, mut app, now) = setup();
+    let original = &app.snapshot.projects[0];
+    let (project, _) = tracker
+        .add_project(
+            original.client.id(),
+            "capped".into(),
+            "UTC".into(),
+            model::NewAgreement::new(
+                "Support".into(),
+                original.agreement.hourly_rate().clone(),
+                model::MonthlyHours::new(None, Some(1)).unwrap(),
+                original.agreement.effective_on(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    tracker
+        .start(
+            command::Start::new(
+                project.id(),
+                "Planning".into(),
+                "2026-01-02T08:00:00Z".parse().unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.selection.select(Some(0));
+    let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("capped_timer_compact", terminal.backend());
+    app.key(KeyCode::Char('x').into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert!(matches!(app.message, Some(Message::Warning(_))));
+    assert!(
+        app.message
+            .as_ref()
+            .unwrap()
+            .text()
+            .starts_with("Maximum reached; 01:00:00 not recorded")
+    );
+    app.expire(std::time::Instant::now() + std::time::Duration::from_secs(60));
+    app.key(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("website");
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    app.paste("New task");
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert!(matches!(app.message, Some(Message::Warning(_)))); // Success does not erase discarded work.
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("cap_warning_compact", terminal.backend());
+    app.key(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert!(app.message.is_none());
+    let later = now.checked_add(jiff::SignedDuration::from_secs(1)).unwrap();
+    app.key(
+        KeyCode::Char('x').into(),
+        &mut tracker,
+        later,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    let Some(Message::Success { until, .. }) = app.message else {
+        panic!("expected success")
+    };
+    app.expire(until - std::time::Duration::from_millis(1));
+    assert!(app.message.is_some());
+    app.expire(until);
+    assert!(app.message.is_none());
+}
+
+#[test]
+fn selection_has_explicit_contrast_on_light_and_dark_backgrounds() {
+    use ratatui::style;
+    let (mut tracker, mut app, now) = setup();
+    let project = app.snapshot.projects[0].project.id();
+    tracker
+        .start(command::Start::new(project, "Planning".into(), now).unwrap())
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.selection.select(Some(0));
+    for (foreground, background) in [
+        (style::Color::White, style::Color::Black),
+        (style::Color::Black, style::Color::White),
+    ] {
+        let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                frame
+                    .buffer_mut()
+                    .set_style(area, style::Style::new().fg(foreground).bg(background));
+                view::draw(frame, &mut app, now, &TimeZone::UTC);
+            })
+            .unwrap();
+        let cells = &terminal.backend().buffer().content;
+        let selected = cells.iter().find(|cell| cell.symbol() == "›").unwrap();
+        assert_eq!(selected.fg, style::Color::Rgb(18, 22, 28));
+        assert_eq!(selected.bg, style::Color::Rgb(232, 236, 240));
     }
 }
 

@@ -1,3 +1,5 @@
+use std::time::{Duration, Instant};
+
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::{Timestamp, tz::TimeZone};
 use ratatui::widgets::ListState;
@@ -5,6 +7,7 @@ use tt::{Tracker, command, model};
 
 use super::{
     super::{Error, app::parse_time},
+    input::Input,
     search,
 };
 
@@ -12,28 +15,47 @@ pub(super) struct App {
     pub snapshot: model::Dashboard,
     pub selection: ListState,
     pub picker: Option<Picker>,
-    pub message: String,
-    pub stale: bool,
+    pub message: Option<Message>,
+    pub error: Option<Failure>,
+    pub refresh_error: Option<String>,
+}
+
+pub(super) struct Failure {
+    pub text: String,
+    pub field: Option<Field>,
+}
+
+pub(super) enum Message {
+    Success { text: String, until: Instant },
+    Warning(String),
+}
+
+impl Message {
+    pub fn text(&self) -> &str {
+        match self {
+            Self::Success { text, .. } | Self::Warning(text) => text,
+        }
+    }
 }
 
 pub(super) enum Picker {
     Project {
         projects: search::Projects,
-        query: String,
+        query: Input,
         selection: ListState,
     },
     Scope {
         project: Box<model::ProjectSummary>,
         previous: Option<model::RunningTimer>,
         recent: Vec<String>,
-        input: String,
+        input: Input,
         selection: ListState,
-        at: String,
+        at: Input,
         field: Field,
     },
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 pub(super) enum Field {
     Scope,
     Time,
@@ -49,8 +71,9 @@ impl App {
             snapshot,
             selection,
             picker: None,
-            message: String::new(),
-            stale: false,
+            message: None,
+            error: None,
+            refresh_error: None,
         }
     }
 
@@ -64,15 +87,60 @@ impl App {
                     .and_then(|old| snapshot.timers.iter().position(|s| s.timer == old.timer));
                 self.selection.select(selected);
                 self.snapshot = snapshot;
-                if self.stale {
-                    self.message = "Connection restored.".into();
+                if self.refresh_error.take().is_some() {
+                    self.notify("Connection restored.".into(), None);
                 }
-                self.stale = false;
             }
             Err(error) => {
-                self.stale = true;
-                self.message = format!("Refresh failed (actions disabled): {error}");
+                self.refresh_error = Some(format!("Refresh failed; actions disabled: {error}"));
             }
+        }
+    }
+
+    pub fn expire(&mut self, now: Instant) {
+        if matches!(&self.message, Some(Message::Success { until, .. }) if now >= *until) {
+            self.message = None;
+        }
+    }
+
+    fn notify(&mut self, text: String, warning: Option<String>) {
+        if let Some(warning) = warning {
+            self.message = Some(Message::Warning(format!("{warning}. {text}")));
+        } else if !matches!(self.message, Some(Message::Warning(_))) {
+            self.message = Some(Message::Success {
+                text,
+                until: Instant::now() + Duration::from_secs(3),
+            });
+        }
+    }
+
+    pub fn paste(&mut self, text: &str) {
+        match &mut self.picker {
+            Some(Picker::Project {
+                projects,
+                query,
+                selection,
+            }) => {
+                if !query.insert(text) {
+                    return;
+                }
+                projects.filter(query.as_str());
+                selection.select(Some(0));
+            }
+            Some(Picker::Scope {
+                input,
+                at,
+                field,
+                selection,
+                ..
+            }) => {
+                if *field == Field::Time {
+                    at.insert(text);
+                } else if input.insert(text) {
+                    selection.select(Some(0));
+                }
+            }
+            None => {}
         }
     }
 
@@ -84,14 +152,35 @@ impl App {
         now: Timestamp,
         zone: &TimeZone,
     ) -> Result<bool, Error> {
+        let result = self.handle(key, tracker, now, zone);
+        if let Err(error) = &result {
+            let field = match &self.picker {
+                Some(Picker::Scope { field, .. }) => Some(*field),
+                _ => None,
+            };
+            self.error = Some(Failure {
+                text: error.to_string(),
+                field,
+            });
+        }
+        result
+    }
+
+    fn handle(
+        &mut self,
+        key: KeyEvent,
+        tracker: &mut Tracker,
+        now: Timestamp,
+        zone: &TimeZone,
+    ) -> Result<bool, Error> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
         if key.code == KeyCode::Esc {
-            self.picker = None;
-            if !self.stale {
-                self.message.clear();
+            if self.picker.take().is_none() {
+                self.message = None;
             }
+            self.error = None;
             return Ok(false);
         }
         if self.picker.is_some() {
@@ -106,15 +195,17 @@ impl App {
             KeyCode::Up | KeyCode::Char('k') => {
                 move_selection(&mut self.selection, self.snapshot.timers.len(), false)
             }
-            KeyCode::Char('s') if !self.stale => {
-                self.message.clear();
+            KeyCode::Char('s')
+                if self.refresh_error.is_none() && !self.snapshot.projects.is_empty() =>
+            {
+                self.error = None;
                 self.picker = Some(Picker::Project {
                     projects: search::Projects::new(self.snapshot.projects.clone()),
-                    query: String::new(),
+                    query: Input::default(),
                     selection: ListState::default().with_selected(Some(0)),
                 });
             }
-            KeyCode::Char('x') if !self.stale => {
+            KeyCode::Char('x') if self.refresh_error.is_none() => {
                 if let Some(status) = self
                     .selection
                     .selected()
@@ -123,7 +214,8 @@ impl App {
                     let entry = tracker
                         .end_if_current(&status.timer, now)
                         .map_err(core_error)?;
-                    self.message = format!("Stopped {}{}", entry.scope(), overflow(&entry, now));
+                    self.notify(format!("Stopped {}", entry.scope()), overflow(&entry, now));
+                    self.error = None;
                     self.refresh(tracker, now, zone);
                 }
             }
@@ -174,15 +266,15 @@ impl App {
                         project: Box::new(project),
                         previous,
                         recent,
-                        input: String::new(),
+                        input: Input::default(),
                         selection: ListState::default().with_selected(Some(0)),
-                        at: String::new(),
+                        at: Input::default(),
                         field: Field::Scope,
                     });
                 }
                 _ => {
-                    if edit_text(query, key) {
-                        projects.filter(query);
+                    if query.key(key) {
+                        projects.filter(query.as_str());
                         selection.select(Some(0));
                     }
                 }
@@ -203,43 +295,46 @@ impl App {
                     };
                 }
                 KeyCode::Down if *field == Field::Scope => {
-                    move_selection(selection, scopes(recent, input).len(), true)
+                    move_selection(selection, scopes(recent, input.as_str()).len(), true)
                 }
                 KeyCode::Up if *field == Field::Scope => {
-                    move_selection(selection, scopes(recent, input).len(), false)
+                    move_selection(selection, scopes(recent, input.as_str()).len(), false)
                 }
-                KeyCode::Enter if !self.stale => {
-                    let choices = scopes(recent, input);
+                KeyCode::Enter if self.refresh_error.is_none() => {
+                    self.error = None;
+                    let choices = scopes(recent, input.as_str());
                     let scope = selection
                         .selected()
                         .and_then(|i| choices.get(i))
                         .copied()
-                        .unwrap_or(input);
-                    let time = parse_time(
-                        if at.trim().is_empty() {
-                            "now"
-                        } else {
-                            at.trim()
-                        },
-                        zone,
-                        now,
-                    )?;
+                        .unwrap_or(input.as_str());
+                    if scope.trim().is_empty() {
+                        *field = Field::Scope;
+                        return Err(Error::usage("Enter a scope or choose a recent one."));
+                    }
+                    let mut time = at.as_str().trim();
+                    if time.is_empty() {
+                        time = "now";
+                    }
+                    let time = parse_time(time, zone, now).inspect_err(|_| *field = Field::Time)?;
                     if time > now {
+                        *field = Field::Time;
                         return Err(Error::usage("start time must not be future"));
                     }
                     let start = command::Start::new(project.project.id(), scope.to_owned(), time)
                         .map_err(core_error)?;
-                    let (message, timer) = if let Some(old) = previous {
+                    let (message, timer, warning) = if let Some(old) = previous {
                         let (entry, timer) = tracker.switch(old, start).map_err(core_error)?;
                         (
-                            format!("Switched to {}{}", timer.scope(), overflow(&entry, time)),
+                            format!("Switched to {}", timer.scope()),
                             timer,
+                            overflow(&entry, time),
                         )
                     } else {
                         let timer = tracker.start(start).map_err(core_error)?;
-                        (format!("Started {}", timer.scope()), timer)
+                        (format!("Started {}", timer.scope()), timer, None)
                     };
-                    self.message = message;
+                    self.notify(message, warning);
                     self.picker = None;
                     self.refresh(tracker, now, zone);
                     self.selection
@@ -247,8 +342,8 @@ impl App {
                 }
                 _ => {
                     if *field == Field::Time {
-                        edit_text(at, key);
-                    } else if edit_text(input, key) {
+                        at.key(key);
+                    } else if input.key(key) {
                         selection.select(Some(0));
                     }
                 }
@@ -286,34 +381,15 @@ fn move_selection(selection: &mut ListState, count: usize, down: bool) {
     selection.select(Some(next));
 }
 
-fn edit_text(text: &mut String, key: KeyEvent) -> bool {
-    match key.code {
-        KeyCode::Char('u') if key.modifiers.contains(KeyModifiers::CONTROL) => text.clear(),
-        KeyCode::Char(c)
-            if !key
-                .modifiers
-                .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                && !c.is_control() =>
-        {
-            text.push(c)
-        }
-        KeyCode::Backspace => {
-            text.pop();
-        }
-        _ => return false,
-    }
-    true
-}
-
-fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> String {
+fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> Option<String> {
     let us = requested.as_microsecond() - entry.ended_at().as_microsecond();
     if us <= 0 {
-        return String::new();
+        return None;
     }
-    format!(
-        "; maximum reached, {} not recorded",
+    Some(format!(
+        "Maximum reached; {} not recorded",
         super::duration(i128::from(us))
-    )
+    ))
 }
 
 fn core_error(error: tt::Error) -> Error {

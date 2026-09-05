@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/tests.rs
+expression: terminal.backend()
+---
+"tt  ·  Fri 02 Jan 10:00  UTC                                                                        "
+"Worked today                                      Earned today                                      "
+"00:00                                             —                                                 "
+"            ╭ Start / switch ──────────────────────────────────────────────────────────╮            "
+"Running · 0 │Acme / website                                                            │            "
+"No running t│› Scope                                                                   │            "
+"            │Type a scope                                                              │            "
+"            │Error: Enter a scope or choose a recent one.                              │            "
+"            │                                                                          │            "
+"            │Time · blank = now                                                        │            "
+"            │now                                                                       │            "
+"            │                                                                          │            "
+"            │                                                                          │            "
+"            │                                                                          │            "
+"            │                                                                          │            "
+"            │                                                                          │            "
+"            │                                                                          │            "
+"            │Enter: Start                                                              │            "
+"            ╰──────────────────────────────────────────────────────────────────────────╯            "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"↑↓ recent   Tab field   Enter submit   Esc cancel   Ctrl-C quit                                     "
