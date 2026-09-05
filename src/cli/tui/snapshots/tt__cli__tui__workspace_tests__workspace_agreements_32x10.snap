@@ -2,13 +2,13 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-"tt · Agreements  : menu         "
+" 1 Dash  [2 Agreements]  : menu "
 "Current · All clients           "
 "Search · / to focus             "
 "All items                       "
-"› Acme / website · Support · Cu…"
+"› Support · Acme / website · Cu…"
 "                                "
 "                                "
 "                                "
 "                                "
-"n new  / search  : menu  ? help "
+"l log time  / search  : menu    "

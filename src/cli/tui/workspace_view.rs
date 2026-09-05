@@ -15,7 +15,8 @@ use super::{
 };
 
 pub(super) fn header(frame: &mut Frame, app: &App, area: Rect) {
-    if area.width < 76 {
+    let primary = Section::PRIMARY.contains(&app.workspace.section);
+    if !primary && area.width < 60 {
         frame.render_widget(
             widgets::Paragraph::new(format!("tt · {}  : menu", app.workspace.section.title()))
                 .bold(),
@@ -23,18 +24,25 @@ pub(super) fn header(frame: &mut Frame, app: &App, area: Rect) {
         );
         return;
     }
-    let spans = Section::ALL
+    let mut spans = Section::PRIMARY
         .into_iter()
         .enumerate()
         .map(|(i, section)| {
+            let mut title = section.title();
+            if section == Section::Dashboard && area.width < 40 {
+                title = "Dash";
+            }
             if section == app.workspace.section {
-                text::Span::raw(format!(" [{} {}] ", i + 1, section.title()))
-                    .style(view::selection())
+                text::Span::raw(format!(" [{} {}] ", i + 1, title)).style(view::selection())
             } else {
-                text::Span::raw(format!(" {} {} ", i + 1, section.title())).dim()
+                text::Span::raw(format!(" {} {} ", i + 1, title)).dim()
             }
         })
         .collect::<Vec<_>>();
+    if !primary {
+        spans.push(text::Span::raw(format!(" · {}", app.workspace.section.title())).bold());
+    }
+    spans.push(text::Span::raw(" : menu").dim());
     frame.render_widget(widgets::Paragraph::new(text::Line::from(spans)), area);
 }
 
@@ -460,12 +468,28 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         }
         Some(Overlay::Detail { .. }) => Some("↑↓ scroll  : actions  Esc back"),
         Some(_) => Some("↑↓ choose  Enter open  Esc back"),
+        None if app.workspace.section == Section::Agreements
+            && app.workspace.browser().is_some_and(|b| b.preview) =>
+        {
+            Some("↑↓ scroll  l log  Tab list  : menu")
+        }
         None if app.workspace.browser().is_some_and(|b| b.preview) => {
             Some("↑↓ scroll  Tab list  : actions")
         }
         None if app.workspace.browser().is_some_and(|b| b.searching) => {
             Some("↑↓ select  Enter done  Esc done")
         }
+        None if app.workspace.section == Section::Agreements
+            && app.workspace.catalogs.projects.is_empty() =>
+        {
+            Some("n setup  : actions  ? help")
+        }
+        None if app.workspace.section == Section::Agreements && compact => {
+            Some("l log time  / search  : menu")
+        }
+        None if app.workspace.section == Section::Agreements => Some(
+            "↑↓/jk select   l log time   n replace terms   Enter details   / search   : actions",
+        ),
         None if app.workspace.section == Section::Settings => {
             Some("↑↓ scroll  Enter change  : menu")
         }

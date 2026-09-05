@@ -2,7 +2,7 @@
 source: src/cli/tui/tests.rs
 expression: terminal.backend()
 ---
-"tt · Dashboard  : menu                            "
+" [1 Dashboard]  2 Agreements  : menu              "
 "Worked today  00:00                               "
 "Earned today  —                                   "
 "Month (est.)  —                                   "

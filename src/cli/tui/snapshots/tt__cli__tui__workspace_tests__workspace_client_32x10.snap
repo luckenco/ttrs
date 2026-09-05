@@ -2,7 +2,7 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-"tt · Dashboard  : menu          "
+" [1 Dash]  2 Agreements  : menu "
 "New client                      "
 "Required                        "
 "› Client name · 1/1             "

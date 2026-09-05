@@ -2,7 +2,7 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-"tt · Dashboard  : menu          "
+" [1 Dash]  2 Agreements  : menu "
 "Review · New client · 1/1       "
 "Client name: Café 界 👩‍💻         " Hidden by multi-width symbols: [(19, " "), (22, " ")]
 "                                "

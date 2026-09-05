@@ -2,7 +2,7 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-" 1 Dashboard  [2 Projects]  3 Clients  4 Agreements  5 Settings                                     "
+" 1 Dashboard  2 Agreements  · Projects : menu                                                       "
 "Actions                                                                                             "
 "› Search                                                                                            "
 "archive                                                                                             "

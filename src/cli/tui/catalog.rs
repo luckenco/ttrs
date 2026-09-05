@@ -119,10 +119,10 @@ impl Catalogs {
                 .map(|r| Row {
                     reference: Reference::Agreement(r.agreement.id()),
                     label: format!(
-                        "{} / {} · {} · {}{}",
+                        "{} · {} / {} · {}{}",
+                        r.agreement.name(),
                         r.client_name,
                         r.project_name,
-                        r.agreement.name(),
                         if r.agreement.is_current() {
                             "Current"
                         } else {

@@ -2,7 +2,7 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-"tt · Dashboard  : menu                            "
+" [1 Dashboard]  2 Agreements  : menu              "
 "Display timezone                                  "
 "IANA name, e.g. Europe/Berlin                     "
 "› Display timezone · 1/1                          "

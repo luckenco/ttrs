@@ -2,7 +2,7 @@
 source: src/cli/tui/tests.rs
 expression: terminal.backend()
 ---
-" [1 Dashboard]  2 Projects  3 Clients  4 Agreements  5 Settings                                     "
+" [1 Dashboard]  2 Agreements  : menu                                                                "
 "Worked today                     Earned today                      This month · estimate            "
 "01:00                            EUR 125.00                        EUR 10625.00                     "
 "                                                                                                    "

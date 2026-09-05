@@ -595,9 +595,10 @@ fn workspace_setup_and_timezone_changes_work_without_leaving_the_terminal() {
             r#"
 await "projects."
 send "nAcme\r\r\r"
-send "2n\twebsite\t\t\r"
+send "3n\twebsite\t\t\r"
 send "Support\t\tEUR\t125.50\t\t\t\t\r\r"
 send "5\r\025Europe/Berlin\t\r\r"
+send "2jlBackfill\t1000\t1100\t\r\r"
 send "1s\rLocal\t1200\rq"
 "#,
         );
@@ -614,6 +615,14 @@ send "1s\rLocal\t1200\rq"
             tracker.running().unwrap()[0].started_at().to_string(),
             "2026-03-12T11:00:00Z"
         );
+        let today = tracker
+            .dashboard(
+                "2026-03-12T12:00:00Z".parse().unwrap(),
+                &jiff::tz::TimeZone::UTC,
+            )
+            .unwrap()
+            .today;
+        assert_eq!(today.worked_us, 7_200_000_000); // One logged hour + one live hour.
     }
 }
 

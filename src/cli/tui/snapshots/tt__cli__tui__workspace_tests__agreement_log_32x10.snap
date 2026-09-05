@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dash  [2 Agreements]  : menu "
+"Log completed time              "
+"Ticket or description           "
+"Agreement · 2/5                 "
+"Support · id:1 · From 2026-01-01"
+"› Scope · 3/5                   "
+"                                "
+"                                "
+"[ Review ]                      "
+"Tab field  Enter next  F1 help  "

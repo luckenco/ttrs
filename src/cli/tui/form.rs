@@ -218,7 +218,12 @@ impl Form {
                 project_field(),
                 Field::choice(F::Agreement, "Agreement", Vec::new(), None),
                 Field::text(F::Scope, "Scope", "", "Ticket or description"),
-                Field::text(F::From, "From", "", "0900 or explicit date/time"),
+                Field::text(
+                    F::From,
+                    "From",
+                    "",
+                    "Time today (0900) or explicit date/time",
+                ),
                 Field::text(
                     F::To,
                     "To",
@@ -307,6 +312,7 @@ impl Form {
             Kind::Archive(p) => format!("{}\nArchival can revise monthly fees and included hours.", p.name()),
             Kind::Unarchive(p) => format!("{}\nRestores continuous coverage retroactively. Historical monthly estimates may change.", p.name()),
             Kind::Timezone => "Changes time display and local input interpretation, not stored work or project billing timezones.".into(),
+            Kind::Log => format!("Times without a date mean today in {}.", zone.iana_name().unwrap_or("device timezone")),
             _ => format!("Time input: {}", zone.iana_name().unwrap_or("device timezone")),
         };
         let mut form = Self {
@@ -329,6 +335,7 @@ impl Form {
             && matches!(form.kind, Kind::Log)
         {
             form.select(F::Agreement, Choice::Reference(Reference::Agreement(id)));
+            form.focus_field(F::Scope);
         }
         Ok(form)
     }

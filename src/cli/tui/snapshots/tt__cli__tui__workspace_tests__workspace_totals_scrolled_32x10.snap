@@ -2,7 +2,7 @@
 source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
-"tt · Dashboard  : menu          "
+" [1 Dash]  2 Agreements  : menu "
 "Totals · monthly estimates · 49…"
 "C43 100.00                      "
 "C44 100.00                      "

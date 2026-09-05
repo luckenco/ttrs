@@ -32,6 +32,100 @@ fn form(app: &mut App) -> &mut Form {
 }
 
 #[test]
+fn agreement_first_navigation_and_logging_skip_redundant_target_selection() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    assert_eq!(app.workspace.section, Section::Agreements);
+    assert_eq!(
+        app.workspace.reference(),
+        Some(Reference::Agreement(agreement))
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('l')]);
+    let f = form(&mut app);
+    assert_eq!(f.fields[f.visible()[f.focus]].id, F::Scope);
+    assert_eq!(
+        f.choice(F::Agreement),
+        Some(super::form::Choice::Reference(Reference::Agreement(
+            agreement
+        )))
+    );
+    for (width, height) in [(32, 10), (100, 24)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        let header = screen.lines().next().unwrap();
+        assert!(header.contains("2 Agreements"));
+        for hidden in ["Projects", "Clients", "Settings"] {
+            assert!(!header.contains(hidden));
+        }
+        insta::assert_snapshot!(
+            format!("agreement_log_{width}x{height}"),
+            terminal.backend()
+        );
+    }
+    app.paste("Retrospective");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab]);
+    app.paste("0900");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab]);
+    app.paste("1000");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab, KeyCode::Enter]);
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("2026-01-02 09:00")
+    );
+    assert_eq!(
+        tracker
+            .dashboard(now, &TimeZone::UTC)
+            .unwrap()
+            .today
+            .worked_us,
+        0
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert_eq!(app.workspace.section, Section::Agreements);
+    assert_eq!(app.snapshot.today.worked_us, 3_600_000_000);
+    for (name, section) in [
+        ("3 Projects", Section::Projects),
+        ("4 Clients", Section::Clients),
+        ("5 Settings", Section::Settings),
+    ] {
+        action(&mut app, &mut tracker, now, name);
+        assert_eq!(app.workspace.section, section);
+    }
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    assert_eq!(
+        app.workspace.reference(),
+        Some(Reference::Agreement(agreement))
+    );
+}
+
+#[test]
+fn empty_agreements_offer_setup_instead_of_replacing_nonexistent_terms() {
+    let mut tracker = Tracker::memory().unwrap();
+    let now = "2026-01-02T10:00:00Z".parse().unwrap();
+    let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('2'), KeyCode::Char('n')],
+    );
+    assert!(matches!(form(&mut app).kind, Kind::Client));
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    tracker.add_client("Acme".into()).unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('n')]);
+    assert!(matches!(form(&mut app).kind, Kind::Project));
+}
+
+#[test]
 fn empty_database_to_client_and_project_is_entirely_keyboard_driven() {
     let mut tracker = Tracker::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
@@ -52,7 +146,7 @@ fn empty_database_to_client_and_project_is_entirely_keyboard_driven() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('2'), KeyCode::Char('n'), KeyCode::Tab],
+        &[KeyCode::Char('3'), KeyCode::Char('n'), KeyCode::Tab],
     );
     app.paste("Website");
     press(
@@ -101,7 +195,7 @@ fn historical_logging_replacement_archival_and_unarchival_use_reviewed_values() 
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('4'), KeyCode::Char('n')],
+        &[KeyCode::Char('2'), KeyCode::Char('n')],
     );
     form(&mut app).set(F::AgreementName, "New terms");
     form(&mut app).set(F::Rate, "150");
@@ -140,7 +234,7 @@ fn historical_logging_replacement_archival_and_unarchival_use_reviewed_values() 
         &[KeyCode::Enter, KeyCode::Enter],
     );
     assert_eq!(tracker.recent_scopes(project, 3).unwrap(), ["Historical"]);
-    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('3')]);
     action(&mut app, &mut tracker, now, "Archive project");
     assert!(matches!(form(&mut app).kind, Kind::Archive(_)));
     form(&mut app).focus = 1;
@@ -225,7 +319,7 @@ fn drafts_survive_refresh_help_paste_resize_and_discard_requires_a_choice() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('3'), KeyCode::Char('n')],
+        &[KeyCode::Char('4'), KeyCode::Char('n')],
     );
     for c in "qxsjk123:?".chars() {
         press(&mut app, &mut tracker, now, &[KeyCode::Char(c)]);
@@ -274,7 +368,7 @@ fn catalogs_preserve_selection_filters_and_do_not_retarget_removed_rows() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('3'), KeyCode::Down],
+        &[KeyCode::Char('4'), KeyCode::Down],
     );
     let selected = app.workspace.reference();
     tracker.add_client("AAA".into()).unwrap();
@@ -292,10 +386,10 @@ fn catalogs_preserve_selection_filters_and_do_not_retarget_removed_rows() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Esc, KeyCode::Char('2'), KeyCode::Char('3')],
+        &[KeyCode::Esc, KeyCode::Char('3'), KeyCode::Char('4')],
     );
     assert_eq!(app.workspace.browser().unwrap().query.as_str(), "q");
-    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('3')]);
     let project = app.snapshot.projects[0].project.id();
     tracker.archive_project(project, None, now).unwrap();
     app.refresh(&tracker, now, &TimeZone::UTC);
@@ -353,9 +447,9 @@ fn retainer_forms_hide_hourly_minimums_and_preserve_exact_terms() {
 fn catalogs_actions_and_focused_details_render_at_all_sizes() {
     let (mut tracker, mut app, now) = setup();
     for (key, name) in [
-        ('2', "projects"),
-        ('3', "clients"),
-        ('4', "agreements"),
+        ('3', "projects"),
+        ('4', "clients"),
+        ('2', "agreements"),
         ('5', "settings"),
     ] {
         press(&mut app, &mut tracker, now, &[KeyCode::Char(key)]);
@@ -375,7 +469,7 @@ fn catalogs_actions_and_focused_details_render_at_all_sizes() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('2'), KeyCode::Tab, KeyCode::End],
+        &[KeyCode::Char('3'), KeyCode::Tab, KeyCode::End],
     );
     let selected = app.workspace.reference();
     for (width, height) in [(32, 10), (100, 24)] {
@@ -623,7 +717,7 @@ fn details_actions_and_every_total_are_accessible_in_small_splits() {
         &mut app,
         &mut tracker,
         now,
-        &[KeyCode::Char('2'), KeyCode::Enter, KeyCode::Char(':')],
+        &[KeyCode::Char('3'), KeyCode::Enter, KeyCode::Char(':')],
     );
     assert!(matches!(app.workspace.overlay, Some(Overlay::Actions(_))));
     press(&mut app, &mut tracker, now, &[KeyCode::Esc]);

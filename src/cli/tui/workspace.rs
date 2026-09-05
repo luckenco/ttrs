@@ -22,11 +22,12 @@ pub(super) enum Section {
 }
 
 impl Section {
+    pub const PRIMARY: [Self; 2] = [Self::Dashboard, Self::Agreements];
     pub const ALL: [Self; 5] = [
         Self::Dashboard,
+        Self::Agreements,
         Self::Projects,
         Self::Clients,
-        Self::Agreements,
         Self::Settings,
     ];
     pub fn title(self) -> &'static str {
@@ -266,9 +267,11 @@ impl App {
             }
             KeyCode::Char('n') => Some(match self.workspace.section {
                 Section::Clients => Action::NewClient,
-                Section::Agreements => Action::Replace,
+                Section::Agreements if !self.workspace.catalogs.projects.is_empty() => {
+                    Action::Replace
+                }
                 Section::Settings => Action::Timezone,
-                Section::Dashboard => {
+                Section::Dashboard | Section::Agreements => {
                     self.workspace.load(tracker)?;
                     if self.workspace.catalogs.clients.is_empty() {
                         Action::NewClient
@@ -674,7 +677,7 @@ impl App {
                     Action::NewClient => Kind::Client,
                     Action::NewProject => {
                         if self.workspace.catalogs.clients.is_empty() {
-                            return Err(Error::usage("Create a client first: 3 Clients, then n."));
+                            return Err(Error::usage("Create a client first: : Clients, then n."));
                         }
                         Kind::Project
                     }
@@ -907,7 +910,7 @@ pub(super) fn scroll(position: &mut u16, code: KeyCode) {
 
 fn help(section: Section) -> String {
     format!(
-        "{}\n\n1–5: Dashboard, Projects, Clients, Agreements, Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log completed time\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
+        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log completed time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
         section.title()
     )
 }
