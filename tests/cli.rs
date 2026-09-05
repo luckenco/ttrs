@@ -2,8 +2,10 @@ use std::{
     fs,
     io::{BufRead, BufReader},
     path::PathBuf,
-    process::{Command, Output, Stdio},
+    process::{Command, Stdio},
 };
+
+use assert_cmd::assert::OutputAssertExt;
 
 struct Case {
     root: tempfile::TempDir,
@@ -26,22 +28,21 @@ impl Case {
         command
     }
 
-    fn run(&self, args: &[&str]) -> Output {
-        self.command().args(args).output().unwrap()
-    }
-
+    #[track_caller]
     fn ok(&self, args: &[&str]) -> String {
-        let output = self.run(args);
-        assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
-        String::from_utf8(output.stdout).unwrap()
+        let assertion = self.command().args(args).assert().success();
+        String::from_utf8(assertion.get_output().stdout.clone()).unwrap()
     }
 
+    #[track_caller]
     fn fails(&self, code: i32, args: &[&str]) -> String {
-        let output = self.run(args);
-        assert_eq!(output.status.code(), Some(code), "{:?}", args);
-        let message = stderr(&output);
-        assert!(message.starts_with("tt: "), "{message}");
-        message
+        let assertion = self
+            .command()
+            .args(args)
+            .assert()
+            .code(code)
+            .stderr(predicates::str::starts_with("tt: "));
+        String::from_utf8_lossy(&assertion.get_output().stderr).into_owned()
     }
 }
 
@@ -49,10 +50,6 @@ fn test_binary() -> PathBuf {
     std::env::var_os("TT_CLI_TEST_BIN")
         .map(PathBuf::from)
         .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_tt")))
-}
-
-fn stderr(output: &Output) -> String {
-    String::from_utf8_lossy(&output.stderr).into_owned()
 }
 
 #[test]
@@ -277,7 +274,11 @@ fn list_queries_preserve_filters_labels_and_order() {
 #[test]
 fn parser_results_have_the_cli_exit_contract() {
     let case = Case::new();
-    assert!(case.ok(&["--help"]).contains("Usage"));
+    case.command()
+        .arg("--help")
+        .assert()
+        .success()
+        .stdout(predicates::str::contains("Usage"));
     case.fails(2, &["start", "--project"]);
     case.fails(
         2,
@@ -299,13 +300,11 @@ fn bundled_timezones_ignore_tzdir() {
     fs::create_dir(&zoneinfo).unwrap();
     // A nonempty, unusable system database must not override the bundle.
     fs::write(zoneinfo.join("UTC"), b"not a TZif file").unwrap();
-    let output = case
-        .command()
+    case.command()
         .env("TZDIR", zoneinfo)
         .args(["config", "set", "timezone", "Europe/Berlin"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", stderr(&output));
+        .assert()
+        .success();
     assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");
 }
 
@@ -319,31 +318,27 @@ fn timezone_configuration_handles_named_and_unnamed_zones() {
 
     fs::remove_file(case.root.path().join("config/timezone")).unwrap();
     for zone in ["UTC", "Europe/Berlin"] {
-        let fallback = case
-            .command()
+        case.command()
             .env("TZ", zone)
             .args(["config", "get", "timezone"])
-            .output()
-            .unwrap();
-        assert!(fallback.status.success(), "{}", stderr(&fallback));
-        assert_eq!(fallback.stdout, format!("{zone}\n").as_bytes());
+            .assert()
+            .success()
+            .stdout(format!("{zone}\n"));
     }
 
     #[cfg(unix)]
     {
-        let unnamed = case
-            .command()
+        case.command()
             .env("TZ", "EST5EDT,M3.2.0,M11.1.0")
             .args(["config", "get", "timezone"])
-            .output()
-            .unwrap();
-        assert_eq!(unnamed.status.code(), Some(1));
-        assert!(stderr(&unnamed).contains("has no IANA name"));
+            .assert()
+            .code(1)
+            .stderr(predicates::str::contains("has no IANA name"));
     }
 }
 
 #[cfg(target_os = "macos")]
-fn pty(case: &Case, interaction: &str) -> Output {
+fn pty(case: &Case, interaction: &str) {
     let script = format!(
         r#"
 set timeout 5
@@ -360,25 +355,15 @@ expect {{ eof {{}} timeout {{exit 93}} }}
 exit [lindex [wait] 3]
 "#
     );
-    let output = Command::new("expect")
+    Command::new("expect")
         .args(["-c", &script])
         .env("TERM", "xterm-256color")
         .env("TT_BIN", test_binary())
         .env("TT_DATA_DIR", case.root.path().join("data"))
         .env("TT_CONFIG_DIR", case.root.path().join("config"))
         .env("TT_NOW", "2026-03-12T12:00:00Z")
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .unwrap();
-    assert!(
-        output.status.success(),
-        "status: {:?}\n{}\n{}",
-        output.status,
-        String::from_utf8_lossy(&output.stdout),
-        stderr(&output)
-    );
-    output
+        .assert()
+        .success();
 }
 
 #[test]
