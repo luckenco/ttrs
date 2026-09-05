@@ -1,180 +1,123 @@
-use std::{error, fmt};
+use std::error;
 
 use crate::model;
 
-// TODO: Evaluate `thiserror` for the core and `anyhow` at the CLI boundary.
-
 /// An error returned by the time-tracking core.
-#[derive(Debug)]
+///
+/// Storage failures retain their underlying source for inspection.
+///
+/// ```
+/// use std::error::Error as _;
+///
+/// let error = tt::Error::from(rusqlite::Error::InvalidQuery);
+/// assert!(error.to_string().starts_with("storage failed: "));
+/// assert!(error.source().unwrap().is::<rusqlite::Error>());
+/// assert!(tt::Error::EmptyScope.source().is_none());
+/// ```
+#[derive(Debug, thiserror::Error)]
 pub enum Error {
     /// A client name was empty or contained only whitespace.
+    #[error("client name must not be empty")]
     EmptyClientName,
     /// A project name was empty or contained only whitespace.
+    #[error("project name must not be empty")]
     EmptyProjectName,
     /// A service-agreement name was empty or contained only whitespace.
+    #[error("service agreement name must not be empty")]
     EmptyAgreementName,
     /// A scope was empty or contained only whitespace.
+    #[error("scope must not be empty")]
     EmptyScope,
     /// An hourly rate was negative.
+    #[error("hourly rate must not be negative")]
     InvalidHourlyRate,
     /// A currency code was not three uppercase ASCII letters.
+    #[error("currency '{0}' must be three uppercase letters")]
     InvalidCurrency(String),
     /// Monthly minimum hours exceeded monthly maximum hours.
+    #[error("monthly minimum must not exceed monthly maximum")]
     InvalidMonthlyHours,
     /// A billing timezone was not a valid IANA name.
+    #[error("billing timezone '{0}' is not a valid IANA name")]
     InvalidBillingTimezone(String),
     /// An interval ended at or before it started.
+    #[error("end time must be later than start time")]
     InvalidInterval,
     /// A client with this name already exists.
+    #[error("client '{0}' already exists")]
     ClientExists(String),
     /// A project with this name already exists.
+    #[error("project '{0}' already exists")]
     ProjectExists(String),
     /// A service agreement with this name already exists for the project.
+    #[error("service agreement '{0}' already exists for this project")]
     AgreementExists(String),
     /// No client exists with this identifier.
+    #[error("client {0} does not exist")]
     ClientNotFound(model::ClientId),
     /// No client exists with this name.
+    #[error("client '{0}' does not exist")]
     ClientNameNotFound(String),
     /// No project exists with this identifier.
+    #[error("project {0} does not exist")]
     ProjectNotFound(model::ProjectId),
     /// No project exists with this name.
+    #[error("project '{0}' does not exist")]
     ProjectNameNotFound(String),
     /// More than one client has a project with this name.
+    #[error("project '{0}' is ambiguous; use id:<number>")]
     ProjectNameAmbiguous(String),
     /// An archived project cannot accept work or replacement terms.
+    #[error("project {0} is archived")]
     ProjectArchived(model::ProjectId),
     /// An active project cannot be unarchived.
+    #[error("project {0} is not archived")]
     ProjectNotArchived(model::ProjectId),
     /// No service agreement exists with this identifier.
+    #[error("service agreement {0} does not exist")]
     AgreementNotFound(model::ServiceAgreementId),
     /// No service agreement exists with this name for the project.
+    #[error("service agreement '{0}' does not exist for this project")]
     AgreementNameNotFound(String),
     /// A project has no current agreement.
+    #[error("project {0} has no current service agreement")]
     ProjectAgreementMissing(model::ProjectId),
     /// An effective date is in the future.
+    #[error("effective date must not be future")]
     EffectiveDateFuture,
     /// A replacement agreement must start after the current agreement.
+    #[error("replacement agreement must start after the current agreement")]
     AgreementEffectiveDateOrder,
     /// Existing work conflicts with a replacement agreement's effective date.
+    #[error("work exists on or after the replacement effective date")]
     WorkAfterEffectiveDate,
     /// A project cannot be archived before its current agreement begins.
+    #[error("project cannot be archived before its current agreement")]
     ArchiveDateBeforeCurrentAgreement,
     /// Existing work conflicts with a project's archival date.
+    #[error("work exists after the project archival date")]
     WorkAfterArchiveDate,
     /// The client already has a running timer.
+    #[error("client {0} already has a running timer")]
     ClientTimerRunning(model::ClientId),
     /// Work falls outside the selected agreement's effective period.
+    #[error("work must fit within one agreement's effective period")]
     WorkOutsideAgreementPeriod,
     /// A project's prorated monthly maximum has been reached.
+    #[error("project {0} reached its monthly maximum")]
     MonthlyMaximumReached(model::ProjectId),
     /// No running timer exists with this identifier.
+    #[error("running timer {0} does not exist")]
     TimerNotFound(model::TimerId),
     /// A displayed timer was stopped or replaced by another operation.
+    #[error("timer {0} changed; select it again")]
     TimerChanged(model::TimerId),
     /// Switching cannot stop a timer belonging to a different client.
+    #[error("switching must stay within one client")]
     SwitchClientMismatch,
     /// Persistence failed.
-    Storage(Box<dyn error::Error + Send + Sync>),
-}
-
-impl fmt::Display for Error {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::EmptyClientName => formatter.write_str("client name must not be empty"),
-            Self::EmptyProjectName => formatter.write_str("project name must not be empty"),
-            Self::EmptyAgreementName => {
-                formatter.write_str("service agreement name must not be empty")
-            }
-            Self::EmptyScope => formatter.write_str("scope must not be empty"),
-            Self::InvalidHourlyRate => formatter.write_str("hourly rate must not be negative"),
-            Self::InvalidCurrency(currency) => {
-                write!(
-                    formatter,
-                    "currency '{currency}' must be three uppercase letters"
-                )
-            }
-            Self::InvalidMonthlyHours => {
-                formatter.write_str("monthly minimum must not exceed monthly maximum")
-            }
-            Self::InvalidBillingTimezone(timezone) => {
-                write!(
-                    formatter,
-                    "billing timezone '{timezone}' is not a valid IANA name"
-                )
-            }
-            Self::InvalidInterval => formatter.write_str("end time must be later than start time"),
-            Self::ClientExists(name) => write!(formatter, "client '{name}' already exists"),
-            Self::ProjectExists(name) => write!(formatter, "project '{name}' already exists"),
-            Self::AgreementExists(name) => {
-                write!(
-                    formatter,
-                    "service agreement '{name}' already exists for this project"
-                )
-            }
-            Self::ClientNotFound(id) => write!(formatter, "client {id} does not exist"),
-            Self::ClientNameNotFound(name) => write!(formatter, "client '{name}' does not exist"),
-            Self::ProjectNotFound(id) => write!(formatter, "project {id} does not exist"),
-            Self::ProjectNameNotFound(name) => {
-                write!(formatter, "project '{name}' does not exist")
-            }
-            Self::ProjectNameAmbiguous(name) => {
-                write!(formatter, "project '{name}' is ambiguous; use id:<number>")
-            }
-            Self::ProjectArchived(id) => write!(formatter, "project {id} is archived"),
-            Self::ProjectNotArchived(id) => write!(formatter, "project {id} is not archived"),
-            Self::AgreementNotFound(id) => {
-                write!(formatter, "service agreement {id} does not exist")
-            }
-            Self::AgreementNameNotFound(name) => {
-                write!(
-                    formatter,
-                    "service agreement '{name}' does not exist for this project"
-                )
-            }
-            Self::ProjectAgreementMissing(id) => {
-                write!(formatter, "project {id} has no current service agreement")
-            }
-            Self::EffectiveDateFuture => formatter.write_str("effective date must not be future"),
-            Self::AgreementEffectiveDateOrder => {
-                formatter.write_str("replacement agreement must start after the current agreement")
-            }
-            Self::WorkAfterEffectiveDate => {
-                formatter.write_str("work exists on or after the replacement effective date")
-            }
-            Self::ArchiveDateBeforeCurrentAgreement => {
-                formatter.write_str("project cannot be archived before its current agreement")
-            }
-            Self::WorkAfterArchiveDate => {
-                formatter.write_str("work exists after the project archival date")
-            }
-            Self::ClientTimerRunning(id) => {
-                write!(formatter, "client {id} already has a running timer")
-            }
-            Self::WorkOutsideAgreementPeriod => {
-                formatter.write_str("work must fit within one agreement's effective period")
-            }
-            Self::MonthlyMaximumReached(id) => {
-                write!(formatter, "project {id} reached its monthly maximum")
-            }
-            Self::TimerNotFound(id) => write!(formatter, "running timer {id} does not exist"),
-            Self::TimerChanged(id) => {
-                write!(formatter, "timer {id} changed; select it again")
-            }
-            Self::SwitchClientMismatch => {
-                formatter.write_str("switching must stay within one client")
-            }
-            Self::Storage(error) => write!(formatter, "storage failed: {error}"),
-        }
-    }
-}
-
-impl error::Error for Error {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
-        match self {
-            Self::Storage(error) => Some(error.as_ref()),
-            _ => None,
-        }
-    }
+    #[error("storage failed: {0}")]
+    Storage(#[source] Box<dyn error::Error + Send + Sync>),
 }
 
 impl From<rusqlite::Error> for Error {

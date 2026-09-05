@@ -1076,6 +1076,7 @@ dependencies = [
  "rusqlite",
  "signal-hook",
  "tempfile",
+ "thiserror",
 ]
 
 [[package]]
