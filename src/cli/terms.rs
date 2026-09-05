@@ -8,8 +8,7 @@ pub(super) fn parse(
     minimum_hours: Option<&str>,
     maximum_hours: Option<&str>,
 ) -> Result<(model::HourlyRate, model::MonthlyHours), Error> {
-    let rate = model::HourlyRate::new(parse_scaled(rate, 1_000_000, "hourly rate")?, currency)
-        .map_err(domain_error)?;
+    let rate = model::HourlyRate::new(parse_rate(rate)?, currency).map_err(domain_error)?;
     let monthly_hours = model::MonthlyHours::new(
         minimum_hours.map(parse_hours).transpose()?,
         maximum_hours.map(parse_hours).transpose()?,
@@ -19,7 +18,13 @@ pub(super) fn parse(
 }
 
 pub(super) fn format_rate(rate: &model::HourlyRate) -> String {
-    format_scaled(rate.amount_micros(), 1_000_000)
+    let whole = rate.amount_micros() / 1_000_000;
+    let remainder = rate.amount_micros() % 1_000_000;
+    if remainder == 0 {
+        return whole.to_string();
+    }
+    let fraction = format!("{remainder:06}");
+    format!("{whole}.{}", fraction.trim_end_matches('0'))
 }
 
 pub(super) fn format_hours(hours: Option<u32>) -> String {
@@ -32,49 +37,27 @@ fn parse_hours(value: &str) -> Result<u32, Error> {
         .map_err(|_| Error::usage(format!("invalid whole monthly hours '{value}'")))
 }
 
-fn parse_scaled(value: &str, scale: i64, description: &str) -> Result<i64, Error> {
+fn parse_rate(value: &str) -> Result<i64, Error> {
     let (whole, fraction) = value.split_once('.').unwrap_or((value, ""));
     if whole.is_empty()
         || !whole.bytes().all(|byte| byte.is_ascii_digit())
         || !fraction.bytes().all(|byte| byte.is_ascii_digit())
         || fraction.len() > 6
     {
-        return Err(Error::usage(format!("invalid {description} '{value}'")));
+        return Err(Error::usage(format!("invalid hourly rate '{value}'")));
     }
-    let denominator = 10_i128.pow(u32::try_from(fraction.len()).expect("six digits fit in u32"));
+    let padding = 6 - u32::try_from(fraction.len()).expect("six digits fit in u32");
     let whole = whole
         .parse::<i128>()
-        .map_err(|_| Error::usage(format!("invalid {description} '{value}'")))?;
-    let fraction = if fraction.is_empty() {
-        0
-    } else {
-        fraction
-            .parse::<i128>()
-            .map_err(|_| Error::usage(format!("invalid {description} '{value}'")))?
-    };
-    let units = whole
-        .checked_mul(denominator)
-        .and_then(|whole| whole.checked_add(fraction))
-        .and_then(|units| units.checked_mul(i128::from(scale)))
-        .ok_or_else(|| Error::usage(format!("{description} is too large")))?;
-    if units % denominator != 0 {
-        return Err(Error::usage(format!(
-            "{description} '{value}' is more precise than supported"
-        )));
-    }
-    i64::try_from(units / denominator)
-        .map_err(|_| Error::usage(format!("{description} is too large")))
-}
-
-fn format_scaled(value: i64, scale: i64) -> String {
-    let whole = value / scale;
-    let remainder = value % scale;
-    if remainder == 0 {
-        return whole.to_string();
-    }
-    let width = scale.ilog10() as usize;
-    let fraction = format!("{remainder:0width$}");
-    format!("{whole}.{}", fraction.trim_end_matches('0'))
+        .map_err(|_| Error::usage(format!("invalid hourly rate '{value}'")))?;
+    let fraction = fraction
+        .bytes()
+        .fold(0_i128, |value, digit| value * 10 + i128::from(digit - b'0'));
+    let micros = whole
+        .checked_mul(1_000_000)
+        .and_then(|whole| whole.checked_add(fraction * 10_i128.pow(padding)))
+        .ok_or_else(|| Error::usage("hourly rate is too large"))?;
+    i64::try_from(micros).map_err(|_| Error::usage("hourly rate is too large"))
 }
 
 fn domain_error(error: tt::Error) -> Error {
@@ -84,6 +67,50 @@ fn domain_error(error: tt::Error) -> Error {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn preserves_rate_precision_and_formatting() {
+        for (input, micros, formatted) in [
+            ("0", 0, "0"),
+            ("1.", 1_000_000, "1"),
+            ("00125.500000", 125_500_000, "125.5"),
+            ("0.000001", 1, "0.000001"),
+            ("9223372036854.775807", i64::MAX, "9223372036854.775807"),
+        ] {
+            assert_eq!(parse_rate(input).unwrap(), micros, "{input}");
+            let rate = model::HourlyRate::new(micros, "EUR".into()).unwrap();
+            assert_eq!(format_rate(&rate), formatted);
+        }
+    }
+
+    #[test]
+    fn preserves_invalid_rate_diagnostics() {
+        for input in [
+            "",
+            ".5",
+            "-1",
+            "+1",
+            "1.2.3",
+            "1.0000000",
+            " 1",
+            "１",
+            "170141183460469231731687303715884105728",
+        ] {
+            assert_eq!(
+                parse_rate(input).unwrap_err().to_string(),
+                format!("invalid hourly rate '{input}'")
+            );
+        }
+        for input in [
+            "9223372036854.775808",
+            "170141183460469231731687303715884105727",
+        ] {
+            assert_eq!(
+                parse_rate(input).unwrap_err().to_string(),
+                "hourly rate is too large"
+            );
+        }
+    }
 
     #[test]
     fn parses_exact_rates_and_monthly_hours() {

@@ -11,6 +11,9 @@ pub struct Tracker {
 
 impl Tracker {
     /// Opens or creates a tracker database at `path`.
+    ///
+    /// Version 3 databases are upgraded in place by adding an index. Older
+    /// schemas and versions newer than this library supports are rejected.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         store::Store::open(path.as_ref()).map(|store| Self { store })
     }
@@ -231,22 +234,9 @@ fn nonempty_name(name: String, error: Error) -> Result<String> {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::{
-        Arc, Barrier,
-        atomic::{AtomicU64, Ordering},
-    };
+    use std::sync::{Arc, Barrier};
 
     use super::*;
-
-    static NEXT_DATABASE: AtomicU64 = AtomicU64::new(0);
-
-    fn database_path() -> std::path::PathBuf {
-        std::env::temp_dir().join(format!(
-            "tt-core-{}-{}.sqlite",
-            std::process::id(),
-            NEXT_DATABASE.fetch_add(1, Ordering::Relaxed)
-        ))
-    }
 
     fn timestamp(value: &str) -> Timestamp {
         value.parse().unwrap()
@@ -504,6 +494,200 @@ mod tests {
     }
 
     #[test]
+    fn timer_limits_and_stops_agree_across_month_boundaries() {
+        for (zone, start, now, minutes, cap) in [
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-01-31T22:00:00Z",
+                60,
+                None,
+            ),
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-01-31T23:30:00Z",
+                30,
+                None,
+            ),
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-02-01T00:00:00Z",
+                60,
+                Some("2026-02-01T01:00:00Z"),
+            ),
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-02-01T00:15:00Z",
+                45,
+                Some("2026-02-01T01:00:00Z"),
+            ),
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-02-01T01:00:00Z",
+                0,
+                Some("2026-02-01T01:00:00Z"),
+            ),
+            (
+                "UTC",
+                "2026-01-31T23:00:00Z",
+                "2026-03-01T00:00:00Z",
+                0,
+                Some("2026-02-01T01:00:00Z"),
+            ),
+            (
+                "UTC",
+                "2026-01-31T22:00:00Z",
+                "2026-02-01T00:15:00Z",
+                0,
+                Some("2026-01-31T23:00:00Z"),
+            ),
+            (
+                "Europe/Berlin",
+                "2026-03-31T21:00:00Z",
+                "2026-04-01T00:00:00Z",
+                0,
+                Some("2026-03-31T23:00:00Z"),
+            ),
+        ] {
+            let mut tracker = Tracker::memory().unwrap();
+            let client = tracker.add_client("Acme".into()).unwrap();
+            let (project, _) = tracker
+                .add_project(
+                    client.id(),
+                    "website".into(),
+                    zone.into(),
+                    terms(
+                        "Support",
+                        100_000_000,
+                        model::MonthlyHours::new(None, Some(1)).unwrap(),
+                        "2026-01-01",
+                    ),
+                    timestamp("2026-04-01T00:00:00Z"),
+                )
+                .unwrap();
+            let start = timestamp(start);
+            let now = timestamp(now);
+            let cap = cap.map(timestamp);
+            let timer = tracker
+                .start(command::Start::new(project.id(), "work".into(), start).unwrap())
+                .unwrap();
+            let limit = tracker.timer_limit(timer.id(), now).unwrap().unwrap();
+            assert_eq!(
+                limit.remaining_us(),
+                minutes * 60_000_000,
+                "{zone}: {start} -> {now}"
+            );
+            assert_eq!(limit.cap_at(), cap, "{zone}: {start} -> {now}");
+            assert_eq!(limit.is_reached(), minutes == 0);
+            if now > start {
+                let entry = tracker.end(command::End::new(timer.id(), now)).unwrap();
+                assert_eq!(entry.ended_at(), cap.unwrap_or(now).min(now));
+            }
+        }
+    }
+
+    #[test]
+    fn overlapping_entries_are_counted_in_each_month() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let (project, agreement) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Support",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(1)).unwrap(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-02-01T12:00:00Z"),
+            )
+            .unwrap();
+        for _ in 0..2 {
+            tracker
+                .log(
+                    command::LogEntry::new(
+                        agreement.id(),
+                        "overlap".into(),
+                        timestamp("2026-01-31T23:45:00Z"),
+                        timestamp("2026-02-01T00:15:00Z"),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+        }
+        let timer = tracker
+            .start(
+                command::Start::new(
+                    project.id(),
+                    "work".into(),
+                    timestamp("2026-02-01T10:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let limit = tracker
+            .timer_limit(timer.id(), timestamp("2026-02-01T10:05:00Z"))
+            .unwrap()
+            .unwrap();
+        assert_eq!(limit.remaining_us(), 25 * 60_000_000);
+        assert_eq!(limit.cap_at(), Some(timestamp("2026-02-01T10:30:00Z")));
+        let entry = tracker
+            .end(command::End::new(
+                timer.id(),
+                timestamp("2026-02-01T10:45:00Z"),
+            ))
+            .unwrap();
+        assert_eq!(entry.ended_at(), timestamp("2026-02-01T10:30:00Z"));
+    }
+
+    #[test]
+    fn archive_capacity_uses_the_updated_final_day() {
+        let mut tracker = Tracker::memory().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let now = timestamp("2026-01-31T12:00:00Z");
+        let (project, agreement) = tracker
+            .add_project(
+                client.id(),
+                "website".into(),
+                "UTC".into(),
+                terms(
+                    "Support",
+                    100_000_000,
+                    model::MonthlyHours::new(None, Some(31)).unwrap(),
+                    "2026-01-01",
+                ),
+                now,
+            )
+            .unwrap();
+        tracker
+            .log(
+                command::LogEntry::new(
+                    agreement.id(),
+                    "work".into(),
+                    timestamp("2026-01-02T00:00:00Z"),
+                    timestamp("2026-01-02T16:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        assert!(matches!(
+            tracker.archive_project(project.id(), Some(date("2026-01-15")), now),
+            Err(Error::MonthlyMaximumReached(_))
+        ));
+        assert!(tracker.project(project.id()).unwrap().is_active());
+        let archived = tracker
+            .archive_project(project.id(), Some(date("2026-01-16")), now)
+            .unwrap();
+        assert_eq!(archived.archived_on(), Some(date("2026-01-16")));
+    }
+
+    #[test]
     fn rejects_replacement_that_lowers_month_below_existing_work() {
         let mut tracker = Tracker::memory().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();
@@ -689,7 +873,8 @@ mod tests {
 
     #[test]
     fn persists_running_timers() {
-        let path = database_path();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
         let timer = {
             let mut tracker = Tracker::open(&path).unwrap();
             let (project, _) = project(&mut tracker);
@@ -706,13 +891,12 @@ mod tests {
         };
         let tracker = Tracker::open(&path).unwrap();
         assert_eq!(tracker.running().unwrap(), [timer]);
-        drop(tracker);
-        std::fs::remove_file(path).unwrap();
     }
 
     #[test]
     fn initializes_database_concurrently() {
-        let path = database_path();
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
         let barrier = Arc::new(Barrier::new(3));
         let handles = (0..2)
             .map(|_| {
@@ -730,7 +914,5 @@ mod tests {
         }
         let tracker = Tracker::open(&path).unwrap();
         assert!(tracker.projects().unwrap().is_empty());
-        drop(tracker);
-        std::fs::remove_file(path).unwrap();
     }
 }

@@ -3,32 +3,25 @@ use std::{
     io::{BufRead, BufReader},
     path::PathBuf,
     process::{Command, Output, Stdio},
-    sync::atomic::{AtomicU64, Ordering},
 };
 
-static NEXT_CASE: AtomicU64 = AtomicU64::new(0);
-
 struct Case {
-    root: PathBuf,
+    root: tempfile::TempDir,
 }
 
 impl Case {
     fn new() -> Self {
-        let root = std::env::temp_dir().join(format!(
-            "tt-cli-{}-{}",
-            std::process::id(),
-            NEXT_CASE.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::create_dir_all(root.join("config")).unwrap();
-        fs::write(root.join("config/timezone"), "UTC\n").unwrap();
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("config")).unwrap();
+        fs::write(root.path().join("config/timezone"), "UTC\n").unwrap();
         Self { root }
     }
 
     fn command(&self) -> Command {
         let mut command = Command::new(test_binary());
         command
-            .env("TT_DATA_DIR", self.root.join("data"))
-            .env("TT_CONFIG_DIR", self.root.join("config"))
+            .env("TT_DATA_DIR", self.root.path().join("data"))
+            .env("TT_CONFIG_DIR", self.root.path().join("config"))
             .env("TT_NOW", "2026-03-12T12:00:00Z");
         command
     }
@@ -49,12 +42,6 @@ impl Case {
         let message = stderr(&output);
         assert!(message.starts_with("tt: "), "{message}");
         message
-    }
-}
-
-impl Drop for Case {
-    fn drop(&mut self) {
-        let _ = fs::remove_dir_all(&self.root);
     }
 }
 
@@ -167,7 +154,7 @@ fn explicit_commands_route_through_the_shared_application() {
     case.ok(&["project", "unarchive", "--project", "id:1"]);
     assert!(case.ok(&["project", "list"]).contains("website"));
     assert!(case.ok(&["client", "list"]).contains("id:1\tAcme"));
-    assert!(case.root.join("data/tt.sqlite3").exists());
+    assert!(case.root.path().join("data/tt.sqlite3").exists());
 
     let cap_case = Case::new();
     cap_case.ok(&["client", "add", "--name", "Acme"]);
@@ -229,7 +216,7 @@ fn timezone_configuration_handles_named_and_unnamed_zones() {
     case.fails(2, &["config", "set", "timezone", "Etc/Unknown"]);
     assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");
 
-    fs::remove_file(case.root.join("config/timezone")).unwrap();
+    fs::remove_file(case.root.path().join("config/timezone")).unwrap();
     let fallback = case
         .command()
         .env("TZ", "UTC")
@@ -257,8 +244,8 @@ fn pty(case: &Case, interaction: &str) -> Output {
     Command::new("expect")
         .args(["-c", interaction])
         .env("TT_BIN", test_binary())
-        .env("TT_DATA_DIR", case.root.join("data"))
-        .env("TT_CONFIG_DIR", case.root.join("config"))
+        .env("TT_DATA_DIR", case.root.path().join("data"))
+        .env("TT_CONFIG_DIR", case.root.path().join("config"))
         .env("TT_NOW", "2026-03-12T12:00:00Z")
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -333,7 +320,7 @@ expect eof"#,
 fn list_exits_cleanly_when_its_consumer_closes_the_pipe() {
     let case = Case::new();
     case.ok(&["status"]);
-    let connection = rusqlite::Connection::open(case.root.join("data/tt.sqlite3")).unwrap();
+    let connection = rusqlite::Connection::open(case.root.path().join("data/tt.sqlite3")).unwrap();
     connection
         .execute_batch(
             "WITH RECURSIVE n(x) AS (

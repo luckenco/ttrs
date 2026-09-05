@@ -207,14 +207,11 @@ fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Erro
     if timers.is_empty() {
         return line(format_args!("No running timers."));
     }
-    let projects = project_names(tracker)?;
-    let agreements = agreement_names(tracker)?;
-
     line(format_args!(
         "ID\tAGREEMENT\tPROJECT\tSCOPE\tSTARTED\tELAPSED\tCAP LEFT"
     ))?;
     for timer in timers {
-        let (agreement, project) = work_names(timer.agreement(), &agreements, &projects);
+        let (agreement, project) = work_names(tracker, timer.agreement())?;
         let limit = tracker.timer_limit(timer.id(), now).map_err(core_error)?;
         line(format_args!(
             "id:{}\t{}\t{}\t{}\t{}\t{}\t{}",
@@ -405,43 +402,13 @@ fn resolve_agreement(tracker: &Tracker, reference: &str) -> Result<model::Servic
     tracker.service_agreement(id).map_err(core_error)
 }
 
-type AgreementNames = HashMap<model::ServiceAgreementId, (String, model::ProjectId)>;
-
-fn project_names(tracker: &Tracker) -> Result<HashMap<model::ProjectId, String>, Error> {
-    Ok(tracker
-        .projects()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|project| (project.id(), project.name().to_owned()))
-        .collect())
-}
-
-fn agreement_names(tracker: &Tracker) -> Result<AgreementNames, Error> {
-    Ok(tracker
-        .service_agreements()
-        .map_err(core_error)?
-        .into_iter()
-        .map(|agreement| {
-            (
-                agreement.id(),
-                (agreement.name().to_owned(), agreement.project()),
-            )
-        })
-        .collect())
-}
-
-fn work_names<'a>(
+fn work_names(
+    tracker: &Tracker,
     agreement: model::ServiceAgreementId,
-    agreements: &'a AgreementNames,
-    projects: &'a HashMap<model::ProjectId, String>,
-) -> (&'a str, &'a str) {
-    let (agreement, project) = agreements
-        .get(&agreement)
-        .expect("recorded work always references an agreement");
-    let project = projects
-        .get(project)
-        .expect("agreements always reference a project");
-    (agreement, project)
+) -> Result<(String, String), Error> {
+    let agreement = tracker.service_agreement(agreement).map_err(core_error)?;
+    let project = tracker.project(agreement.project()).map_err(core_error)?;
+    Ok((agreement.name().to_owned(), project.name().to_owned()))
 }
 
 fn print_limit(
@@ -604,12 +571,10 @@ fn interactive_stop(
     zone: &TimeZone,
     timers: &[model::RunningTimer],
 ) -> Result<(), Error> {
-    let projects = project_names(tracker)?;
-    let agreements = agreement_names(tracker)?;
     let displayed_at = now()?;
     line(format_args!("Running:"))?;
     for (index, timer) in timers.iter().enumerate() {
-        let (agreement, project) = work_names(timer.agreement(), &agreements, &projects);
+        let (agreement, project) = work_names(tracker, timer.agreement())?;
         line(format_args!(
             "{}. {}\t{}\t{}\t{}",
             index + 1,

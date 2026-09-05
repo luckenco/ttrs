@@ -7,7 +7,12 @@ use crate::{Error, Result, model};
 
 mod billing;
 
-const SCHEMA_VERSION: u32 = 3;
+const SCHEMA_VERSION: u32 = 4;
+
+const CAPACITY_INDEX: &str = "
+    CREATE INDEX time_entries_agreement_ended
+        ON time_entries(agreement_id, ended_at_us, started_at_us);
+";
 
 const SCHEMA: &str = "
     CREATE TABLE clients (
@@ -205,7 +210,7 @@ impl Store {
             monthly_hours,
             effective_on,
         )?;
-        billing::validate_month_capacity(&transaction, project, boundary)?;
+        billing::validate_month_capacity(&transaction, &project_value, boundary)?;
         transaction.commit()?;
         Ok(agreement)
     }
@@ -300,9 +305,9 @@ impl Store {
             "UPDATE projects SET archived_on = ?1 WHERE id = ?2",
             params![archived_on.to_string(), project.get()],
         )?;
-        billing::validate_month_capacity(&transaction, project, archived_at)?;
         let project =
             find_project(&transaction, project)?.expect("the archived project must still exist");
+        billing::validate_month_capacity(&transaction, &project, archived_at)?;
         transaction.commit()?;
         Ok(project)
     }
@@ -347,7 +352,7 @@ impl Store {
         if started_at < agreement_start {
             return Err(Error::WorkOutsideAgreementPeriod);
         }
-        billing::ensure_capacity(&transaction, project, started_at, started_at)?;
+        billing::ensure_capacity(&transaction, &project_value, started_at, started_at)?;
 
         transaction.execute(
             "INSERT INTO running_timers (agreement_id, scope, started_at_us)
@@ -380,9 +385,11 @@ impl Store {
             .expect("running timers always reference an agreement");
         let project = find_project(&transaction, agreement.project())?
             .expect("agreements always reference a project");
+        let agreements = project_agreements(&transaction, project.id())?;
         let ended_at = billing::capped_end(
             &transaction,
-            project.id(),
+            &project,
+            &agreements,
             running.started_at(),
             requested_end,
         )?;
@@ -439,7 +446,7 @@ impl Store {
             started_at,
             ended_at,
         )?;
-        billing::ensure_capacity(&transaction, project.id(), started_at, ended_at)?;
+        billing::ensure_capacity(&transaction, &project, started_at, ended_at)?;
 
         transaction.execute(
             "INSERT INTO time_entries (
@@ -634,19 +641,25 @@ fn configure(connection: &Connection) -> Result<()> {
 }
 
 fn initialize(connection: &mut Connection) -> Result<bool> {
+    let version: u32 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if version == SCHEMA_VERSION {
+        return Ok(false);
+    }
+
     let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+    // Another process may have initialized or upgraded while we waited for the writer lock.
     let version = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
-    let initialized = match version {
-        0 => {
-            transaction.execute_batch(SCHEMA)?;
-            transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            true
-        }
-        SCHEMA_VERSION => false,
+    match version {
+        0 => transaction.execute_batch(SCHEMA)?,
+        3 | SCHEMA_VERSION => {}
         version => return Err(Error::UnsupportedSchema(version)),
-    };
+    }
+    if version != SCHEMA_VERSION {
+        transaction.execute_batch(CAPACITY_INDEX)?;
+        transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    }
     transaction.commit()?;
-    Ok(initialized)
+    Ok(version == 0)
 }
 
 fn find_client(connection: &Connection, id: model::ClientId) -> Result<Option<model::Client>> {
@@ -781,4 +794,102 @@ fn time_error(error: jiff::Error) -> Error {
 fn timestamp(microseconds: i64) -> rusqlite::Result<Timestamp> {
     Timestamp::from_microsecond(microseconds)
         .map_err(|error| conversion_error(0, rusqlite::types::Type::Integer, error))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upgrades_v3_without_changing_recorded_work() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection.execute_batch(SCHEMA).unwrap();
+        connection.pragma_update(None, "user_version", 3).unwrap();
+        connection
+            .execute_batch(
+                "INSERT INTO clients VALUES (1, 'Acme');
+                 INSERT INTO projects VALUES (1, 1, 'website', 'UTC', NULL);
+                 INSERT INTO service_agreements VALUES (
+                     1, 1, 'Support', 100000000, 'EUR', NULL, NULL, '1970-01-01', 1
+                 );
+                 INSERT INTO time_entries VALUES (1, 1, 'completed', 10, 20);
+                 INSERT INTO running_timers VALUES (1, 1, 'running', 30);",
+            )
+            .unwrap();
+        drop(connection);
+
+        for _ in 0..2 {
+            let store = Store::open(&path).unwrap();
+            assert_eq!(store.clients().unwrap()[0].name(), "Acme");
+            assert_eq!(store.running().unwrap()[0].scope(), "running");
+            let entry = store
+                .connection
+                .query_row(
+                    "SELECT scope, started_at_us, ended_at_us FROM time_entries",
+                    [],
+                    |row| {
+                        Ok((
+                            row.get::<_, String>(0)?,
+                            row.get::<_, i64>(1)?,
+                            row.get::<_, i64>(2)?,
+                        ))
+                    },
+                )
+                .unwrap();
+            assert_eq!(entry, ("completed".into(), 10, 20));
+            let version: u32 = store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(version, SCHEMA_VERSION);
+            let index: String = store
+                .connection
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE name = 'time_entries_agreement_ended'",
+                    [],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert!(index.contains("agreement_id, ended_at_us, started_at_us"));
+        }
+    }
+
+    #[test]
+    fn opens_current_database_while_another_connection_is_writing() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let mut writer = Store::open(&path).unwrap();
+        writer.add_client("Acme".into()).unwrap();
+        let transaction = writer
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        transaction
+            .execute("INSERT INTO clients(name) VALUES ('Uncommitted')", [])
+            .unwrap();
+
+        let reader = Store::open(&path).unwrap();
+        let clients = reader.clients().unwrap();
+        assert_eq!(clients.len(), 1);
+        assert_eq!(clients[0].name(), "Acme");
+    }
+
+    #[test]
+    fn rejects_unsupported_versions_without_upgrading() {
+        for version in [1, 2, SCHEMA_VERSION + 1] {
+            let mut connection = Connection::open_in_memory().unwrap();
+            connection
+                .pragma_update(None, "user_version", version)
+                .unwrap();
+            assert!(
+                matches!(initialize(&mut connection), Err(Error::UnsupportedSchema(found)) if found == version)
+            );
+            let unchanged: u32 = connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap();
+            assert_eq!(unchanged, version);
+        }
+    }
 }

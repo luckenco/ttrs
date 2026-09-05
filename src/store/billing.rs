@@ -33,59 +33,57 @@ pub(super) fn validate_agreement_period(
 
 pub(super) fn validate_month_capacity(
     connection: &Connection,
-    project: model::ProjectId,
+    project: &model::Project,
     timestamp: Timestamp,
 ) -> Result<()> {
-    let project_value =
-        super::find_project(connection, project)?.ok_or(Error::ProjectNotFound(project))?;
+    let agreements = super::project_agreements(connection, project.id())?;
     let month = timestamp
-        .to_zoned(project_value.billing_timezone().clone())
+        .to_zoned(project.billing_timezone().clone())
         .date()
         .first_of_month();
-    let Some(maximum) = month_maximum_us(connection, &project_value, month)? else {
+    let Some(maximum) = month_maximum_us(project, &agreements, month)? else {
         return Ok(());
     };
-    let month_start = super::day_start(month, project_value.billing_timezone())?;
+    let month_start = super::day_start(month, project.billing_timezone())?;
     let month_end = super::day_start(
         month
             .last_of_month()
             .tomorrow()
             .map_err(super::time_error)?,
-        project_value.billing_timezone(),
+        project.billing_timezone(),
     )?;
-    if used_us(connection, project, month_start, month_end)? > maximum {
-        return Err(Error::MonthlyMaximumReached(project));
+    if used_us(connection, project.id(), month_start, month_end)? > maximum {
+        return Err(Error::MonthlyMaximumReached(project.id()));
     }
     Ok(())
 }
 
 pub(super) fn ensure_capacity(
     connection: &Connection,
-    project: model::ProjectId,
+    project: &model::Project,
     started_at: Timestamp,
     ended_at: Timestamp,
 ) -> Result<()> {
-    let project_value =
-        super::find_project(connection, project)?.ok_or(Error::ProjectNotFound(project))?;
+    let agreements = super::project_agreements(connection, project.id())?;
     let mut cursor = started_at;
     loop {
         let month = cursor
-            .to_zoned(project_value.billing_timezone().clone())
+            .to_zoned(project.billing_timezone().clone())
             .date()
             .first_of_month();
         let month_end_date = month
             .last_of_month()
             .tomorrow()
             .map_err(super::time_error)?;
-        let month_start = super::day_start(month, project_value.billing_timezone())?;
-        let month_end = super::day_start(month_end_date, project_value.billing_timezone())?;
+        let month_start = super::day_start(month, project.billing_timezone())?;
+        let month_end = super::day_start(month_end_date, project.billing_timezone())?;
         let segment_end = ended_at.min(month_end);
-        if let Some(maximum) = month_maximum_us(connection, &project_value, month)? {
-            let used = used_us(connection, project, month_start, month_end)?;
+        if let Some(maximum) = month_maximum_us(project, &agreements, month)? {
+            let used = used_us(connection, project.id(), month_start, month_end)?;
             let proposed = i128::from(overlap_us(started_at, ended_at, month_start, month_end));
             let exhausted = started_at == ended_at && used >= maximum;
             if exhausted || used + proposed > maximum {
-                return Err(Error::MonthlyMaximumReached(project));
+                return Err(Error::MonthlyMaximumReached(project.id()));
             }
         }
         if segment_end >= ended_at {
@@ -97,16 +95,15 @@ pub(super) fn ensure_capacity(
 
 pub(super) fn capped_end(
     connection: &Connection,
-    project: model::ProjectId,
+    project: &model::Project,
+    agreements: &[model::ServiceAgreement],
     started_at: Timestamp,
     requested_end: Timestamp,
 ) -> Result<Timestamp> {
-    let project_value =
-        super::find_project(connection, project)?.ok_or(Error::ProjectNotFound(project))?;
     let mut cursor = started_at;
     while cursor < requested_end {
         let month = cursor
-            .to_zoned(project_value.billing_timezone().clone())
+            .to_zoned(project.billing_timezone().clone())
             .date()
             .first_of_month();
         let month_end = super::day_start(
@@ -114,12 +111,12 @@ pub(super) fn capped_end(
                 .last_of_month()
                 .tomorrow()
                 .map_err(super::time_error)?,
-            project_value.billing_timezone(),
+            project.billing_timezone(),
         )?;
         let segment_end = requested_end.min(month_end);
-        if let Some(maximum) = month_maximum_us(connection, &project_value, month)? {
-            let month_start = super::day_start(month, project_value.billing_timezone())?;
-            let used = used_us(connection, project, month_start, month_end)?;
+        if let Some(maximum) = month_maximum_us(project, agreements, month)? {
+            let month_start = super::day_start(month, project.billing_timezone())?;
+            let used = used_us(connection, project.id(), month_start, month_end)?;
             let available = (maximum - used).max(0);
             let segment_us = i128::from(segment_end.as_microsecond() - cursor.as_microsecond());
             if available < segment_us {
@@ -139,17 +136,33 @@ pub(super) fn timer_limit(
     timer: &model::RunningTimer,
     now: Timestamp,
 ) -> Result<Option<model::TimerLimit>> {
+    let agreements = super::project_agreements(connection, project.id())?;
     let effective_now = now.max(timer.started_at());
-    let capped = capped_end(connection, project.id(), timer.started_at(), effective_now)?;
-    if capped < effective_now {
-        return Ok(Some(model::TimerLimit::new(0, Some(capped), true)));
-    }
-
     let month = effective_now
         .to_zoned(project.billing_timezone().clone())
         .date()
         .first_of_month();
-    let Some(maximum) = month_maximum_us(connection, project, month)? else {
+    let started_month = timer
+        .started_at()
+        .to_zoned(project.billing_timezone().clone())
+        .date()
+        .first_of_month();
+    // Check earlier months first; calculate the current month's usage only once below.
+    if started_month < month {
+        let month_start = super::day_start(month, project.billing_timezone())?;
+        let capped = capped_end(
+            connection,
+            project,
+            &agreements,
+            timer.started_at(),
+            month_start,
+        )?;
+        if capped < month_start {
+            return Ok(Some(model::TimerLimit::new(0, Some(capped), true)));
+        }
+    }
+
+    let Some(maximum) = month_maximum_us(project, &agreements, month)? else {
         return Ok(None);
     };
     let month_start = super::day_start(month, project.billing_timezone())?;
@@ -167,6 +180,13 @@ pub(super) fn timer_limit(
         month_start,
         month_end,
     ));
+    let available = (maximum - used).max(0);
+    if available < timer_used {
+        let cursor = timer.started_at().max(month_start);
+        let available = i64::try_from(available).unwrap_or(i64::MAX);
+        let capped = super::timestamp(cursor.as_microsecond().saturating_add(available))?;
+        return Ok(Some(model::TimerLimit::new(0, Some(capped), true)));
+    }
     let remaining = (maximum - used - timer_used).max(0);
     let remaining_us = i64::try_from(remaining).unwrap_or(i64::MAX);
     let until_month_end = month_end.as_microsecond() - effective_now.as_microsecond();
@@ -182,21 +202,19 @@ pub(super) fn timer_limit(
 }
 
 fn month_maximum_us(
-    connection: &Connection,
     project: &model::Project,
+    agreements: &[model::ServiceAgreement],
     month: Date,
 ) -> Result<Option<i128>> {
     let month_end = month
         .last_of_month()
         .tomorrow()
         .map_err(super::time_error)?;
-    let agreements = super::project_agreements(connection, project.id())?;
     let project_end = project
         .archived_on()
         .map(|date| date.tomorrow().map_err(super::time_error))
         .transpose()?;
     let mut numerator = 0_i128;
-    let mut covered = false;
 
     for (index, agreement) in agreements.iter().enumerate() {
         let start = agreement.effective_on().max(month);
@@ -211,15 +229,11 @@ fn month_maximum_us(
         if start >= end {
             continue;
         }
-        covered = true;
         let Some(maximum) = agreement.monthly_hours().maximum() else {
             return Ok(None);
         };
         let days = start.duration_until(end).as_hours() / 24;
         numerator += i128::from(maximum) * HOUR_US * i128::from(days);
-    }
-    if !covered {
-        return Ok(Some(0));
     }
     Ok(Some(numerator / i128::from(month.days_in_month())))
 }
