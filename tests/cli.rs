@@ -209,6 +209,23 @@ fn parser_results_have_the_cli_exit_contract() {
 }
 
 #[test]
+fn bundled_timezones_ignore_tzdir() {
+    let case = Case::new();
+    let zoneinfo = case.root.path().join("zoneinfo");
+    fs::create_dir(&zoneinfo).unwrap();
+    // A nonempty, unusable system database must not override the bundle.
+    fs::write(zoneinfo.join("UTC"), b"not a TZif file").unwrap();
+    let output = case
+        .command()
+        .env("TZDIR", zoneinfo)
+        .args(["config", "set", "timezone", "Europe/Berlin"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", stderr(&output));
+    assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");
+}
+
+#[test]
 fn timezone_configuration_handles_named_and_unnamed_zones() {
     let case = Case::new();
     case.ok(&["config", "set", "timezone", "Europe/Berlin"]);
@@ -217,14 +234,16 @@ fn timezone_configuration_handles_named_and_unnamed_zones() {
     assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");
 
     fs::remove_file(case.root.path().join("config/timezone")).unwrap();
-    let fallback = case
-        .command()
-        .env("TZ", "UTC")
-        .args(["config", "get", "timezone"])
-        .output()
-        .unwrap();
-    assert!(fallback.status.success(), "{}", stderr(&fallback));
-    assert_eq!(fallback.stdout, b"UTC\n");
+    for zone in ["UTC", "Europe/Berlin"] {
+        let fallback = case
+            .command()
+            .env("TZ", zone)
+            .args(["config", "get", "timezone"])
+            .output()
+            .unwrap();
+        assert!(fallback.status.success(), "{}", stderr(&fallback));
+        assert_eq!(fallback.stdout, format!("{zone}\n").as_bytes());
+    }
 
     #[cfg(unix)]
     {

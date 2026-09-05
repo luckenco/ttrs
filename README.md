@@ -129,6 +129,12 @@ tt config set timezone Europe/Berlin
 
 When no timezone is configured, `tt` uses the device timezone.
 
+Named timezone rules come from the IANA database bundled into the executable,
+not the OS timezone database or `TZDIR`. This avoids scanning system timezone
+files on startup and keeps rules consistent across machines running the same
+build. Timezone-rule updates arrive through application updates; maintainers
+update the bundle with `cargo update -p jiff-tzdb` and rebuild.
+
 ## Interactive convenience command
 
 Bare `tt` provides a small interactive dialog when attached to a terminal. Explicit commands remain the stable interface for scripts and other frontends.
