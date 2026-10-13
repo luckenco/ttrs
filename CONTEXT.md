@@ -24,4 +24,6 @@ _Avoid_: Monthly limit, owed hours
 
 **Monthly maximum**:
 An enforced upper bound on recorded working hours per calendar month, independent of whether pricing is hourly or a fixed monthly fee. Unlike a workload target, reaching this maximum prevents additional time from being recorded beyond the allowance.
+
+Monthly maxima are pooled per project calendar month across replacement agreements, with each capped agreement contributing its day-prorated allowance. Any uncapped agreement coverage makes the whole calendar month uncapped, including its capped periods. A maximum introduced after uncapped coverage therefore takes full effect only in the next fully capped month. Included retainer hours remain separate per-agreement allowances and do not carry between agreements.
 _Avoid_: Monthly workload target

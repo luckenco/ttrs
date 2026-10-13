@@ -154,6 +154,10 @@ impl MonthlyHours {
     }
 
     /// Returns the monthly maximum in whole hours.
+    ///
+    /// Recording allowances are day-prorated and pooled across a project's
+    /// agreements for each calendar month. Any uncapped agreement coverage
+    /// makes that whole month uncapped, including its capped periods.
     pub const fn maximum(self) -> Option<u32> {
         self.maximum
     }

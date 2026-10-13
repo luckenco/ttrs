@@ -68,7 +68,7 @@ Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt stat
 
 - Each project belongs to one client. One timer may run per client; different clients can overlap.
 - Pricing changes create replacement agreements; historical entries keep their original terms. Project client ownership and billing timezone are fixed.
-- Retainer included hours aren't a recording cap. An explicit monthly maximum limits recording; stopping an over-cap timer discards the overflow.
+- Retainer included hours aren't a recording cap. Monthly maxima are pooled per project and prorated by calendar days of agreement coverage. **Any uncapped agreement coverage makes that entire calendar month uncapped**, including days governed by capped terms. For example, replacing uncapped terms halfway through April with a 20-hour maximum leaves all of April uncapped; May has the full 20-hour maximum. Stopping an over-cap timer discards the overflow.
 - Earnings are estimates, not invoices. Currencies stay separate.
 
 ## TODO
