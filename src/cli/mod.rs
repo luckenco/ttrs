@@ -24,6 +24,17 @@ pub enum Command {
         at: Option<String>,
     },
     Status,
+    Cancel {
+        id: String,
+        yes: bool,
+    },
+    EntryList {
+        agreement: String,
+    },
+    EntryDelete {
+        id: String,
+        yes: bool,
+    },
     Log {
         target: TrackingTarget,
         scope: String,

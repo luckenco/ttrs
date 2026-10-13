@@ -52,6 +52,16 @@ tt --help
 
 Use `tt <command> --help` for all options, including client/project setup, replacement agreements, archival, and timezone configuration.
 
+Recovery commands require explicit confirmation:
+
+```sh
+tt cancel --id id:1 --yes                  # Cancel without recording an entry
+tt entry list --agreement id:1            # Includes historical/future entries
+tt entry delete --id id:1 --yes            # Permanently delete a completed entry
+```
+
+Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt status` or `tt entry list` before confirming recovery.
+
 ## Worth knowing
 
 - Each project belongs to one client. One timer may run per client; different clients can overlap.

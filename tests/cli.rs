@@ -230,6 +230,122 @@ fn stopped_timer_ids_are_not_reused_across_reopened_commands() {
 }
 
 #[test]
+fn cancelling_future_work_requires_confirmation_and_records_no_entry() {
+    let case = Case::new();
+    case.ok(&["client", "add", "--name", "Acme"]);
+    case.ok(&[
+        "project",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "website",
+        "--timezone",
+        "UTC",
+        "--agreement",
+        "Support",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-01",
+    ]);
+    case.ok(&[
+        "start",
+        "-p",
+        "website",
+        "-s",
+        "Future",
+        "--at",
+        "2030-03-12T09:00:00Z",
+    ]);
+    let running = case.ok(&["status"]);
+    assert!(case.fails(2, &["cancel", "--id", "id:1"]).contains("--yes"));
+    assert_eq!(case.ok(&["status"]), running);
+    assert!(
+        case.ok(&["cancel", "--id", "id:1", "--yes"])
+            .contains("no entry recorded")
+    );
+    assert_eq!(case.ok(&["status"]), "No running timers.\n");
+    assert_eq!(
+        case.ok(&["entry", "list", "--agreement", "id:1"]),
+        "No completed entries.\n"
+    );
+    assert!(
+        case.ok(&["start", "-p", "website", "-s", "Recovered", "--at", "0900"])
+            .contains("id:2")
+    );
+    case.fails(1, &["cancel", "--id", "id:1", "--yes"]);
+    assert!(case.ok(&["status"]).contains("Recovered"));
+}
+
+#[test]
+fn deleting_entries_requires_confirmation_and_works_after_archival() {
+    let case = Case::new();
+    case.ok(&["client", "add", "--name", "Acme"]);
+    case.ok(&[
+        "project",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "website",
+        "--timezone",
+        "UTC",
+        "--agreement",
+        "Support",
+        "--rate",
+        "100",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-01",
+    ]);
+    case.ok(&[
+        "log",
+        "-p",
+        "website",
+        "-s",
+        "Future",
+        "--from",
+        "2030-03-12T09:00:00Z",
+        "--to",
+        "2030-03-12T10:00:00Z",
+    ]);
+    let entries = case.ok(&["entry", "list", "--agreement", "id:1"]);
+    assert!(entries.contains("Future") && entries.contains("2030-03-12 09:00:00"));
+    assert!(
+        case.fails(2, &["entry", "delete", "--id", "id:1"])
+            .contains("--yes")
+    );
+    assert_eq!(case.ok(&["entry", "list", "--agreement", "id:1"]), entries);
+    case.fails(1, &["project", "archive", "--project", "website"]);
+    case.ok(&["entry", "delete", "--id", "id:1", "--yes"]);
+    assert_eq!(
+        case.ok(&["entry", "list", "--agreement", "id:1"]),
+        "No completed entries.\n"
+    );
+    assert!(
+        case.ok(&[
+            "log", "-p", "website", "-s", "Kept", "--from", "0900", "--to", "1000"
+        ])
+        .contains("id:2")
+    );
+    case.fails(1, &["entry", "delete", "--id", "id:1", "--yes"]);
+    case.ok(&["project", "archive", "--project", "website"]);
+    assert!(
+        case.ok(&["entry", "list", "--agreement", "id:1"])
+            .contains("Kept")
+    );
+    case.ok(&["entry", "delete", "--id", "id:2", "--yes"]);
+    assert_eq!(
+        case.ok(&["entry", "list", "--agreement", "id:1"]),
+        "No completed entries.\n"
+    );
+}
+
+#[test]
 fn list_queries_preserve_filters_labels_and_order() {
     let case = Case::new();
     assert_eq!(case.ok(&["project", "list"]), "No projects.\n");

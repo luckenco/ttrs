@@ -78,6 +78,19 @@ enum TopCommand {
     },
     /// Show running timers.
     Status,
+    /// Cancel a running timer without recording completed time.
+    Cancel {
+        #[arg(long)]
+        id: String,
+        /// Confirm cancellation; no completed entry will be recorded.
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Browse or delete completed entries, including historical work.
+    Entry {
+        #[command(subcommand)]
+        command: EntryCommand,
+    },
     /// Log a completed entry.
     Log {
         #[command(flatten)]
@@ -108,6 +121,24 @@ enum TopCommand {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum EntryCommand {
+    /// List completed entries, newest first.
+    List {
+        /// Agreement reference in id:<number> form; historical/archived terms are allowed.
+        #[arg(long)]
+        agreement: String,
+    },
+    /// Permanently delete a completed entry.
+    Delete {
+        #[arg(long)]
+        id: String,
+        /// Confirm irreversible deletion; estimates and recorded usage will change.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -238,6 +269,13 @@ impl From<Cli> for Command {
             Some(TopCommand::Start { project, scope, at }) => Self::Start { project, scope, at },
             Some(TopCommand::Stop { id, at }) => Self::Stop { id, at },
             Some(TopCommand::Status) => Self::Status,
+            Some(TopCommand::Cancel { id, yes }) => Self::Cancel { id, yes },
+            Some(TopCommand::Entry {
+                command: EntryCommand::List { agreement },
+            }) => Self::EntryList { agreement },
+            Some(TopCommand::Entry {
+                command: EntryCommand::Delete { id, yes },
+            }) => Self::EntryDelete { id, yes },
             Some(TopCommand::Log {
                 target,
                 scope,

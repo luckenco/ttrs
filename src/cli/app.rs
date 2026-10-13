@@ -19,6 +19,19 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
         return line(format_args!("{}", timezone_name(&zone)?));
     }
 
+    match &command {
+        Command::Cancel { yes: false, .. } => {
+            return Err(Error::usage(
+                "Cancellation records no completed time. Rerun with --yes to confirm.",
+            ));
+        }
+        Command::EntryDelete { yes: false, .. } => {
+            return Err(Error::usage(
+                "Deletion is permanent and changes estimates and usage. Rerun with --yes to confirm.",
+            ));
+        }
+        _ => {}
+    }
     let zone = timezone()?;
     let path = database_path()?;
     if let Some(parent) = path.parent() {
@@ -72,6 +85,36 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             Ok(())
         }
         Command::Status => status(&tracker, &zone, now()?),
+        Command::Cancel { id, .. } => {
+            let id = id
+                .strip_prefix("id:")
+                .unwrap_or(&id)
+                .parse::<model::TimerId>()
+                .map_err(|error| Error::usage(error.to_string()))?;
+            let timer = tracker.timer(id).map_err(core_error)?;
+            tracker.cancel_if_current(&timer).map_err(core_error)?;
+            line(format_args!(
+                "Cancelled {} (id:{}); no entry recorded.",
+                timer.scope(),
+                id
+            ))
+        }
+        Command::EntryList { agreement } => {
+            let agreement = resolve_agreement(&tracker, &agreement)?;
+            entry_list(&tracker, agreement.id(), &zone)
+        }
+        Command::EntryDelete { id, .. } => {
+            let id = id
+                .strip_prefix("id:")
+                .unwrap_or(&id)
+                .parse::<model::EntryId>()
+                .map_err(|error| Error::usage(error.to_string()))?;
+            let entry = tracker.entry(id).map_err(core_error)?;
+            tracker
+                .delete_entry_if_current(&entry)
+                .map_err(core_error)?;
+            line(format_args!("Deleted {} (id:{}).", entry.scope(), id))
+        }
         Command::Log {
             target,
             scope,
@@ -234,6 +277,35 @@ fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Erro
             clock(timer.started_at(), zone),
             elapsed(timer.started_at(), now),
             format_limit(status.limit)
+        ))?;
+    }
+    Ok(())
+}
+
+fn entry_list(
+    tracker: &Tracker,
+    agreement: model::ServiceAgreementId,
+    zone: &TimeZone,
+) -> Result<(), Error> {
+    let entries = tracker.entries(agreement).map_err(core_error)?;
+    if entries.is_empty() {
+        return line(format_args!("No completed entries."));
+    }
+    line(format_args!("ID\tSCOPE\tFROM\tTO\tDURATION"))?;
+    for entry in entries {
+        line(format_args!(
+            "id:{}\t{}\t{}\t{}\t{}",
+            entry.id(),
+            entry.scope(),
+            entry
+                .started_at()
+                .to_zoned(zone.clone())
+                .strftime("%F %T%.f %:z"),
+            entry
+                .ended_at()
+                .to_zoned(zone.clone())
+                .strftime("%F %T%.f %:z"),
+            duration(entry.started_at(), entry.ended_at())
         ))?;
     }
     Ok(())
