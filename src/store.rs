@@ -196,17 +196,21 @@ impl Store {
 
     pub(crate) fn add_agreement(
         &mut self,
-        project: model::ProjectId,
+        expected: model::ServiceAgreementId,
         agreement: model::NewAgreement,
     ) -> Result<model::ServiceAgreement> {
         let (name, pricing, monthly_hours, effective_on) = agreement.into_parts();
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let current =
+            find_agreement(&transaction, expected)?.ok_or(Error::AgreementNotFound(expected))?;
+        if !current.is_current() {
+            return Err(Error::AgreementChanged(expected));
+        }
+        let project = current.project();
         let project_value = active_project(&transaction, project)?;
         reject_client_timer(&transaction, project_value.client())?;
-        let current = current_agreement(&transaction, project)?
-            .ok_or(Error::ProjectAgreementMissing(project))?;
         if effective_on <= current.effective_on() {
             return Err(Error::AgreementEffectiveDateOrder);
         }
@@ -354,14 +358,14 @@ impl Store {
 
     pub(crate) fn start(
         &mut self,
-        project: model::ProjectId,
+        agreement: model::ServiceAgreementId,
         scope: String,
         started_at: Timestamp,
     ) -> Result<model::RunningTimer> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let timer = timers::start(&transaction, project, scope, started_at)?;
+        let timer = timers::start(&transaction, agreement, scope, started_at)?;
         transaction.commit()?;
         Ok(timer)
     }
@@ -396,7 +400,7 @@ impl Store {
     pub(crate) fn switch(
         &mut self,
         expected: &model::RunningTimer,
-        project: model::ProjectId,
+        agreement: model::ServiceAgreementId,
         scope: String,
         at: Timestamp,
     ) -> Result<(model::TimeEntry, model::RunningTimer)> {
@@ -408,12 +412,17 @@ impl Store {
             .expect("running timers always reference an agreement");
         let old_project = find_project(&transaction, old.project())?
             .expect("agreements always reference a project");
-        let target = active_project(&transaction, project)?;
+        let target_agreement =
+            find_agreement(&transaction, agreement)?.ok_or(Error::AgreementNotFound(agreement))?;
+        if !target_agreement.is_current() {
+            return Err(Error::AgreementChanged(agreement));
+        }
+        let target = active_project(&transaction, target_agreement.project())?;
         if target.client() != old_project.client() {
             return Err(Error::SwitchClientMismatch);
         }
         let entry = timers::end(&transaction, expected.id(), at)?;
-        let timer = timers::start(&transaction, project, scope, at)?;
+        let timer = timers::start(&transaction, agreement, scope, at)?;
         transaction.commit()?;
         Ok((entry, timer))
     }

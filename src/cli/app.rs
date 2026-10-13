@@ -32,8 +32,11 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             let project = resolve_project(&tracker, &project)?;
             let reference = now()?;
             let started_at = parse_time(at.as_deref().unwrap_or("now"), &zone, reference)?;
+            let agreement = tracker
+                .current_service_agreement(project.id())
+                .map_err(core_error)?;
             let timer = tracker
-                .start(command::Start::new(project.id(), scope, started_at).map_err(core_error)?)
+                .start(command::Start::new(agreement.id(), scope, started_at).map_err(core_error)?)
                 .map_err(core_error)?;
             line(format_args!(
                 "Started {} for {} at {} (id:{})",
@@ -136,8 +139,11 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             let agreement =
                 model::NewAgreement::new(name, pricing, monthly_hours, parse_date(&effective_on)?)
                     .map_err(core_error)?;
+            let previous = tracker
+                .current_service_agreement(project.id())
+                .map_err(core_error)?;
             let agreement = tracker
-                .add_service_agreement(project.id(), agreement, now()?)
+                .add_service_agreement(previous.id(), agreement, now()?)
                 .map_err(core_error)?;
             line(format_args!(
                 "Added service agreement {} (id:{})",

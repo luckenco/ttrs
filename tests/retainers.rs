@@ -89,7 +89,7 @@ fn validates_fee_currency_and_retainer_minimums() {
 
 #[test]
 fn fee_without_rate_is_fixed_and_included_hours_do_not_cap_work() {
-    let (mut tracker, project, agreement) = setup(20, None, None, "UTC");
+    let (mut tracker, _, agreement) = setup(20, None, None, "UTC");
     let empty = tracker
         .dashboard(ts("2026-01-02T00:00:00Z"), &TimeZone::UTC)
         .unwrap();
@@ -112,7 +112,8 @@ fn fee_without_rate_is_fixed_and_included_hours_do_not_cap_work() {
     }
     let timer = tracker
         .start(
-            command::Start::new(project.id(), "extra".into(), ts("2026-01-03T09:00:00Z")).unwrap(),
+            command::Start::new(agreement.id(), "extra".into(), ts("2026-01-03T09:00:00Z"))
+                .unwrap(),
         )
         .unwrap();
     assert!(
@@ -134,7 +135,7 @@ fn fee_without_rate_is_fixed_and_included_hours_do_not_cap_work() {
 
 #[test]
 fn overage_uses_monthly_usage_and_only_todays_increase_is_daily_earnings() {
-    let (mut tracker, project, agreement) = setup(20, Some(125_000_000), None, "UTC");
+    let (mut tracker, _, agreement) = setup(20, Some(125_000_000), None, "UTC");
     log(
         &mut tracker,
         &agreement,
@@ -174,7 +175,7 @@ fn overage_uses_monthly_usage_and_only_todays_increase_is_daily_earnings() {
     );
     let timer = tracker
         .start(
-            command::Start::new(project.id(), "live".into(), ts("2026-01-03T10:00:00Z")).unwrap(),
+            command::Start::new(agreement.id(), "live".into(), ts("2026-01-03T10:00:00Z")).unwrap(),
         )
         .unwrap();
     let now = ts("2026-01-03T11:00:00Z");
@@ -197,7 +198,7 @@ fn overage_uses_monthly_usage_and_only_todays_increase_is_daily_earnings() {
 #[test]
 fn maximum_remains_independent_with_or_without_overage() {
     for rate in [None, Some(125_000_000)] {
-        let (mut tracker, project, agreement) = setup(20, rate, Some(22), "UTC");
+        let (mut tracker, _, agreement) = setup(20, rate, Some(22), "UTC");
         log(
             &mut tracker,
             &agreement,
@@ -206,7 +207,7 @@ fn maximum_remains_independent_with_or_without_overage() {
         );
         let timer = tracker
             .start(
-                command::Start::new(project.id(), "capped".into(), ts("2026-01-03T00:00:00Z"))
+                command::Start::new(agreement.id(), "capped".into(), ts("2026-01-03T00:00:00Z"))
                     .unwrap(),
             )
             .unwrap();
@@ -238,7 +239,7 @@ fn maximum_remains_independent_with_or_without_overage() {
             Err(Error::MonthlyMaximumReached(_))
         ));
         assert!(matches!(
-            tracker.start(command::Start::new(project.id(), "full".into(), now).unwrap()),
+            tracker.start(command::Start::new(agreement.id(), "full".into(), now).unwrap()),
             Err(Error::MonthlyMaximumReached(_))
         ));
         let next = tracker
@@ -250,7 +251,7 @@ fn maximum_remains_independent_with_or_without_overage() {
 
 #[test]
 fn overage_resets_at_project_midnight_even_when_the_display_day_spans_two_months() {
-    let (mut tracker, project, agreement) = setup(1, Some(125_000_000), None, "Europe/Berlin");
+    let (mut tracker, _, agreement) = setup(1, Some(125_000_000), None, "Europe/Berlin");
     log(
         &mut tracker,
         &agreement,
@@ -259,8 +260,12 @@ fn overage_resets_at_project_midnight_even_when_the_display_day_spans_two_months
     );
     let timer = tracker
         .start(
-            command::Start::new(project.id(), "overnight".into(), ts("2026-01-31T22:30:00Z"))
-                .unwrap(),
+            command::Start::new(
+                agreement.id(),
+                "overnight".into(),
+                ts("2026-01-31T22:30:00Z"),
+            )
+            .unwrap(),
         )
         .unwrap();
     let now = ts("2026-02-01T01:00:00Z");
@@ -288,7 +293,7 @@ fn replacements_and_archival_prorate_each_agreements_fee_and_included_hours() {
     let now = ts("2026-01-20T12:00:00Z");
     let replacement = tracker
         .add_service_agreement(
-            project.id(),
+            old.id(),
             model::NewAgreement::new(
                 "Replacement".into(),
                 model::Retainer::new(
@@ -367,10 +372,10 @@ fn fees_prorate_by_calendar_days_not_dst_duration_and_handle_leap_years() {
         ("2026-10-16", "2026-10-31T12:00:00Z", 3_100_000_000, 31, 16),
         ("2028-02-15", "2028-02-29T12:00:00Z", 2_900_000_000, 29, 15),
     ] {
-        let (mut tracker, project, _) = setup(20, None, None, "Europe/Berlin");
+        let (mut tracker, _, old) = setup(20, None, None, "Europe/Berlin");
         let agreement = tracker
             .add_service_agreement(
-                project.id(),
+                old.id(),
                 model::NewAgreement::new(
                     "Partial".into(),
                     model::Retainer::new(
@@ -487,7 +492,7 @@ fn monthly_estimate_adds_all_retainers_hourly_work_and_live_time_once() {
             now,
         )
         .unwrap();
-    let (hourly_project, hourly) = tracker
+    let (_, hourly) = tracker
         .add_project(
             project.client(),
             "Flyeralarm".into(),
@@ -509,14 +514,7 @@ fn monthly_estimate_adds_all_retainers_hourly_work_and_live_time_once() {
         "2026-01-03T11:00:00Z",
     );
     let timer = tracker
-        .start(
-            command::Start::new(
-                hourly_project.id(),
-                "live".into(),
-                ts("2026-01-20T11:00:00Z"),
-            )
-            .unwrap(),
-        )
+        .start(command::Start::new(hourly.id(), "live".into(), ts("2026-01-20T11:00:00Z")).unwrap())
         .unwrap();
     let before = tracker.dashboard(now, &TimeZone::UTC).unwrap();
     assert_eq!(before.today.earnings_micros["EUR"], 125_000_000);

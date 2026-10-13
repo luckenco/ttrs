@@ -297,7 +297,7 @@ fn logging_and_stopping_reject_invalid_times_keep_input_and_block_stale_timers()
     let replacement = tracker
         .start(
             command::Start::new(
-                app.snapshot.projects[0].project.id(),
+                app.snapshot.projects[0].agreement.id(),
                 "External".into(),
                 later,
             )
@@ -571,7 +571,7 @@ fn reviewed_administration_rejects_external_changes_without_overwriting_them() {
     let prepared = draft.prepare(&catalogs, now, &TimeZone::UTC).unwrap();
     tracker
         .add_service_agreement(
-            project.id(),
+            app.snapshot.projects[0].agreement.id(),
             model::NewAgreement::new(
                 "External".into(),
                 app.snapshot.projects[0].agreement.pricing().clone(),
@@ -603,6 +603,47 @@ fn reviewed_administration_rejects_external_changes_without_overwriting_them() {
     tracker.archive_project(project.id(), None, now).unwrap();
     assert!(prepared.apply(&mut tracker, now).is_err());
     assert!(!tracker.project(project.id()).unwrap().is_active());
+}
+
+#[test]
+fn reviewed_start_rejects_replaced_terms_without_losing_the_review() {
+    let (mut tracker, mut app, now) = setup();
+    let selected = app.snapshot.projects[0].agreement.clone();
+    action(&mut app, &mut tracker, now, "Start timer at");
+    let f = form(&mut app);
+    f.set(F::Scope, "Reviewed work");
+    f.focus = f.visible().len();
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    let summary = form(&mut app).review.as_ref().unwrap().summary.clone();
+    assert!(summary.contains("Agreement: Support"));
+    tracker
+        .add_service_agreement(
+            selected.id(),
+            model::NewAgreement::new(
+                "Replacement".into(),
+                model::HourlyRate::new(200_000_000, "EUR".into()).unwrap(),
+                model::MonthlyHours::default(),
+                "2026-01-02".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert!(tracker.running().unwrap().is_empty());
+    assert_eq!(form(&mut app).text(F::Scope), "Reviewed work");
+    assert_eq!(form(&mut app).review.as_ref().unwrap().summary, summary);
+    assert!(
+        form(&mut app)
+            .error
+            .as_ref()
+            .unwrap()
+            .contains("select it again")
+    );
 }
 
 #[test]
@@ -644,7 +685,7 @@ fn reviewed_future_starts_match_cli_without_silently_switching_clients() {
 fn stop_at_reports_cap_loss_and_a_saved_zone_controls_refresh_and_input() {
     let (mut tracker, mut app, now) = setup();
     let client = app.snapshot.projects[0].client.id();
-    let (project, _) = tracker
+    let (_, agreement) = tracker
         .add_project(
             client,
             "Capped".into(),
@@ -662,7 +703,7 @@ fn stop_at_reports_cap_loss_and_a_saved_zone_controls_refresh_and_input() {
     tracker
         .start(
             command::Start::new(
-                project.id(),
+                agreement.id(),
                 "Capped work".into(),
                 "2026-01-02T08:00:00Z".parse().unwrap(),
             )

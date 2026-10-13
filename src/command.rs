@@ -5,7 +5,7 @@ use crate::{Error, Result, model};
 /// Starts a running timer.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Start {
-    project: model::ProjectId,
+    agreement: model::ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
 }
@@ -13,21 +13,26 @@ pub struct Start {
 impl Start {
     /// Creates a start command.
     ///
+    /// The selected agreement must still be current when the command is applied.
     /// The scope must contain at least one non-whitespace character.
-    pub fn new(project: model::ProjectId, scope: String, started_at: Timestamp) -> Result<Self> {
+    pub fn new(
+        agreement: model::ServiceAgreementId,
+        scope: String,
+        started_at: Timestamp,
+    ) -> Result<Self> {
         if scope.trim().is_empty() {
             return Err(Error::EmptyScope);
         }
 
         Ok(Self {
-            project,
+            agreement,
             scope,
             started_at: storage_timestamp(started_at),
         })
     }
 
-    pub(crate) fn into_parts(self) -> (model::ProjectId, String, Timestamp) {
-        (self.project, self.scope, self.started_at)
+    pub(crate) fn into_parts(self) -> (model::ServiceAgreementId, String, Timestamp) {
+        (self.agreement, self.scope, self.started_at)
     }
 }
 
@@ -105,8 +110,8 @@ mod tests {
 
     #[test]
     fn rejects_blank_scope() {
-        let project = model::ProjectId::from_raw(1);
-        let result = Start::new(project, "  ".into(), Timestamp::UNIX_EPOCH);
+        let agreement = model::ServiceAgreementId::from_raw(1);
+        let result = Start::new(agreement, "  ".into(), Timestamp::UNIX_EPOCH);
 
         assert!(matches!(result, Err(Error::EmptyScope)));
     }

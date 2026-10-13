@@ -4,6 +4,10 @@
 //! microsecond precision. Parsing local CLI input, reading the system clock,
 //! and rendering output belong to frontend adapters.
 //!
+//! Start, switch, and replacement operations act on the selected agreement ID
+//! and reject agreements replaced before the write transaction. During early
+//! development, schema changes require a fresh database; no migrations are provided.
+//!
 //! # Example
 //!
 //! ```
@@ -30,12 +34,12 @@
 //! let ended_at = "2026-01-02T09:01:00Z".parse()?;
 //!
 //! let timer = tracker.start(command::Start::new(
-//!     project.id(),
+//!     agreement.id(),
 //!     "ISSUE-123".into(),
 //!     started_at,
 //! )?)?;
 //! let (entry, next) = tracker.switch(&timer, command::Start::new(
-//!     project.id(), "ISSUE-124".into(), ended_at,
+//!     agreement.id(), "ISSUE-124".into(), ended_at,
 //! )?)?;
 //! let stopped_at = "2026-01-02T09:02:00Z".parse()?;
 //! tracker.end_if_current(&next, stopped_at)?;
@@ -46,6 +50,16 @@
 //! assert_eq!(entry.scope(), "ISSUE-123");
 //! assert_eq!(entry.started_at(), started_at);
 //! assert_eq!(entry.ended_at(), ended_at);
+//!
+//! let replacement = model::NewAgreement::new(
+//!     "Support revised".into(), agreement.pricing().clone(),
+//!     model::MonthlyHours::default(), "2026-01-03".parse()?,
+//! )?;
+//! let revised = tracker.add_service_agreement(
+//!     agreement.id(), replacement, "2026-01-03T00:00:00Z".parse()?,
+//! )?;
+//! assert_eq!(revised.project(), project.id());
+//! assert!(!tracker.service_agreement(agreement.id())?.is_current());
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 

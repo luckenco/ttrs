@@ -60,20 +60,24 @@ impl Tracker {
             .add_project(client, project_name(name)?, timezone, agreement)
     }
 
-    /// Creates and activates immutable replacement terms for a project.
+    /// Replaces the selected current agreement with immutable terms.
+    ///
+    /// The project and billing timezone come from the selected agreement.
+    /// Returns [`Error::AgreementChanged`] if it was replaced before applying.
     pub fn add_service_agreement(
         &mut self,
-        project: model::ProjectId,
+        previous: model::ServiceAgreementId,
         agreement: model::NewAgreement,
         now: Timestamp,
     ) -> Result<model::ServiceAgreement> {
-        let project_value = self.project(project)?;
+        let selected = self.service_agreement(previous)?;
+        let project_value = self.project(selected.project())?;
         reject_future(
             agreement.effective_on(),
             project_value.billing_timezone(),
             now,
         )?;
-        self.store.add_agreement(project, agreement)
+        self.store.add_agreement(previous, agreement)
     }
 
     /// Returns all service agreements ordered by project and effective date.
@@ -183,10 +187,12 @@ impl Tracker {
         self.store.unarchive_project(project)
     }
 
-    /// Starts a timer without affecting timers for other clients.
+    /// Starts a timer on the selected current agreement without affecting other clients.
+    ///
+    /// Returns [`Error::AgreementChanged`] if the agreement was replaced.
     pub fn start(&mut self, command: command::Start) -> Result<model::RunningTimer> {
-        let (project, scope, started_at) = command.into_parts();
-        self.store.start(project, scope, started_at)
+        let (agreement, scope, started_at) = command.into_parts();
+        self.store.start(agreement, scope, started_at)
     }
 
     /// Ends a running timer and returns the resulting, possibly capped entry.
@@ -212,15 +218,16 @@ impl Tracker {
     ///
     /// Both operations use the start command's timestamp. The completed entry
     /// may end earlier at a cap; callers should report the discarded overflow.
-    /// Any failure (including a stale timer, different client, or exhausted
+    /// The target agreement must still be current when applied.
+    /// Any failure (including a stale timer or agreement, different client, or exhausted
     /// target project) leaves both timers and completed entries unchanged.
     pub fn switch(
         &mut self,
         timer: &model::RunningTimer,
         command: command::Start,
     ) -> Result<(model::TimeEntry, model::RunningTimer)> {
-        let (project, scope, at) = command.into_parts();
-        self.store.switch(timer, project, scope, at)
+        let (agreement, scope, at) = command.into_parts();
+        self.store.switch(timer, agreement, scope, at)
     }
 
     /// Returns a consistent snapshot of projects, timers, daily work and retainers.
@@ -430,20 +437,16 @@ mod tests {
     #[test]
     fn replacement_requires_stopped_timers_and_clean_boundary() {
         let mut tracker = Tracker::memory().unwrap();
-        let (project, old) = project(&mut tracker);
+        let (_project, old) = project(&mut tracker);
         let timer = tracker
             .start(
-                command::Start::new(
-                    project.id(),
-                    "old".into(),
-                    timestamp("2026-01-02T09:00:00Z"),
-                )
-                .unwrap(),
+                command::Start::new(old.id(), "old".into(), timestamp("2026-01-02T09:00:00Z"))
+                    .unwrap(),
             )
             .unwrap();
         let replace = |tracker: &mut Tracker| {
             tracker.add_service_agreement(
-                project.id(),
+                old.id(),
                 terms(
                     "Support 2026",
                     125_000_000,
@@ -484,8 +487,8 @@ mod tests {
     #[test]
     fn one_running_timer_is_allowed_per_client() {
         let mut tracker = Tracker::memory().unwrap();
-        let (project, _) = project(&mut tracker);
-        let second = tracker
+        let (project, agreement) = project(&mut tracker);
+        let (_, second) = tracker
             .add_project(
                 project.client(),
                 "api".into(),
@@ -498,12 +501,11 @@ mod tests {
                 ),
                 timestamp("2026-01-10T00:00:00Z"),
             )
-            .unwrap()
-            .0;
+            .unwrap();
         tracker
             .start(
                 command::Start::new(
-                    project.id(),
+                    agreement.id(),
                     "first".into(),
                     timestamp("2026-01-02T09:00:00Z"),
                 )
@@ -527,7 +529,7 @@ mod tests {
     fn uncapped_work_preserves_period_and_timer_validation() {
         let mut tracker = Tracker::memory().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();
-        let (project, old) = tracker
+        let (_project, old) = tracker
             .add_project(
                 client.id(),
                 "website".into(),
@@ -543,7 +545,7 @@ mod tests {
             .unwrap();
         let agreement = tracker
             .add_service_agreement(
-                project.id(),
+                old.id(),
                 terms(
                     "Uncapped",
                     100_000_000,
@@ -580,7 +582,7 @@ mod tests {
         assert!(matches!(
             tracker.start(
                 command::Start::new(
-                    project.id(),
+                    agreement.id(),
                     "too early".into(),
                     timestamp("2026-01-15T00:00:00Z"),
                 )
@@ -591,7 +593,7 @@ mod tests {
         let start = timestamp("2026-01-16T00:00:00Z");
         let end = timestamp("2026-04-01T00:00:00Z");
         let timer = tracker
-            .start(command::Start::new(project.id(), "long timer".into(), start).unwrap())
+            .start(command::Start::new(agreement.id(), "long timer".into(), start).unwrap())
             .unwrap();
         assert!(tracker.timer_limit(timer.id(), end).unwrap().is_none());
         assert!(matches!(
@@ -639,7 +641,7 @@ mod tests {
         let timer = tracker
             .start(
                 command::Start::new(
-                    project.id(),
+                    agreement.id(),
                     "timer".into(),
                     timestamp("2026-01-02T10:00:00Z"),
                 )
@@ -735,7 +737,7 @@ mod tests {
         ] {
             let mut tracker = Tracker::memory().unwrap();
             let client = tracker.add_client("Acme".into()).unwrap();
-            let (project, _) = tracker
+            let (_project, agreement) = tracker
                 .add_project(
                     client.id(),
                     "website".into(),
@@ -753,7 +755,7 @@ mod tests {
             let now = timestamp(now);
             let cap = cap.map(timestamp);
             let timer = tracker
-                .start(command::Start::new(project.id(), "work".into(), start).unwrap())
+                .start(command::Start::new(agreement.id(), "work".into(), start).unwrap())
                 .unwrap();
             let limit = tracker.timer_limit(timer.id(), now).unwrap().unwrap();
             assert_eq!(
@@ -774,7 +776,7 @@ mod tests {
     fn overlapping_entries_are_counted_in_each_month() {
         let mut tracker = Tracker::memory().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();
-        let (project, agreement) = tracker
+        let (_project, agreement) = tracker
             .add_project(
                 client.id(),
                 "website".into(),
@@ -804,7 +806,7 @@ mod tests {
         let timer = tracker
             .start(
                 command::Start::new(
-                    project.id(),
+                    agreement.id(),
                     "work".into(),
                     timestamp("2026-02-01T10:00:00Z"),
                 )
@@ -899,7 +901,7 @@ mod tests {
 
         assert!(matches!(
             tracker.add_service_agreement(
-                project.id(),
+                agreement.id(),
                 terms(
                     "Too low",
                     100_000_000,
@@ -938,7 +940,7 @@ mod tests {
             .unwrap();
         let new = tracker
             .add_service_agreement(
-                project.id(),
+                old.id(),
                 terms(
                     "New",
                     100_000_000,
@@ -1038,7 +1040,7 @@ mod tests {
             .unwrap();
         tracker
             .add_service_agreement(
-                project.id(),
+                agreement.id(),
                 terms(
                     "Replacement",
                     125_000_000,
@@ -1057,11 +1059,11 @@ mod tests {
         let path = directory.path().join("tt.sqlite3");
         let timer = {
             let mut tracker = Tracker::open(&path).unwrap();
-            let (project, _) = project(&mut tracker);
+            let (_project, agreement) = project(&mut tracker);
             tracker
                 .start(
                     command::Start::new(
-                        project.id(),
+                        agreement.id(),
                         "ISSUE-1".into(),
                         timestamp("2026-01-02T09:00:00Z"),
                     )
@@ -1074,14 +1076,201 @@ mod tests {
     }
 
     #[test]
+    fn stale_prepared_start_does_not_follow_replacement() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let mut selected = Tracker::open(&path).unwrap();
+        let (project, old) = project(&mut selected);
+        let at = timestamp("2026-01-04T09:00:00Z");
+        let prepared = command::Start::new(old.id(), "prepared".into(), at).unwrap();
+        let mut writer = Tracker::open(&path).unwrap();
+        let fresh = writer
+            .add_service_agreement(
+                old.id(),
+                terms(
+                    "Fresh",
+                    125_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-03",
+                ),
+                at,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            selected.start(prepared),
+            Err(Error::AgreementChanged(id)) if id == old.id()
+        ));
+        assert!(writer.running().unwrap().is_empty());
+        let timer = selected
+            .start(command::Start::new(fresh.id(), "fresh".into(), at).unwrap())
+            .unwrap();
+        assert_eq!(timer.agreement(), fresh.id());
+        assert_eq!(fresh.project(), project.id());
+    }
+
+    #[test]
+    fn stale_replacement_does_not_replace_new_terms() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let mut selected = Tracker::open(&path).unwrap();
+        let (project, old) = project(&mut selected);
+        let mut writer = Tracker::open(&path).unwrap();
+        let now = timestamp("2026-01-05T00:00:00Z");
+        let fresh = writer
+            .add_service_agreement(
+                old.id(),
+                terms(
+                    "Fresh",
+                    125_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-03",
+                ),
+                now,
+            )
+            .unwrap();
+
+        assert!(matches!(
+            selected.add_service_agreement(
+                old.id(),
+                terms("Stale", 150_000_000, model::MonthlyHours::default(), "2026-01-04"),
+                now,
+            ),
+            Err(Error::AgreementChanged(id)) if id == old.id()
+        ));
+        assert_eq!(
+            writer.current_service_agreement(project.id()).unwrap(),
+            fresh
+        );
+        assert_eq!(writer.service_agreements().unwrap().len(), 2);
+        let next = selected
+            .add_service_agreement(
+                fresh.id(),
+                terms(
+                    "Next",
+                    150_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-04",
+                ),
+                now,
+            )
+            .unwrap();
+        assert!(next.is_current());
+        assert_eq!(next.project(), project.id());
+        assert!(!writer.service_agreement(fresh.id()).unwrap().is_current());
+    }
+
+    #[test]
+    fn stale_switch_target_preserves_timer_and_entries() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let mut selected = Tracker::open(&path).unwrap();
+        let (source, source_agreement) = project(&mut selected);
+        let (_, target) = selected
+            .add_project(
+                source.client(),
+                "api".into(),
+                "Europe/Berlin".into(),
+                terms(
+                    "Target",
+                    100_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-01",
+                ),
+                timestamp("2026-01-04T00:00:00Z"),
+            )
+            .unwrap();
+        let at = timestamp("2026-01-04T10:00:00Z");
+        let prepared = command::Start::new(target.id(), "stale switch".into(), at).unwrap();
+        let mut writer = Tracker::open(&path).unwrap();
+        let fresh = writer
+            .add_service_agreement(
+                target.id(),
+                terms(
+                    "Fresh",
+                    125_000_000,
+                    model::MonthlyHours::default(),
+                    "2026-01-03",
+                ),
+                at,
+            )
+            .unwrap();
+        let existing = selected
+            .log(
+                command::LogEntry::new(
+                    source_agreement.id(),
+                    "existing".into(),
+                    timestamp("2026-01-04T08:00:00Z"),
+                    timestamp("2026-01-04T09:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+        let timer = selected
+            .start(
+                command::Start::new(
+                    source_agreement.id(),
+                    "running".into(),
+                    timestamp("2026-01-04T09:00:00Z"),
+                )
+                .unwrap(),
+            )
+            .unwrap();
+
+        assert!(matches!(
+            selected.switch(&timer, prepared),
+            Err(Error::AgreementChanged(id)) if id == target.id()
+        ));
+        assert_eq!(
+            writer.running().unwrap().as_slice(),
+            std::slice::from_ref(&timer)
+        );
+        let connection = rusqlite::Connection::open(&path).unwrap();
+        let mut statement = connection
+            .prepare("SELECT id, agreement_id, scope, started_at_us, ended_at_us FROM time_entries")
+            .unwrap();
+        let entries = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, i64>(3)?,
+                    row.get::<_, i64>(4)?,
+                ))
+            })
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            entries,
+            [(
+                existing.id().get(),
+                existing.agreement().get(),
+                existing.scope().to_owned(),
+                existing.started_at().as_microsecond(),
+                existing.ended_at().as_microsecond(),
+            )]
+        );
+        let (entry, next) = selected
+            .switch(
+                &timer,
+                command::Start::new(fresh.id(), "fresh switch".into(), at).unwrap(),
+            )
+            .unwrap();
+        assert_eq!(entry.scope(), timer.scope());
+        assert_eq!(next.agreement(), fresh.id());
+    }
+
+    #[test]
     fn timer_ids_are_not_reused_after_empty_table_or_reopen() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("tt.sqlite3");
         let mut selected = Tracker::open(&path).unwrap();
-        let (project, _) = project(&mut selected);
+        let (_, agreement) = project(&mut selected);
         let at = timestamp("2026-01-04T09:00:00Z");
         let end = timestamp("2026-01-04T10:00:00Z");
-        let start = command::Start::new(project.id(), "same".into(), at).unwrap();
+        let start = command::Start::new(agreement.id(), "same".into(), at).unwrap();
         let first = selected.start(start.clone()).unwrap();
         let stale_end = command::End::new(first.id(), end);
         let mut writer = Tracker::open(&path).unwrap();

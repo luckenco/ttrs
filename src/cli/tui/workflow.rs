@@ -82,17 +82,8 @@ impl Prepared {
                 previous,
                 agreement,
             } => {
-                if tracker
-                    .current_service_agreement(previous.project())
-                    .map_err(core_error)?
-                    != *previous
-                {
-                    return Err(Error::runtime(
-                        "Agreement changed externally. Go back and review the current terms again.",
-                    ));
-                }
                 let agreement = tracker
-                    .add_service_agreement(previous.project(), agreement.clone(), now)
+                    .add_service_agreement(previous.id(), agreement.clone(), now)
                     .map_err(core_error)?;
                 outcome.reference = Some(Reference::Agreement(agreement.id()));
                 outcome.message = format!("Replaced agreement with {}.", agreement.name());
@@ -200,6 +191,8 @@ impl Form {
                 };
                 let scope = self.required(F::Scope)?;
                 let at = self.time(F::At, zone, now)?;
+                let agreement = catalogs.current(project)?;
+                self.context = catalog::agreement_detail(agreement);
                 extra = format!(
                     "\nStarts: {}\nDoes not stop another timer. Only one timer may run per client.",
                     at.to_zoned(zone.clone()).strftime("%F %T %Z")
@@ -209,7 +202,7 @@ impl Form {
                         "\nFUTURE START: this timer will not accrue work until that time.",
                     );
                 }
-                Mutation::Start(command::Start::new(project, scope, at).map_err(core_error)?)
+                Mutation::Start(command::Start::new(agreement.id(), scope, at).map_err(core_error)?)
             }
             Kind::Log => {
                 self.reference(F::Project)?;

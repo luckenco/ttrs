@@ -350,7 +350,7 @@ mod tests {
             ("2026-05-01", Some(31)),
         ] {
             current = store
-                .add_agreement(project.id(), terms(date, maximum))
+                .add_agreement(current.id(), terms(date, maximum))
                 .unwrap();
         }
         for (month, hours) in [

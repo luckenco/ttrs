@@ -336,7 +336,7 @@ impl App {
                             "Future start: use : Start timer at for review.",
                         ));
                     }
-                    let start = command::Start::new(project.project.id(), scope.to_owned(), time)
+                    let start = command::Start::new(project.agreement.id(), scope.to_owned(), time)
                         .map_err(core_error)?;
                     let (message, timer, warning) = if let Some(old) = previous {
                         let (entry, timer) = tracker.switch(old, start).map_err(core_error)?;

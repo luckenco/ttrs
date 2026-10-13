@@ -35,7 +35,7 @@ fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
     let path = directory.path().join("tt.sqlite3");
     let mut writer = Tracker::open(&path).unwrap();
     let client = writer.add_client("Acme".into()).unwrap();
-    let (p, _) = project(&mut writer, client.id(), "website", "EUR", Some(2));
+    let (_, agreement) = project(&mut writer, client.id(), "website", "EUR", Some(2));
     let reader = Tracker::open(&path).unwrap();
     let start = ts("2026-01-02T09:00:00Z");
     for _ in 0..2 {
@@ -48,7 +48,7 @@ fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
         );
     }
     let timer = writer
-        .start(command::Start::new(p.id(), "live".into(), start).unwrap())
+        .start(command::Start::new(agreement.id(), "live".into(), start).unwrap())
         .unwrap();
     for minutes in [30, 60, 30] {
         let now = start
@@ -82,8 +82,8 @@ fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
     let mut tracker = Tracker::memory().unwrap();
     let acme = tracker.add_client("Acme".into()).unwrap();
     let other = tracker.add_client("Other".into()).unwrap();
-    let (eur, agreement) = project(&mut tracker, acme.id(), "euro", "EUR", None);
-    let (usd, _) = project(&mut tracker, other.id(), "dollar", "USD", None);
+    let (_, agreement) = project(&mut tracker, acme.id(), "euro", "EUR", None);
+    let (_, usd) = project(&mut tracker, other.id(), "dollar", "USD", None);
     tracker
         .log(
             command::LogEntry::new(
@@ -118,9 +118,12 @@ fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
             .unwrap(),
         )
         .unwrap();
-    for p in [eur.id(), usd.id()] {
+    for agreement_id in [agreement.id(), usd.id()] {
         tracker
-            .start(command::Start::new(p, "live".into(), ts("2026-01-02T00:00:00Z")).unwrap())
+            .start(
+                command::Start::new(agreement_id, "live".into(), ts("2026-01-02T00:00:00Z"))
+                    .unwrap(),
+            )
             .unwrap();
     }
     let dashboard = tracker
@@ -141,9 +144,11 @@ fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
 fn live_caps_stop_earnings_and_remain_consistent_after_stopping() {
     let mut tracker = Tracker::memory().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
-    let (p, _) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
+    let (_, agreement) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
     let timer = tracker
-        .start(command::Start::new(p.id(), "live".into(), ts("2026-01-01T23:30:00Z")).unwrap())
+        .start(
+            command::Start::new(agreement.id(), "live".into(), ts("2026-01-01T23:30:00Z")).unwrap(),
+        )
         .unwrap();
     let now = ts("2026-01-02T02:00:00Z");
     let before = tracker.dashboard(now, &TimeZone::UTC).unwrap();
@@ -169,9 +174,11 @@ fn live_caps_stop_earnings_and_remain_consistent_after_stopping() {
 fn cap_reached_before_today_does_not_earn_again_even_in_a_new_month() {
     let mut tracker = Tracker::memory().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
-    let (p, _) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
+    let (_, agreement) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
     tracker
-        .start(command::Start::new(p.id(), "live".into(), ts("2026-01-30T09:00:00Z")).unwrap())
+        .start(
+            command::Start::new(agreement.id(), "live".into(), ts("2026-01-30T09:00:00Z")).unwrap(),
+        )
         .unwrap();
     let dashboard = tracker
         .dashboard(ts("2026-02-01T12:00:00Z"), &TimeZone::UTC)
@@ -187,9 +194,12 @@ fn local_days_respect_both_dst_transitions() {
     for (now, expected_hours) in [("2026-03-29T22:00:00Z", 23), ("2026-10-25T23:00:00Z", 25)] {
         let mut tracker = Tracker::memory().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();
-        let (p, _) = project(&mut tracker, client.id(), "website", "EUR", None);
+        let (_, agreement) = project(&mut tracker, client.id(), "website", "EUR", None);
         tracker
-            .start(command::Start::new(p.id(), "live".into(), ts("2026-01-01T00:00:00Z")).unwrap())
+            .start(
+                command::Start::new(agreement.id(), "live".into(), ts("2026-01-01T00:00:00Z"))
+                    .unwrap(),
+            )
             .unwrap();
         // One second before next local midnight, on the transition day.
         let now = ts(now)
@@ -221,7 +231,7 @@ fn historical_rates_archived_projects_and_minimums_do_not_distort_totals() {
         .unwrap();
     let agreement = tracker
         .add_service_agreement(
-            p.id(),
+            old.id(),
             model::NewAgreement::new(
                 "New".into(),
                 model::HourlyRate::new(200_000_000, "EUR".into()).unwrap(),
@@ -306,14 +316,14 @@ fn switch_is_atomic_and_does_not_touch_other_clients() {
     let mut tracker = Tracker::memory().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
     let other = tracker.add_client("Other".into()).unwrap();
-    let (p, _) = project(&mut tracker, client.id(), "website", "EUR", None);
-    let (target, _) = project(&mut tracker, client.id(), "api", "EUR", None);
-    let (capped, _) = project(&mut tracker, client.id(), "exhausted", "EUR", Some(0));
-    let (unrelated, _) = project(&mut tracker, other.id(), "other", "USD", None);
+    let (_, agreement) = project(&mut tracker, client.id(), "website", "EUR", None);
+    let (_, target) = project(&mut tracker, client.id(), "api", "EUR", None);
+    let (_, capped) = project(&mut tracker, client.id(), "exhausted", "EUR", Some(0));
+    let (_, unrelated) = project(&mut tracker, other.id(), "other", "USD", None);
     let start = ts("2026-01-02T09:00:00Z");
     let at = ts("2026-01-02T10:00:00Z");
     let timer = tracker
-        .start(command::Start::new(p.id(), "old".into(), start).unwrap())
+        .start(command::Start::new(agreement.id(), "old".into(), start).unwrap())
         .unwrap();
     let concurrent = tracker
         .start(command::Start::new(unrelated.id(), "other".into(), start).unwrap())
@@ -351,7 +361,7 @@ fn switch_is_atomic_and_does_not_touch_other_clients() {
     assert_eq!(replacement.started_at(), at);
     assert!(tracker.running().unwrap().contains(&concurrent));
     assert!(tracker.running().unwrap().contains(&replacement));
-    // IDs may be reused; checking the full displayed value protects the replacement.
+    // The stopped selection cannot stop or switch the replacement.
     assert!(matches!(
         tracker.end_if_current(&timer, at),
         Err(Error::TimerChanged(_))
@@ -359,7 +369,7 @@ fn switch_is_atomic_and_does_not_touch_other_clients() {
     assert!(matches!(
         tracker.switch(
             &timer,
-            command::Start::new(p.id(), "stale".into(), at).unwrap()
+            command::Start::new(agreement.id(), "stale".into(), at).unwrap()
         ),
         Err(Error::TimerChanged(_))
     ));
@@ -369,11 +379,11 @@ fn switch_is_atomic_and_does_not_touch_other_clients() {
 fn switch_rejects_invalid_time_and_can_report_discarded_overflow() {
     let mut tracker = Tracker::memory().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
-    let (p, _) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
-    let (target, _) = project(&mut tracker, client.id(), "api", "EUR", None);
+    let (_, agreement) = project(&mut tracker, client.id(), "capped", "EUR", Some(1));
+    let (_, target) = project(&mut tracker, client.id(), "api", "EUR", None);
     let start = ts("2026-01-02T09:00:00Z");
     let timer = tracker
-        .start(command::Start::new(p.id(), "old".into(), start).unwrap())
+        .start(command::Start::new(agreement.id(), "old".into(), start).unwrap())
         .unwrap();
     assert!(matches!(
         tracker.switch(

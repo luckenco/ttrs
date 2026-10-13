@@ -125,11 +125,11 @@ fn enter_starts_a_recent_scope_and_x_stops_immediately() {
 #[test]
 fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
     let (mut tracker, mut app, now) = setup();
-    let project = app.snapshot.projects[0].project.id();
+    let agreement = app.snapshot.projects[0].agreement.id();
     let timer = tracker
         .start(
             command::Start::new(
-                project,
+                agreement,
                 "Old".into(),
                 "2026-01-02T09:00:00Z".parse().unwrap(),
             )
@@ -149,7 +149,7 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
     }
     tracker.end_if_current(&timer, now).unwrap();
     let replacement = tracker
-        .start(command::Start::new(project, "External".into(), now).unwrap())
+        .start(command::Start::new(agreement, "External".into(), now).unwrap())
         .unwrap();
     assert_ne!(replacement.id(), timer.id());
     app.refresh(&tracker, now, &TimeZone::UTC);
@@ -166,6 +166,51 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
     );
     assert_eq!(tracker.running().unwrap(), vec![replacement]);
     assert!(app.picker.is_some());
+}
+
+#[test]
+fn open_start_picker_rejects_replaced_terms_and_preserves_the_draft() {
+    let (mut tracker, mut app, now) = setup();
+    let selected = app.snapshot.projects[0].agreement.clone();
+    for code in [KeyCode::Char('s'), KeyCode::Enter] {
+        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+            .unwrap();
+    }
+    app.paste("Planning");
+    let current = tracker
+        .add_service_agreement(
+            selected.id(),
+            model::NewAgreement::new(
+                "Replacement".into(),
+                model::HourlyRate::new(200_000_000, "EUR".into()).unwrap(),
+                model::MonthlyHours::default(),
+                "2026-01-02".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert!(tracker.running().unwrap().is_empty());
+    assert!(
+        matches!(&app.picker, Some(Picker::Scope { project, input, .. })
+            if project.agreement.id() == selected.id() && input.as_str() == "Planning")
+    );
+    assert!(app.error.as_ref().unwrap().text.contains("select it again"));
+    app.key(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    for code in [KeyCode::Char('s'), KeyCode::Enter] {
+        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+            .unwrap();
+    }
+    app.paste("Planning");
+    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        .unwrap();
+    assert_eq!(tracker.running().unwrap()[0].agreement(), current.id());
 }
 
 #[test]
@@ -274,11 +319,11 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
 #[test]
 fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
     let (mut tracker, mut app, now) = setup();
-    let project = app.snapshot.projects[0].project.id();
+    let agreement = app.snapshot.projects[0].agreement.id();
     tracker
         .start(
             command::Start::new(
-                project,
+                agreement,
                 "Planning".into(),
                 "2026-01-02T09:00:00Z".parse().unwrap(),
             )
@@ -321,7 +366,7 @@ fn currency_totals_leave_room_for_timers_and_feedback_at_small_sizes() {
     tracker
         .start(
             command::Start::new(
-                app.snapshot.projects[0].project.id(),
+                app.snapshot.projects[0].agreement.id(),
                 "Planning".into(),
                 "2026-01-02T09:00:00Z".parse().unwrap(),
             )
@@ -486,7 +531,7 @@ fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
 fn cap_warnings_persist_until_dismissed_but_successes_expire() {
     let (mut tracker, mut app, now) = setup();
     let original = &app.snapshot.projects[0];
-    let (project, _) = tracker
+    let (_, agreement) = tracker
         .add_project(
             original.client.id(),
             "capped".into(),
@@ -504,7 +549,7 @@ fn cap_warnings_persist_until_dismissed_but_successes_expire() {
     tracker
         .start(
             command::Start::new(
-                project.id(),
+                agreement.id(),
                 "Planning".into(),
                 "2026-01-02T08:00:00Z".parse().unwrap(),
             )
@@ -566,9 +611,9 @@ fn cap_warnings_persist_until_dismissed_but_successes_expire() {
 fn selection_has_explicit_contrast_on_light_and_dark_backgrounds() {
     use ratatui::style;
     let (mut tracker, mut app, now) = setup();
-    let project = app.snapshot.projects[0].project.id();
+    let agreement = app.snapshot.projects[0].agreement.id();
     tracker
-        .start(command::Start::new(project, "Planning".into(), now).unwrap())
+        .start(command::Start::new(agreement, "Planning".into(), now).unwrap())
         .unwrap();
     app.refresh(&tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
@@ -601,7 +646,7 @@ fn retainer_estimates_render_separately_from_daily_earnings() {
         ("shapeID", None, None),
         ("Support", Some(125_000_000), Some(30)),
     ] {
-        let (project, agreement) = tracker
+        let (_, agreement) = tracker
             .add_project(
                 client,
                 name.into(),
@@ -636,7 +681,7 @@ fn retainer_estimates_render_separately_from_daily_earnings() {
             tracker
                 .start(
                     command::Start::new(
-                        project.id(),
+                        agreement.id(),
                         "Live support".into(),
                         "2026-01-02T09:00:00Z".parse().unwrap(),
                     )

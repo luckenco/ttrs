@@ -85,6 +85,9 @@ pub enum Error {
     /// No service agreement exists with this identifier.
     #[error("service agreement {0} does not exist")]
     AgreementNotFound(model::ServiceAgreementId),
+    /// The selected agreement was replaced by another operation.
+    #[error("service agreement {0} changed; select it again")]
+    AgreementChanged(model::ServiceAgreementId),
     /// No service agreement exists with this name for the project.
     #[error("service agreement '{0}' does not exist for this project")]
     AgreementNameNotFound(String),

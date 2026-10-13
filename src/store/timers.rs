@@ -14,14 +14,17 @@ pub(super) fn check(transaction: &Transaction<'_>, expected: &model::RunningTime
 
 pub(super) fn start(
     transaction: &Transaction<'_>,
-    project: model::ProjectId,
+    expected: model::ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
 ) -> Result<model::RunningTimer> {
-    let project_value = super::active_project(transaction, project)?;
+    let agreement =
+        super::find_agreement(transaction, expected)?.ok_or(Error::AgreementNotFound(expected))?;
+    if !agreement.is_current() {
+        return Err(Error::AgreementChanged(expected));
+    }
+    let project_value = super::active_project(transaction, agreement.project())?;
     super::reject_client_timer(transaction, project_value.client())?;
-    let agreement = super::current_agreement(transaction, project)?
-        .ok_or(Error::ProjectAgreementMissing(project))?;
     let agreement_start =
         super::day_start(agreement.effective_on(), project_value.billing_timezone())?;
     if started_at < agreement_start {
