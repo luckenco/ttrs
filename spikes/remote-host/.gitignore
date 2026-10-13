@@ -1,0 +1,8 @@
+/target/
+/fallback/target/
+/worker-startup.cpuprofile
+/build/
+/node_modules/
+/.cloudflare/
+/.tools/
+/results/

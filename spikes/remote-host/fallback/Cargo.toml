@@ -1,0 +1,19 @@
+[package]
+name = "fallback-core"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+jiff = { version = "=0.2.35", default-features = false, features = ["std", "tzdb-bundle-always"] }
+
+[profile.release]
+lto = true
+opt-level = "s"
+codegen-units = 1
+panic = "abort"
+
+[workspace]

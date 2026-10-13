@@ -1,0 +1,646 @@
+{
+  "date": "2026-10-13",
+  "platform": "Apple M5 Max, arm64 macOS Darwin 25.6.0",
+  "stage1_complete": false,
+  "host_selected": null,
+  "versions": {
+    "node": "v24.21.0",
+    "workerd": "1.20261006.1"
+  },
+  "commands": {
+    "rust": "npm run build && npm test (exit 1 at lifetime gate)",
+    "fallback": "npm run build:fallback && npm run test:fallback (exit 0, focused subset)"
+  },
+  "rust": {
+    "capability_assertions_passed": true,
+    "trap": {
+      "kind": "timeout",
+      "wall_ms": 2001.356041
+    },
+    "trap_recovery_gate": "OPEN: request never settled within bound",
+    "costs": [
+      {
+        "wall_ms": 10.104375000000005,
+        "bundled_zone": "America/New_York",
+        "calendar": [
+          {
+            "elapsed_ms": 0,
+            "months": 1,
+            "nanos": "2678400000000000",
+            "sql_crossings": 1
+          },
+          {
+            "elapsed_ms": 0,
+            "months": 120,
+            "nanos": "315532800000000000",
+            "sql_crossings": 120
+          },
+          {
+            "elapsed_ms": 6,
+            "months": 2400,
+            "nanos": "6311433600000000000",
+            "sql_crossings": 2400
+          }
+        ],
+        "calendar_crossings": 2400,
+        "calendar_months": 2400,
+        "calendar_ms": 6,
+        "calendar_nanos": "6311433600000000000",
+        "capture_crossings": 8,
+        "capture_json_bytes": 10423,
+        "capture_json_capacity_bytes": 16384,
+        "capture_ms": 0,
+        "capture_rows": 283,
+        "capture_tables": 8,
+        "clock_resolution": "Date.now milliseconds; may report zero",
+        "indexed_crossings": 128,
+        "indexed_iterations": 128,
+        "indexed_ms": 1,
+        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
+        "synthetic_not_billing": true,
+        "wasm_page_bytes": 65536,
+        "wasm_pages_before_capture": 24,
+        "wasm_pages_peak_after_capture": 25,
+        "database_bytes": 77824
+      },
+      {
+        "wall_ms": 6.592915999999946,
+        "bundled_zone": "America/New_York",
+        "calendar": [
+          {
+            "elapsed_ms": 0,
+            "months": 1,
+            "nanos": "2678400000000000",
+            "sql_crossings": 1
+          },
+          {
+            "elapsed_ms": 0,
+            "months": 120,
+            "nanos": "315532800000000000",
+            "sql_crossings": 120
+          },
+          {
+            "elapsed_ms": 5,
+            "months": 2400,
+            "nanos": "6311433600000000000",
+            "sql_crossings": 2400
+          }
+        ],
+        "calendar_crossings": 2400,
+        "calendar_months": 2400,
+        "calendar_ms": 5,
+        "calendar_nanos": "6311433600000000000",
+        "capture_crossings": 8,
+        "capture_json_bytes": 10423,
+        "capture_json_capacity_bytes": 16384,
+        "capture_ms": 0,
+        "capture_rows": 283,
+        "capture_tables": 8,
+        "clock_resolution": "Date.now milliseconds; may report zero",
+        "indexed_crossings": 128,
+        "indexed_iterations": 128,
+        "indexed_ms": 1,
+        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
+        "synthetic_not_billing": true,
+        "wasm_page_bytes": 65536,
+        "wasm_pages_before_capture": 25,
+        "wasm_pages_peak_after_capture": 25,
+        "database_bytes": 77824
+      },
+      {
+        "wall_ms": 7.244041999999922,
+        "bundled_zone": "America/New_York",
+        "calendar": [
+          {
+            "elapsed_ms": 0,
+            "months": 1,
+            "nanos": "2678400000000000",
+            "sql_crossings": 1
+          },
+          {
+            "elapsed_ms": 0,
+            "months": 120,
+            "nanos": "315532800000000000",
+            "sql_crossings": 120
+          },
+          {
+            "elapsed_ms": 5,
+            "months": 2400,
+            "nanos": "6311433600000000000",
+            "sql_crossings": 2400
+          }
+        ],
+        "calendar_crossings": 2400,
+        "calendar_months": 2400,
+        "calendar_ms": 5,
+        "calendar_nanos": "6311433600000000000",
+        "capture_crossings": 8,
+        "capture_json_bytes": 10423,
+        "capture_json_capacity_bytes": 16384,
+        "capture_ms": 1,
+        "capture_rows": 283,
+        "capture_tables": 8,
+        "clock_resolution": "Date.now milliseconds; may report zero",
+        "indexed_crossings": 128,
+        "indexed_iterations": 128,
+        "indexed_ms": 0,
+        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
+        "synthetic_not_billing": true,
+        "wasm_page_bytes": 65536,
+        "wasm_pages_before_capture": 25,
+        "wasm_pages_peak_after_capture": 25,
+        "database_bytes": 77824
+      },
+      {
+        "wall_ms": 6.977500000000077,
+        "bundled_zone": "America/New_York",
+        "calendar": [
+          {
+            "elapsed_ms": 0,
+            "months": 1,
+            "nanos": "2678400000000000",
+            "sql_crossings": 1
+          },
+          {
+            "elapsed_ms": 0,
+            "months": 120,
+            "nanos": "315532800000000000",
+            "sql_crossings": 120
+          },
+          {
+            "elapsed_ms": 4,
+            "months": 2400,
+            "nanos": "6311433600000000000",
+            "sql_crossings": 2400
+          }
+        ],
+        "calendar_crossings": 2400,
+        "calendar_months": 2400,
+        "calendar_ms": 4,
+        "calendar_nanos": "6311433600000000000",
+        "capture_crossings": 8,
+        "capture_json_bytes": 10423,
+        "capture_json_capacity_bytes": 16384,
+        "capture_ms": 1,
+        "capture_rows": 283,
+        "capture_tables": 8,
+        "clock_resolution": "Date.now milliseconds; may report zero",
+        "indexed_crossings": 128,
+        "indexed_iterations": 128,
+        "indexed_ms": 0,
+        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
+        "synthetic_not_billing": true,
+        "wasm_page_bytes": 65536,
+        "wasm_pages_before_capture": 25,
+        "wasm_pages_peak_after_capture": 25,
+        "database_bytes": 77824
+      },
+      {
+        "wall_ms": 6.320375000000013,
+        "bundled_zone": "America/New_York",
+        "calendar": [
+          {
+            "elapsed_ms": 0,
+            "months": 1,
+            "nanos": "2678400000000000",
+            "sql_crossings": 1
+          },
+          {
+            "elapsed_ms": 0,
+            "months": 120,
+            "nanos": "315532800000000000",
+            "sql_crossings": 120
+          },
+          {
+            "elapsed_ms": 4,
+            "months": 2400,
+            "nanos": "6311433600000000000",
+            "sql_crossings": 2400
+          }
+        ],
+        "calendar_crossings": 2400,
+        "calendar_months": 2400,
+        "calendar_ms": 4,
+        "calendar_nanos": "6311433600000000000",
+        "capture_crossings": 8,
+        "capture_json_bytes": 10423,
+        "capture_json_capacity_bytes": 16384,
+        "capture_ms": 0,
+        "capture_rows": 283,
+        "capture_tables": 8,
+        "clock_resolution": "Date.now milliseconds; may report zero",
+        "indexed_crossings": 128,
+        "indexed_iterations": 128,
+        "indexed_ms": 0,
+        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
+        "synthetic_not_billing": true,
+        "wasm_page_bytes": 65536,
+        "wasm_pages_before_capture": 25,
+        "wasm_pages_peak_after_capture": 25,
+        "database_bytes": 77824
+      }
+    ],
+    "startup": {
+      "bundle": {
+        "sizeBytes": 1114432,
+        "gzipSizeBytes": 364721
+      },
+      "startup": {
+        "profileWindowMs": 10.46,
+        "sampledTimeMs": 2.281,
+        "activeTimeMs": 0,
+        "garbageCollectionTimeMs": 0,
+        "idleTimeMs": 2.281,
+        "sampleCount": 1
+      },
+      "profile": "results/rust-startup.cpuprofile",
+      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
+    },
+    "alarm_final": {
+      "alarm": null,
+      "completion_receipts": [
+        [
+          "job:retry",
+          "success"
+        ]
+      ],
+      "jobs": [
+        [
+          "retry",
+          "done",
+          "2"
+        ]
+      ],
+      "r2_prefix": "lab/c79e245669bf5cb09913d958f7c9052fbae5fa1d56d112d2fce749a8334f779e/"
+    }
+  },
+  "gate": [
+    {
+      "order": "replacement-first",
+      "passed": false,
+      "runtime_before": "0.40132350479323164",
+      "runtime_after": "0.7286691215611434",
+      "trap": {
+        "kind": "timeout"
+      },
+      "pending": {
+        "kind": "timeout"
+      },
+      "a_sql": {
+        "receipts": [],
+        "state": [
+          [
+            "partial",
+            "clean"
+          ],
+          [
+            "probe:trap",
+            "1"
+          ],
+          [
+            "requests",
+            "1"
+          ],
+          [
+            "revision",
+            "0"
+          ]
+        ]
+      },
+      "b_sql": {
+        "receipts": [],
+        "state": [
+          [
+            "partial",
+            "clean"
+          ],
+          [
+            "probe:await-gate",
+            "1"
+          ],
+          [
+            "requests",
+            "1"
+          ],
+          [
+            "revision",
+            "0"
+          ]
+        ]
+      }
+    },
+    {
+      "order": "callback-first",
+      "passed": false,
+      "runtime_before": "0.4641327235329793",
+      "runtime_after": "0.8228922285205077",
+      "trap": {
+        "kind": "timeout"
+      },
+      "pending": {
+        "kind": "timeout"
+      },
+      "a_sql": {
+        "receipts": [],
+        "state": [
+          [
+            "partial",
+            "clean"
+          ],
+          [
+            "probe:trap",
+            "1"
+          ],
+          [
+            "requests",
+            "1"
+          ],
+          [
+            "revision",
+            "0"
+          ]
+        ]
+      },
+      "b_sql": {
+        "receipts": [],
+        "state": [
+          [
+            "partial",
+            "clean"
+          ],
+          [
+            "probe:await-gate",
+            "1"
+          ],
+          [
+            "requests",
+            "1"
+          ],
+          [
+            "revision",
+            "0"
+          ]
+        ]
+      }
+    }
+  ],
+  "fallback": {
+    "gates": [
+      "domain rollback + receipt-only existing wins; JS rollback; negative control",
+      "Rust exact i64/text/null, i128, Jiff MAX and 2400-month bundled-zone calculation",
+      "synchronous trap settles; replacement usable; held sibling resumes (replacement-first)",
+      "synchronous trap settles; replacement usable; held sibling resumes (callback-first)",
+      "namespace isolation; persisted SQLite state/receipts/exact values and sequence across runtime restart"
+    ],
+    "observations": [
+      {
+        "identity": "auth",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 3.4742499999999836,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "auth",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.91112499999997,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "tx",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 2.377917000000025,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "tx",
+        "probe": "rollback-err",
+        "status": 200,
+        "wall_ms": 1.487542000000019,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "tx",
+        "probe": "seed-existing",
+        "status": 200,
+        "wall_ms": 1.1143750000000523,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "tx",
+        "probe": "rollback-err?receipt=existing",
+        "status": 200,
+        "wall_ms": 1.683791000000042,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "tx",
+        "probe": "rollback-js",
+        "status": 500,
+        "wall_ms": 1.5765420000000177,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "negative",
+        "probe": "negative-control",
+        "status": 200,
+        "wall_ms": 3.084541999999999,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "exact",
+        "probe": "exact",
+        "status": 200,
+        "wall_ms": 5.255875000000003,
+        "memory_bytes": 1441792
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 2.011665999999991,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "b-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.762666999999965,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "trap",
+        "status": 500,
+        "wall_ms": 1.142167000000029,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "commit",
+        "status": 200,
+        "wall_ms": 0.9590000000000032,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "b-replacement-first",
+        "probe": "await-gate",
+        "status": 200,
+        "wall_ms": 5.803333000000009,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.7422080000000051,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.6595419999999876,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-callback-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.6175409999999601,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "b-callback-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.8812500000000227,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-callback-first",
+        "probe": "trap",
+        "status": 500,
+        "wall_ms": 0.9912090000000262,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "b-callback-first",
+        "probe": "await-gate",
+        "status": 200,
+        "wall_ms": 2.741624999999999,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-callback-first",
+        "probe": "commit",
+        "status": 200,
+        "wall_ms": 0.6986670000000004,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-callback-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.45954100000000153,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-callback-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.5708329999999933,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.7792079999999828,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "exact",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.8703329999999596,
+        "memory_bytes": 1441792
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 0.6566249999999627,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "exact",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 3.333084000000042,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "a-replacement-first",
+        "probe": "state",
+        "status": 200,
+        "wall_ms": 1.8092909999999733,
+        "memory_bytes": 1376256
+      },
+      {
+        "identity": "exact",
+        "probe": "next-sequence",
+        "status": 200,
+        "wall_ms": 1.0300829999999905,
+        "memory_bytes": 1376256
+      }
+    ],
+    "incomplete": [
+      "R2/alarm retry and backup/restore",
+      "full cost and memory ledger",
+      "full ingress/auth hardening",
+      "canonical numeric rejection and SQL constraint suite",
+      "MCP credential flow against fallback service"
+    ],
+    "passed": true,
+    "stage1_complete": false,
+    "startup": {
+      "bundle": {
+        "sizeBytes": 614300,
+        "gzipSizeBytes": 179066
+      },
+      "startup": {
+        "profileWindowMs": 13.586,
+        "sampledTimeMs": 2.729,
+        "activeTimeMs": 0,
+        "garbageCollectionTimeMs": 0,
+        "idleTimeMs": 2.729,
+        "sampleCount": 1
+      },
+      "profile": "results/fallback-startup.cpuprofile",
+      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
+    }
+  },
+  "mcp": {
+    "passed": true,
+    "command": "node mcp-test.mjs after cf build --mode spike",
+    "startup": {
+      "bundle": {
+        "sizeBytes": 761185,
+        "gzipSizeBytes": 177280
+      },
+      "startup": {
+        "profileWindowMs": 52.888,
+        "sampledTimeMs": 42.639,
+        "activeTimeMs": 31.496,
+        "garbageCollectionTimeMs": 4.586,
+        "idleTimeMs": 11.143,
+        "sampleCount": 15
+      },
+      "profile": "results/mcp-startup.cpuprofile",
+      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
+    }
+  }
+}

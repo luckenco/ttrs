@@ -1,0 +1,35 @@
+{
+  "name": "ttrs-remote-host-lab",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.21.0"
+  },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "build:rust": "worker-build --release",
+    "build": "npm run build:rust && cf build --mode spike",
+    "dev": "cf dev --mode spike",
+    "check:startup": "cf workers check --prebuilt --mode spike --outfile results/rust-startup.cpuprofile",
+    "test": "node test.mjs && node mcp-test.mjs && node gate-test.mjs",
+    "test:capabilities": "node test.mjs",
+    "test:mcp": "node mcp-test.mjs",
+    "test:gate": "node gate-test.mjs",
+    "build:fallback": "cargo build --manifest-path fallback/Cargo.toml --target-dir fallback/target --release --target wasm32-unknown-unknown --locked && cf build --mode fallback",
+    "test:fallback": "node fallback/test.mjs",
+    "check:js": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@cloudflare/build-output-utils": "0.9.0",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-91c870c02",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@types/node": "24.10.1",
+    "agents": "0.28.1",
+    "cf": "1.0.0-beta.14",
+    "esbuild": "0.28.2",
+    "miniflare": "5.20261006.1-alpha",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "zod": "4.6.5"
+  }
+}

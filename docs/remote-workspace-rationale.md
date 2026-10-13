@@ -120,7 +120,29 @@ not own transactions. If Rust needs broad binding work, SDK forks or repeated
 artifact patching, use the TS platform host instead. TS ingress with Rust DOs is
 not the automatic compromise: it retains the hard Rust transaction/export seams.
 The next agent follows the [stage-1 handoff](remote-workspace-handoff.md) and records
-one selected host after real workerd proofs. No spike has run yet.
+one selected host after real workerd proofs. The isolated spike has now run;
+see the evidence status below.
+
+### Stage-1 evidence status (2026-10-13)
+
+[The isolated lab](../spikes/remote-host/evidence.md) proves cf packaging, Rust/Jiff
+on normal Wasm, exact text/null SQL, synchronous rollback and the optional SDK
+read adapter in local workerd. One narrow transactionSync binding works, including
+Result-to-exception translation after Rust destructors run. No SDK fork, generated
+artifact patch or Wrangler substitution was needed.
+
+The pinned shared Wasm glue replaces its instance after a trap, but both the
+trapping request and a sibling Rust SDK future held across that reset remain
+unsettled at the lab's bound. Fresh calls and SQL isolation work; that is not proof
+of safe in-flight recovery. The focused thin TS-host experiment uses per-DO,
+disposable synchronous Rust instances and passes both held-sibling schedules.
+It has not passed the complete auth/SQL/backup/alarm/cost ledger and is not selected.
+
+**Decision: blocked pending review, not a production host selection. Stage 1 is
+incomplete; stop before stage 2.** Keep the minimal repros until one full shape
+passes, then retain only that host's useful harness. This changes no rule ownership,
+full-range integer guarantees, principal/authority recovery contracts, legacy-writer
+fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
 ## Tradeoffs accepted
 
@@ -170,6 +192,8 @@ and recovery policies are design choices from user requirements, not historical 
 
 ## Next implementation step
 
-Run the isolated workers-rs-first stage-1 spike per the [handoff](remote-workspace-handoff.md),
-test the TS host only if needed, then record evidence and stop for review before any
-production storage refactor; if neither passes, scrap the host shape and redesign.
+Review the [stage-1 evidence and blockers](../spikes/remote-host/evidence.md).
+Complete the fallback's remaining ledger or resolve and prove the pinned Rust
+in-flight lifetime issue without broad glue surgery. Do not begin stage 2 or any
+production storage refactor until one host passes all gates; if neither passes,
+scrap the host shape and redesign.

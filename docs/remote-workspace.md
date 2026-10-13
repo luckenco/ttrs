@@ -2,7 +2,11 @@
 
 Status: implementation design, not implemented. **Try workers-rs first** on
 `wasm32-unknown-unknown`; adopt the Rust host only after the workerd feasibility gate.
-A thin TypeScript host is the fallback, not a second rule implementation. Offline
+A thin TypeScript host is the fallback, not a second rule implementation.
+[Stage-1 evidence](../spikes/remote-host/evidence.md): Rust-first loads in workerd
+but shared-runtime trap recovery leaves in-flight requests unsettled. The focused
+TS fallback passes lifetime probes, not the full ledger. **Stage 1 is incomplete;
+no production host is selected, and stage 2 has not started.** Offline
 writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
 [rationale](remote-workspace-rationale.md), and [next-agent handoff](remote-workspace-handoff.md).
 
