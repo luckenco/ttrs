@@ -1,117 +1,143 @@
-//! Local-only synthetic host probes; no product rules or SQL are linked.
-//! GET /{workspace|authority}/{identity}/{probe}, GET /session, POST /ingress.
-//! LAB_READ_TOKEN and LAB_READ_ROTATED_TOKEN both map to lab-reader/read;
-//! LAB_WRITE_TOKEN maps to lab-writer/write. Tokens are nonempty, <=256 bytes,
-//! lab-only constants. Read permits session/state/restart/alarm-state only.
-//! Other probes and bounded POST ingress require write (401 on denied access).
-//! Direct DO callers must supply x-lab-principal/role context and are trusted
-//! binding holders. JSON bodies never supply authenticated context.
-//!
-//! backup/schedule accept ?job=<1..64 ASCII alphanumeric/hyphen> (default job)
-//! and optional &fail=before-manifest (first attempt only). IDs are immutable;
-//! one pending job per DO is enforced by SQLite. Both persist captured bytes
-//! before arming a 60-second alarm; backup also attempts completion immediately.
-//! LAB_BACKUPS stores lab/<object-id>/<job>/{payload,manifest}.json, manifest last.
-//! alarm-state returns job rows, attempts, completion receipts, alarm and prefix.
-//! Completed jobs never run again; retries reuse the original captured bytes.
-//! Each probe response includes runtime_id, a per-module Math.random diagnostic
-//! (not security-sensitive). await-gate is workspace/write-only: LAB_GATE GET
-//! http://gate/ suspends through the SDK, then commits partial("gate") synchronously.
-//! Its assertions contain previous_runtime_id (captured before await) and durable.
-//! Parent owns the gate binding/release and compares runtime IDs across DOs and
-//! trap reset; no generated glue is bypassed or patched. Trap intentionally fails.
-//! Constructor bootstraps fresh schema once; existing storage and read probes
-//! (state/restart/alarm-state, under either role) perform no SQL writes.
-mod ingress;
-mod memory;
-mod probes;
-mod sql;
+//! Minimal workers-rs trap/sibling-future repro, not a production host.
+//! GET /workspace/{id}/{state|trap|await-gate}; public lab-write-only fixture.
+//! Only Worker ingress checks Bearer; DO bindings are trusted lab callers.
+//! LAB_GATE holds a real SDK future while a sibling traps in transactionSync.
+mod sqlite;
 mod transaction;
 
+use serde_json::json;
+use wasm_bindgen::JsValue;
 use worker::{durable_object, event};
+
+thread_local! {
+    // Per-module diagnostic, not a security token or durable identity.
+    static RUNTIME_ID: String = js_sys::Math::random().to_string();
+}
+
+fn runtime_id() -> String {
+    RUNTIME_ID.with(Clone::clone)
+}
 
 #[event(fetch)]
 async fn fetch(
-    mut request: worker::Request,
+    request: worker::Request,
     env: worker::Env,
     _context: worker::Context,
 ) -> worker::Result<worker::Response> {
-    let Some(role) = ingress::authenticate(&request, &env)? else {
-        return ingress::unauthorized();
-    };
-    if request.path() == "/session" && request.method() == worker::Method::Get {
-        return worker::Response::from_json(
-            &serde_json::json!({"principal": ingress::principal(role), "role": role, "runtime_id": probes::runtime_id()}),
-        );
-    }
-    if request.path() == "/ingress" && request.method() == worker::Method::Post {
-        if role != "write" {
-            return ingress::unauthorized();
-        }
-        return ingress::body(&mut request).await;
+    // Deliberately public equality fixture; rechecked on every forwarded request.
+    if request.headers().get("authorization")?.as_deref() != Some("Bearer lab-write-only") {
+        return worker::Response::error("unauthorized", 401);
     }
     if request.method() != worker::Method::Get {
         return worker::Response::error("GET only", 405);
     }
     let path = request.path();
     let parts: Vec<_> = path.trim_start_matches('/').split('/').collect();
-    let [namespace, identity, probe] = parts.as_slice() else {
-        return worker::Response::error("expected /namespace/identity/probe", 404);
+    let ["workspace", identity, probe] = parts.as_slice() else {
+        return worker::Response::error("expected /workspace/identity/probe", 404);
     };
-    if !ingress::allowed(role, probe) {
-        return ingress::unauthorized();
+    if !matches!(*probe, "state" | "trap" | "await-gate") {
+        return worker::Response::error("unknown probe", 404);
     }
     if identity.is_empty() || identity.len() > 128 {
         return worker::Response::error("invalid identity", 400);
     }
-    let binding = match *namespace {
-        "workspace" => "WORKSPACE",
-        "authority" => "AUTHORITY",
-        _ => return worker::Response::error("unknown namespace", 404),
-    };
-    let mut request = request.clone_mut()?;
-    request
-        .headers_mut()?
-        .set(ingress::PRINCIPAL, ingress::principal(role))?;
-    request.headers_mut()?.set(ingress::ROLE, role)?;
-    request.headers_mut()?.delete("authorization")?;
-    let namespace = env.durable_object(binding)?;
-    let stub = namespace.id_from_name(identity)?.get_stub()?;
-    stub.fetch_with_request(request).await
+    env.durable_object("WORKSPACE")?
+        .id_from_name(identity)?
+        .get_stub()?
+        .fetch_with_request(request)
+        .await
+}
+
+struct Lab {
+    storage: worker_sys::DurableObjectStorage,
+    sql: worker::SqlStorage,
+    env: worker::Env,
+}
+
+impl Lab {
+    fn new(state: worker::State, env: worker::Env) -> Self {
+        let lab = Self {
+            sql: state.storage().sql(),
+            storage: state._inner().storage().expect("DO storage"),
+            env,
+        };
+        sqlite::bootstrap(&lab.storage, &lab.sql).expect("schema bootstrap");
+        lab
+    }
+
+    fn snapshot(&self) -> Result<serde_json::Value, JsValue> {
+        Ok(json!({
+            "state": sqlite::rows(&self.sql, "SELECT key, value FROM lab_state ORDER BY key")?,
+            "receipts": sqlite::rows(&self.sql, "SELECT key, outcome FROM lab_receipts ORDER BY key")?
+        }))
+    }
+
+    async fn fetch(&self, request: worker::Request) -> worker::Result<worker::Response> {
+        let path = request.path();
+        let probe = path.rsplit('/').next().unwrap_or_default();
+        let assertions = match probe {
+            "state" => self.snapshot().map_err(worker::Error::from)?,
+            "trap" => {
+                transaction::sync(&self.storage, || {
+                    sqlite::partial(&self.sql, "trap")?;
+                    // Actual Wasm trap, not a returned Rust error or JS exception.
+                    #[cfg(target_arch = "wasm32")]
+                    core::arch::wasm32::unreachable();
+                    #[cfg(not(target_arch = "wasm32"))]
+                    panic!("intentional native equivalent of Wasm unreachable");
+                })
+                .map_err(worker::Error::from)?;
+                return worker::Response::error("trap unexpectedly returned", 500);
+            }
+            "await-gate" => {
+                let previous_runtime_id = runtime_id();
+                self.env
+                    .service("LAB_GATE")?
+                    .fetch_request(worker::Request::new("http://gate/", worker::Method::Get)?)
+                    .await?;
+                transaction::sync(&self.storage, || {
+                    sqlite::partial(&self.sql, "gate")?;
+                    Ok(JsValue::NULL)
+                })
+                .map_err(worker::Error::from)?;
+                json!({"previous_runtime_id": previous_runtime_id,
+                    "durable": self.snapshot().map_err(worker::Error::from)?})
+            }
+            _ => return worker::Response::error("unknown probe", 404),
+        };
+        worker::Response::from_json(&json!({
+            "probe": probe, "runtime_id": runtime_id(), "assertions": assertions
+        }))
+    }
 }
 
 #[durable_object]
 pub struct Workspace {
-    lab: probes::Lab,
+    lab: Lab,
 }
 impl worker::DurableObject for Workspace {
     fn new(state: worker::State, env: worker::Env) -> Self {
         Self {
-            lab: probes::Lab::new(state, env),
+            lab: Lab::new(state, env),
         }
     }
     async fn fetch(&self, request: worker::Request) -> worker::Result<worker::Response> {
         self.lab.fetch(request).await
-    }
-    async fn alarm(&self) -> worker::Result<worker::Response> {
-        self.lab.alarm().await
     }
 }
 
 #[durable_object]
 pub struct Authority {
-    lab: probes::Lab,
+    lab: Lab,
 }
 impl worker::DurableObject for Authority {
     fn new(state: worker::State, env: worker::Env) -> Self {
         Self {
-            lab: probes::Lab::new(state, env),
+            lab: Lab::new(state, env),
         }
     }
     async fn fetch(&self, request: worker::Request) -> worker::Result<worker::Response> {
         self.lab.fetch(request).await
-    }
-    async fn alarm(&self) -> worker::Result<worker::Response> {
-        self.lab.alarm().await
     }
 }

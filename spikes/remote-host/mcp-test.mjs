@@ -71,7 +71,7 @@ export async function testMcp(runtime, hostName) {
     }
     return JSON.parse(text);
   }
-  async function rust(route, token) {
+  async function hostRead(route, token) {
     const response = await host.fetch(`http://lab.invalid${route}`, { headers: { authorization: `Bearer ${token}` } });
     assert.equal(response.status, 200);
     return response.json();
@@ -90,7 +90,7 @@ export async function testMcp(runtime, hostName) {
       state: value.assertions.state,
     };
   }
-  const before = snapshot(await rust("/workspace/mcp/state", "lab-read-only"));
+  const before = snapshot(await hostRead("/workspace/mcp/state", "lab-read-only"));
   const called = await rpc(state);
   assert.equal(called.result.isError, undefined);
   assert.equal(before.identity, "mcp");
@@ -98,12 +98,12 @@ export async function testMcp(runtime, hostName) {
   assert.deepEqual(snapshot(JSON.parse(called.result.content[0].text)), before);
   const rotated = await rpc(state, "lab-read-rotated");
   assert.deepEqual(snapshot(JSON.parse(rotated.result.content[0].text)), before);
-  const session = await rust("/session", "lab-read-only");
+  const session = await hostRead("/session", "lab-read-only");
   assert.equal(session.principal, "lab-reader");
   assert.equal(session.role, "read");
-  assert.deepEqual(await rust("/session", "lab-read-rotated"), session);
+  assert.deepEqual(await hostRead("/session", "lab-read-rotated"), session);
 
-  for (const token of ["unknown", "lab-write-only", ""]) {
+  for (const token of ["unknown", "lab-write-only", "", "lab-read", "lab-write", "lab-read-only-suffix", "lab-read-rotated-suffix", "lab-write-only-suffix"]) {
     const response = await request({ ...list, grant: { principal: "lab-reader", role: "read" } }, token, {
       headers: { "x-lab-role": "read", "x-lab-principal": "lab-reader" },
     });
@@ -120,7 +120,7 @@ export async function testMcp(runtime, hostName) {
   } } });
   assert.ok(forged.error || forged.result?.isError);
   assert.equal((await request({ ...state, grant: { principal: "lab-writer", role: "write" } })).status, 400);
-  assert.deepEqual(snapshot(await rust("/workspace/mcp/state", "lab-read-only")), before);
+  assert.deepEqual(snapshot(await hostRead("/workspace/mcp/state", "lab-read-only")), before);
 
   for (const origin of ["null", "https://evil.invalid", "malformed", "https://lab.invalid/path", "https://lab.invalid:444", "https://lab.invalid@evil.invalid"]) {
     assert.equal((await request(list, "lab-read-only", { headers: { origin } })).status, 403, origin);
@@ -147,7 +147,7 @@ export async function testMcp(runtime, hostName) {
   assert.equal((await request(list, "lab-read-only", {
     body: stream,
   })).status, 413);
-  console.log("MCP PASS: SDK initialize/list/call, Rust service binding, read rotation, denied grants/mutations, Host/Origin, 4096-byte ingress");
+  console.log("MCP PASS: SDK initialize/list/call, host service binding, read rotation, denied grants/mutations, Host/Origin, 4096-byte ingress");
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

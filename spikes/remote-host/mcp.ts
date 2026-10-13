@@ -2,7 +2,7 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { createMcpHandler } from "agents/mcp/server";
 import { z } from "zod";
 
-/** Private binding to the Rust host; it must authenticate every forwarded request. */
+/** Private binding to the host; it must authenticate every forwarded request. */
 export interface Env {
   READ_SERVICE: { fetch(request: Request): Promise<Response> };
 }
@@ -52,7 +52,7 @@ export default {
     const credential = request.headers.get("authorization");
     if (!credential || !/^Bearer [^\s]{1,256}$/.test(credential)) return denied(401);
 
-    // Only the private Rust service's response establishes identity and role.
+    // Only the private host service's response establishes identity and role.
     const read = (route: string) => env.READ_SERVICE.fetch(new Request(`https://lab.invalid${route}`, {
       headers: { authorization: credential },
     }));

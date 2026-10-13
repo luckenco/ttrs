@@ -4,7 +4,7 @@ const name = "ttrs-remote-host-lab";
 export default defineConfig(({ mode }) => ({
   worker: {
     name,
-    entrypoint: mode === "fallback" ? "./fallback/host.ts" : "./build/index.js",
+    entrypoint: mode === "rust-repro" ? "./build/index.js" : "./fallback/host.ts",
     compatibilityDate: "2026-10-06",
     exports: {
       Workspace: exports.durableObject({ storage: "sqlite" }),
