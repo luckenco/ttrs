@@ -9,6 +9,7 @@ mod billing;
 mod calendar;
 mod dashboard;
 mod lists;
+mod recovery;
 mod retainers;
 mod timers;
 
@@ -69,7 +70,7 @@ const SCHEMA: &str = "
         ON running_timers(agreement_id, started_at_us DESC);
 
     CREATE TABLE time_entries (
-        id            INTEGER PRIMARY KEY,
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
         agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
         scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
         started_at_us INTEGER NOT NULL,
@@ -97,13 +98,17 @@ impl Store {
         if initialize(&mut connection)? {
             connection.pragma_update(None, "journal_mode", "WAL")?;
         }
-        let timer_schema: String = connection.query_row(
-            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'running_timers'",
-            [],
-            |row| row.get(0),
-        )?;
-        if !timer_schema.to_ascii_uppercase().contains("AUTOINCREMENT") {
-            return Err(Error::DatabaseSchemaOutdated);
+        for table in ["running_timers", "time_entries"] {
+            let schema: Option<String> = connection
+                .query_row(
+                    "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = ?1",
+                    [table],
+                    |row| row.get(0),
+                )
+                .optional()?;
+            if !schema.is_some_and(|sql| sql.to_ascii_uppercase().contains("AUTOINCREMENT")) {
+                return Err(Error::DatabaseSchemaOutdated);
+            }
         }
         Ok(Self { connection })
     }
@@ -846,24 +851,29 @@ mod tests {
     }
 
     #[test]
-    fn rejects_reusable_timer_schema_without_changing_existing_data() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("tt.sqlite3");
-        let connection = Connection::open(&path).unwrap();
-        connection
-            .execute_batch(&SCHEMA.replace("PRIMARY KEY AUTOINCREMENT", "PRIMARY KEY"))
+    fn rejects_reusable_ids_without_changing_existing_data() {
+        for table in ["running_timers", "time_entries"] {
+            let directory = tempfile::tempdir().unwrap();
+            let path = directory.path().join("tt.sqlite3");
+            let connection = Connection::open(&path).unwrap();
+            connection
+            .execute_batch(&SCHEMA.replace(
+                &format!("CREATE TABLE {table} (\n        id            INTEGER PRIMARY KEY AUTOINCREMENT"),
+                &format!("CREATE TABLE {table} (\n        id            INTEGER PRIMARY KEY"),
+            ))
             .unwrap();
-        connection
-            .execute("INSERT INTO clients(name) VALUES ('Acme')", [])
-            .unwrap();
-        assert!(matches!(
-            Store::open(&path),
-            Err(Error::DatabaseSchemaOutdated)
-        ));
-        let name: String = connection
-            .query_row("SELECT name FROM clients", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(name, "Acme");
+            connection
+                .execute("INSERT INTO clients(name) VALUES ('Acme')", [])
+                .unwrap();
+            assert!(matches!(
+                Store::open(&path),
+                Err(Error::DatabaseSchemaOutdated)
+            ));
+            let name: String = connection
+                .query_row("SELECT name FROM clients", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(name, "Acme");
+        }
     }
 
     #[test]

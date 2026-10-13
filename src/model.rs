@@ -91,7 +91,10 @@ assert!(TimerId::try_from(0).is_err());
 ```
 "#
 );
-id_type!(EntryId, "The stable identifier of a completed time entry.");
+id_type!(
+    EntryId,
+    "The stable identifier of a completed time entry.\n\nIdentifiers are never reused within a database, even after an entry is deleted."
+);
 
 /// An exact hourly price, stored in millionths of a currency unit.
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -264,6 +264,59 @@ impl Tracker {
         self.store.log(agreement, scope, started_at, ended_at)
     }
 
+    /// Finds a running timer by identifier, including future-dated timers.
+    pub fn timer(&self, id: model::TimerId) -> Result<model::RunningTimer> {
+        self.store.timer(id)
+    }
+
+    /// Finds a completed entry, including historical, archived and future work.
+    pub fn entry(&self, id: model::EntryId) -> Result<model::TimeEntry> {
+        self.store.entry(id)
+    }
+
+    /// Returns all completed entries for an agreement, newest start first,
+    /// then highest ID first. Historical, archived and future work is included.
+    /// Returns [`Error::AgreementNotFound`] for an unknown agreement.
+    pub fn entries(&self, agreement: model::ServiceAgreementId) -> Result<Vec<model::TimeEntry>> {
+        self.store.entries(agreement)
+    }
+
+    /// Atomically removes only the unchanged displayed timer without logging work.
+    ///
+    /// Returns [`Error::TimerChanged`] for a missing or changed timer. Future
+    /// timers are supported; callers own confirmation of this destructive action.
+    ///
+    /// ```
+    /// use tt::{Tracker, Timestamp, command, model};
+    /// let mut tracker = Tracker::memory()?;
+    /// let client = tracker.add_client("Acme".into())?;
+    /// let terms = model::NewAgreement::new("Support".into(),
+    ///     model::HourlyRate::new(100_000_000, "EUR".into())?,
+    ///     model::MonthlyHours::default(), "2026-01-01".parse()?)?;
+    /// let at: Timestamp = "2026-01-02T09:00:00Z".parse()?;
+    /// let (_, agreement) = tracker.add_project(client.id(), "API".into(),
+    ///     "UTC".into(), terms, at)?;
+    /// let timer = tracker.start(command::Start::new(agreement.id(), "oops".into(), at)?)?;
+    /// tracker.cancel_if_current(&tracker.timer(timer.id())?)?;
+    /// assert!(tracker.entries(agreement.id())?.is_empty());
+    /// let entry = tracker.log(command::LogEntry::new(agreement.id(), "oops".into(),
+    ///     at, "2026-01-02T10:00:00Z".parse()?)?)?;
+    /// tracker.delete_entry_if_current(&tracker.entry(entry.id())?)?;
+    /// assert!(tracker.entries(agreement.id())?.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn cancel_if_current(&mut self, expected: &model::RunningTimer) -> Result<()> {
+        self.store.cancel_if_current(expected)
+    }
+
+    /// Atomically removes only the unchanged displayed completed entry.
+    ///
+    /// Returns [`Error::EntryChanged`] for a missing or changed entry. Historical,
+    /// archived and future work can be deleted; callers own confirmation.
+    pub fn delete_entry_if_current(&mut self, expected: &model::TimeEntry) -> Result<()> {
+        self.store.delete_entry_if_current(expected)
+    }
+
     /// Returns all running timers, oldest first.
     pub fn running(&self) -> Result<Vec<model::RunningTimer>> {
         self.store.running()

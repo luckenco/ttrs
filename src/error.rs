@@ -124,10 +124,17 @@ pub enum Error {
     /// A displayed timer was stopped or replaced by another operation.
     #[error("timer {0} changed; select it again")]
     TimerChanged(model::TimerId),
+    /// No completed entry exists with this identifier.
+    #[error("time entry {0} does not exist")]
+    EntryNotFound(model::EntryId),
+    /// A displayed entry was deleted or changed by another operation.
+    #[error("time entry {0} changed; select it again")]
+    EntryChanged(model::EntryId),
     /// Switching cannot stop a timer belonging to a different client.
     #[error("switching must stay within one client")]
     SwitchClientMismatch,
-    /// The database still permits reuse of running-timer identifiers.
+    /// The database permits reuse of timer or entry identifiers.
+    /// Back up the data and create a fresh database; no migration is provided.
     #[error("database schema is outdated; back up your data and create a fresh database")]
     DatabaseSchemaOutdated,
     /// Persistence failed.
