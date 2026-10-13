@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+
+use jiff::civil::Date;
 use ratatui::widgets::ListState;
 use tt::{Tracker, model};
 
@@ -16,14 +19,23 @@ pub(super) struct Catalogs {
     pub clients: Vec<model::Client>,
     pub projects: Vec<model::Project>,
     pub agreements: Vec<model::AgreementListing>,
+    successors: HashMap<model::ServiceAgreementId, Date>,
 }
 
 impl Catalogs {
     pub fn load(tracker: &Tracker) -> tt::Result<Self> {
+        // The query orders agreements by project, effective date, then ID.
+        let agreements = tracker.agreement_list(None, true)?;
+        let successors = agreements
+            .windows(2)
+            .filter(|pair| pair[0].agreement.project() == pair[1].agreement.project())
+            .map(|pair| (pair[0].agreement.id(), pair[1].agreement.effective_on()))
+            .collect();
         Ok(Self {
             clients: tracker.clients()?,
             projects: tracker.projects()?,
-            agreements: tracker.agreement_list(None, true)?,
+            agreements,
+            successors,
         })
     }
 
@@ -148,15 +160,7 @@ impl Catalogs {
     }
 
     pub fn coverage(&self, agreement: &model::ServiceAgreement) -> String {
-        let next = self
-            .agreements
-            .iter()
-            .map(|r| &r.agreement)
-            .filter(|a| {
-                a.project() == agreement.project() && a.effective_on() > agreement.effective_on()
-            })
-            .map(|a| a.effective_on())
-            .min();
+        let next = self.successors.get(&agreement.id());
         let mut label = format!("From {}", agreement.effective_on());
         if let Some(date) = next {
             label.push_str(&format!("; before {date}"));
@@ -289,6 +293,58 @@ impl Browser {
         self.selection.select(None);
         if self.rows.matches().len() > 0 {
             self.selection.select(Some(0));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn coverage_labels_follow_successors_without_crossing_projects() {
+        let mut tracker = Tracker::memory().unwrap();
+        let now = "2026-01-03T12:00:00Z".parse().unwrap();
+        let client = tracker.add_client("Acme".into()).unwrap();
+        let terms = |name: &str, date: &str| {
+            model::NewAgreement::new(
+                name.into(),
+                model::HourlyRate::new(100_000_000, "EUR".into()).unwrap(),
+                model::MonthlyHours::default(),
+                date.parse().unwrap(),
+            )
+            .unwrap()
+        };
+        let mut histories = Vec::new();
+        for name in ["website", "api"] {
+            let (_, first) = tracker
+                .add_project(
+                    client.id(),
+                    name.into(),
+                    "UTC".into(),
+                    terms("Initial", "2026-01-01"),
+                    now,
+                )
+                .unwrap();
+            let second = tracker
+                .add_service_agreement(first.id(), terms("Second", "2026-01-02"), now)
+                .unwrap();
+            let last = tracker
+                .add_service_agreement(second.id(), terms("Last", "2026-01-03"), now)
+                .unwrap();
+            histories.push([first, second, last]);
+        }
+        let catalogs = Catalogs::load(&tracker).unwrap();
+        for [first, second, last] in histories {
+            assert_eq!(
+                catalogs.coverage(&first),
+                "From 2026-01-01; before 2026-01-02"
+            );
+            assert_eq!(
+                catalogs.coverage(&second),
+                "From 2026-01-02; before 2026-01-03"
+            );
+            assert_eq!(catalogs.coverage(&last), "From 2026-01-03");
         }
     }
 }
