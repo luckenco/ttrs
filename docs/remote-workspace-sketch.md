@@ -255,10 +255,11 @@ MCP SDK adaptation only, with authenticated private read-service access. It owns
 neither transaction state nor rules. Prefer proven DO fetch/service messaging over
 assuming experimental workers-rs typed RPC accepts the sketched domain objects.
 
-### Thin TypeScript host fallback
+### Selected thin TypeScript host
 
-Use this branch only if stage 1 selects it; it replaces the Rust platform host, not
-the Rust rules. Keep one selected production host, not two maintained backends.
+[Stage 1 selected this branch](../spikes/remote-host/evidence.md); it replaces the
+Rust platform host, not the Rust rules. The production code below remains pseudocode.
+Keep one selected production host, not two maintained backends.
 
 ```ts
 // Pseudocode: actual SDK/Env/build signatures come from pinned generated types.

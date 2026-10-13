@@ -1,83 +1,90 @@
-# Isolated TS-host / raw-Wasm feasibility fallback
+# Selected thin TS-host / raw-Wasm experiment
 
-Synthetic lab only: no production domain rules, billing, workers-rs, wasm-bindgen,
-SDK futures, generated JS edits, or credentials beyond the parent's public lab tokens.
+Stage 1 complete; see the [evidence ledger](../evidence.md). This proves a platform
+shape, not a production workspace or native/Wasm business parity. Rust owns the
+synthetic schema/SQL, exact integers and bundled Jiff expressions. TS owns
+transactions, authenticated ingress and asynchronous R2/alarm lifecycle.
 
-`host.ts` exports `Workspace`, `Authority`, and the routing Worker. Each DO owns a
-new `WebAssembly.Instance` with SQL imports bound to its storage and that instance's
-memory. Rust owns decimal encoding, i128 arithmetic, Jiff MAX and the parent's
-1900..2100 America/New_York calendar calculation. These small expressions were
-copied from the parent probe: there is no existing pure module to import without
-changing parent-owned files. This is not a port of SDK business logic.
+## Reproduce
 
-## Build and run
+From `spikes/remote-host`: `npm ci && npm run build && npm run check:js && npm test`.
+The parent [README](../README.md) lists pinned tools, independent Cargo checks,
+startup profiling and the separately retained rejected-host repro. Every runtime
+proof loads actual **cf/Vite output** in pinned workerd; no substituted test bundle.
+A small Node unit test validates capture row shape; it is not SQL/R2 runtime evidence.
 
-From `spikes/remote-host`, using inherited Rust 1.98.1:
+## ABI and ownership
 
-```sh
-cargo fmt --manifest-path fallback/Cargo.toml --check
-cargo test --manifest-path fallback/Cargo.toml --target-dir fallback/target --locked
-cargo clippy --manifest-path fallback/Cargo.toml --target-dir fallback/target --locked --all-targets -- -D warnings
-cargo clippy --manifest-path fallback/Cargo.toml --target-dir fallback/target --locked --target wasm32-unknown-unknown -- -D warnings
-cargo build --manifest-path fallback/Cargo.toml --target-dir fallback/target --locked --release --target wasm32-unknown-unknown
-# Parent config selects ./fallback/host.ts in fallback mode.
-npx cf build --mode fallback
-node fallback/test.mjs
-```
+Each DO owns one disposable `WebAssembly.Instance` with two imports:
 
-The test reads **parent cf build output** and rejects a stale Rust-first bundle.
-It uses parent-installed Miniflare 5, `convertV4MiniflareOptions`, real managed
-SQLite, persisted runtime restart, and an external service binding that holds
-only the sibling's I/O timing. It needs no remote/network credentials. Results
-print to stdout; temporary persistence is removed. A three-second timeout is a
-failure, never evidence of recovery.
+- `host.sql(query_ptr, query_len, binds_ptr, binds_len, out_ptr, out_cap) -> bytes`:
+  borrowed UTF-8 SQL and JSON bindings, containing only strings/null. Consume
+  complete raw rows, reject numeric/blob cells, encode string/null row arrays,
+  bounds-check and copy into Rust's exclusive output region before returning.
+- `host.emit(ptr, len)`: synchronously decode/copy JSON output. Retain the parsed
+  JS value, never the borrowed pointer/view. Fresh views follow memory growth.
 
-## ABI and transaction boundary
+All pointers/lengths are u32. No reentrant exports/imports, retained callbacks,
+ambient current-DO router, generated JS glue, Rust async runtime or Wasm future.
+SQL lives in Rust, not a static TS statement-ID table. Bind canonical i64 decimal
+text only after Rust validates the range and unique spelling, then explicitly CAST
+numeric storage inputs/outputs. i128 remains decimal text.
 
-Wasm exports `memory`, `attempt(mode) -> u32`, and `exact()`. The sole import is
-`host.sql(id: u32, pointer: u32, length: u32) -> void`. Strings are borrowed UTF-8
-and must be consumed before the import returns. No retained pointers, callbacks,
-reentrancy, or async Wasm work. The static statement IDs in `host.ts` bind text;
-IDs 2 and 4 have no parameters, and ID 5 inserts a real SQL NULL note.
+`invoke` centralizes synchronous transaction boundaries and disposal for **every**
+escaped Rust frame, including diagnostic reads and captures. Read calls reject and
+roll back any `rowsWritten`. An emitted value is released by the host after invoke.
 
-`attempt` writes partial state, revision, and a success receipt before returning
-code 1 (domain rejection), invoking failing SQL (mode 2), or trapping (mode 3).
-The TS callback throws for code 1 **inside** `transactionSync`; ordinary returned
-Err data deliberately commits in the negative control. Only domain rejection
-records a receipt, in a separate synchronous receipt-only transaction with no
-intervening await; an existing terminal receipt wins. JS exceptions and traps
-roll back and discard the instance before a replacement is installed. Neither
-records a rejection receipt. Trap recovery means replacing a disposable instance,
-not recovering its Rust stack or claiming its destructors ran.
+The synthetic error policy is explicit:
 
-## Evidence and limits
+1. Ordinary domain rejection returns from Rust; TS throws **inside** transactionSync
+   after Rust locals drop. Returning it as callback data would commit (negative control).
+2. Immediately after rollback, without awaiting, Rust writes/rechecks a separate
+   receipt-only transaction. An existing terminal receipt wins.
+3. Unexpected SQL/import exceptions and actual Wasm traps discard the instance;
+   no infrastructure rejection receipt. Rust destructors may have been skipped.
+   A stale JS capability after await is refused without replacing a healthy instance.
 
-Completed locally:
+Constraint failures deliberately exercise tier 3. A richer recoverable SQL-error
+value contract, product operations and the shared native/Wasm adapter belong to
+stage 2; this tiny ABI is not a final public protocol.
 
-- Native tests, rustfmt, native and wasm32 clippy with warnings denied, locked
-  release wasm32 build.
-- Focused suite against real workerd via a temporary esbuild bundle (same host and
-  release Wasm, **not** parent cf/Vite output): domain rollback/receipt precedence,
-  JS-exception rollback, negative control, exact i64/text/NULL, i128/Jiff values,
-  synchronous trap response and replacement reuse, suspended JS sibling resumption
-  in both replacement-first and callback-first orderings, namespace isolation,
-  persisted state/receipts/exact values and >2^53 SQLite sequence across restart.
-- Strict TS check against generated runtime types for compatibility date 2026-10-06.
+## Capture and backup boundary
 
-Parent cf/Vite integration subsequently passed: `cf build --mode fallback` and
-`node fallback/test.mjs` load the emitted JS/Wasm with both SQLite classes in
-workerd. The main evidence ledger records that run. No remote deployment is required
-or permitted for this stage.
+Rust explicitly captures all columns of its nine synthetic tables/sections,
+including primary keys, NULLs, receipts and SQLite sequence high-water. TS adds
+schema/rules/source/incarnation/revision/time/retention metadata, pending job
+metadata and completed publication receipts, in the same synchronous transaction.
+The immutable payload is persisted before any crypto/R2 await. Publish payload
+then manifest, with byte counts and SHA-256 digests. Retries reuse persisted bytes;
+completed jobs have one completion receipt and do not rewrite R2 objects.
 
-**Incomplete:** R2 backup/restore and alarm retry, full cost/crossing/memory ledger,
-canonical numeric rejection and full SQLite constraint suite, bounded ingress and
-production-grade authentication. The host's token comparison is lab-only; it does
-not reproduce the parent's constant-time ingress implementation. An await is a
-JS service-binding promise, not a Rust SDK future. This proves the narrow fallback
-lifetime gate, not equivalence with the complete Rust-first lab.
+`lab_jobs.payload` is internal staging, excluded like a WAL to avoid recursive
+embedding of older captures. Job metadata is included. No tokens, grant/routing
+state, production restore/import, retention deletion or product receipt replay
+semantics are implemented. The checksum test demonstrates publication integrity,
+not a restore verifier. Real automatic retry and explicit rearm/restart tests use
+workerd-delivered alarms; no manual fake alarm invocation.
 
-Scaling assumption: every live DO gets its own Wasm linear memory and bundled
-Jiff tzdb. High live-object counts can increase isolate memory substantially;
-per-instance memory, instantiation/startup cost, and cost comparisons remain
-unmeasured. SQL statements and receipt keys are synthetic, bounded lab operations,
-not an extensible production repository protocol.
+## Measured bounds, not product capacity
+
+- SQL scratch: 64 KiB per result; overflow refuses and discards, never truncates.
+  `cost` capture pages 256 rows in one synchronous turn. Other tiny tables are
+  unpaged; the sequence-overflow test proves data survives refusal. Production
+  collection paging/row budgets must be designed with the real shared core.
+- Captures: tested at 256/257/1,000/10,000 cost rows, with Rust allocation peaks,
+  Wasm capacity, and inspector JS/external heap at full-capture coexistence measured
+  separately. Unpaused latency is separate from inspector pause overhead.
+- Backup: 512 KiB maximum logical payload, one pending job, eight completed jobs.
+  Capacity rejects preserve existing history; no automatic pruning.
+- Ingress: 4,096 actual streamed bytes; authentication hashes all three fixtures
+  and uses native workerd timingSafeEqual on fixed-width digests. Both read tokens
+  retain one principal. DOs reauthenticate original credentials on private access.
+- Live instances: 1/8/32 core-only identities measured. Eight live identities and
+  a 64 MiB planning budget are lab proposals, **not** production admission limits.
+  Every active identity adds Wasm memory; unbounded concurrency can exhaust an
+  isolate. SQL page-cache/native memory and complete process RSS are not measured.
+- Calendar: up to 2,400 months on twelve rows; selective indexed queries still have
+  O(months) crossings. Real-history, receipt-growth and workload headroom remain
+  production acceptance work. Forced GC/reclamation is not proven.
+
+No production files or root manifests were changed. Stop for review before stage 2.

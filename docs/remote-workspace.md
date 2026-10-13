@@ -1,13 +1,14 @@
 # Local and connected-remote workspaces
 
-Status: implementation design, not implemented. **Try workers-rs first** on
-`wasm32-unknown-unknown`; adopt the Rust host only after the workerd feasibility gate.
-A thin TypeScript host is the fallback, not a second rule implementation.
-[Stage-1 evidence](../spikes/remote-host/evidence.md): Rust-first loads in workerd
-but shared-runtime trap recovery leaves in-flight requests unsettled. The focused
-TS fallback passes lifetime probes, not the full ledger. **Stage 1 is incomplete;
-no production host is selected, and stage 2 has not started.** Offline
-writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
+Status: implementation design; the remote product is not implemented.
+**Stage 1 is complete: select a TypeScript Worker + TypeScript SQLite Durable Objects
+with per-DO, disposable synchronous Rust Wasm instances.** Rust owns the rules;
+TS owns platform lifecycle, not a second rule implementation.
+[Stage-1 evidence](../spikes/remote-host/evidence.md): workers-rs was tried first,
+but shared-runtime trap recovery leaves in-flight requests unsettled. The selected
+thin TS host passes the complete local workerd feasibility ledger, with explicit
+synthetic-workload and capacity limits. **Stop for review; stage 2 has not started.**
+Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
 [rationale](remote-workspace-rationale.md), and [next-agent handoff](remote-workspace-handoff.md).
 
 ## Usage first
@@ -54,13 +55,11 @@ workspace service as `tt`; they do not own another database or MCP-session state
 ```text
 Local:   CLI/TUI -> native host -> shared Rust rules -> local SQLite
 
-Remote:  CLI/TUI HTTP -> Rust Worker -> Rust Workspace DO host
-                              ^               |-> shared Rust rules/SQL -> managed SQLite
-         read-only MCP -------+               +-> retained R2 backups
-         (optional TS SDK adapter)
-                         Rust Authority DO: routing and restore jobs only
-
-Fallback: TS Worker/DO host -> same Rust rules/SQL via Wasm -> managed SQLite
+Remote:  CLI/TUI HTTP -> TS Worker -> TS Workspace DO host
+                            ^             |-> shared Rust rules/SQL via Wasm -> managed SQLite
+         read-only MCP -----+             +-> retained R2 backups
+         (TS SDK adapter)
+                       TS Authority DO: routing and restore jobs only
 ```
 
 - Select exactly one backend before resolving/creating the local database path.
@@ -117,15 +116,13 @@ feature before moving directories or creating another general framework.
 | `src/portable.rs`, `schema/` | Full logical backup/import and versioned schema migrations |
 | `src/cli/backend.rs`, `src/cli/remote.rs` | Device selection/credentials and journaled HTTP effects |
 | `src/cli/tui/effects.rs` | Bounded background effects and tagged completions |
-| `crates/tt-worker/src/{lib,workspace,authority,backup}.rs` | Preferred workers-rs host: auth/routing, DO transactions, restore orchestration, R2 and scheduling |
 | `worker/src/mcp.ts` (optional) | Established MCP SDK adapter to the authenticated read service; no SQL or transaction ownership |
-| `crates/tt-wasm/`, `worker/src/{index,workspace,authority,backup}.ts` (fallback only) | Minimal Wasm bridge and thin TS platform host if the Rust host fails its gate |
+| `crates/tt-wasm/`, `worker/src/{index,workspace,authority,backup}.ts` | Selected minimal Wasm bridge and thin TS platform host: auth/routing, DO transactions, restore orchestration, R2 and scheduling |
 | `worker/cloudflare.config.ts` | Preferred cf configuration/build integration; class exports, bindings and Wasm packaging must be proven |
 
-Native and Wasm compile the **same** rule and SQL source. The Rust host links that
-core directly; generated workers-rs JavaScript is runtime glue, not another rule
-source. If selected, the TS fallback invokes the same core through a Wasm bridge.
-Choose one production host after the spike; keep no parallel host implementations.
+Native and Wasm compile the **same** rule and SQL source. The selected TS host
+invokes that core through a Wasm bridge; it does not duplicate rules or SQL.
+Keep no parallel production host implementations.
 TypeScript never calculates amounts, caps, coverage or agreement periods.
 
 Hosts own transactions: rusqlite IMMEDIATE/deferred transactions locally, and DO

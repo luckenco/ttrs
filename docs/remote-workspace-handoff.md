@@ -1,6 +1,11 @@
-# Next agent: remote-host feasibility spike
+# Remote-host feasibility spike: completed dispatch
 
-## Dispatch scope
+**Stage 1 is complete.** [Evidence and selected-host limits](../spikes/remote-host/evidence.md)
+select the thin TS host with synchronous, disposable Rust instances. Stop for review;
+stage 2 requires explicit approval and has not started. The original dispatch below
+is retained as the acceptance contract, not authorization for further implementation.
+
+## Original dispatch scope
 
 Implement **stage 1 only**, then report and stop before stage 2. Remote mode is not
 implemented; the current working change contains design documents, not a remote

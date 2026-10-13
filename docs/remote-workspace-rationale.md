@@ -29,8 +29,8 @@ and [type sketch](remote-workspace-sketch.md).
 ## Shape
 
 One Rust rule/SQL source runs over a private synchronous text/null SQL capability,
-natively on rusqlite and linked into a workers-rs DO host on normal Wasm, conditional
-on stage 1; a thin TS platform host is the fallback. Hosts own transactions;
+natively on rusqlite and on normal Wasm behind the selected thin TS DO host.
+Stage 1 tried workers-rs first and selected TS after the lifetime gate. Hosts own transactions;
 Rust owns cross-row rules and exact integer arithmetic. This hides persistence
 variation without a repository method per business operation, per boundary-discipline
 and laziness-protocol. Text-cast SQL and rejecting numeric result cells encode the
@@ -114,14 +114,13 @@ new core-crate scaffolding, silent tooling substitution and a custom MCP protoco
 No candidates failed. The original scoreboard remains historical, not a verdict on
 this new Rust-host design.
 
-Prefer one Rust platform host that links the shared core. Optional TS adapts an
+The initial preference was one Rust platform host that links the shared core. Optional TS adapts an
 established read-only MCP SDK over authenticated private service access; it does
 not own transactions. If Rust needs broad binding work, SDK forks or repeated
 artifact patching, use the TS platform host instead. TS ingress with Rust DOs is
 not the automatic compromise: it retains the hard Rust transaction/export seams.
-The next agent follows the [stage-1 handoff](remote-workspace-handoff.md) and records
-one selected host after real workerd proofs. The isolated spike has now run;
-see the evidence status below.
+The [stage-1 handoff](remote-workspace-handoff.md) required selecting one host after
+real workerd proofs. That experiment is complete; see the decision below.
 
 ### Stage-1 evidence status (2026-10-13)
 
@@ -134,13 +133,19 @@ artifact patch or Wrangler substitution was needed.
 The pinned shared Wasm glue replaces its instance after a trap, but both the
 trapping request and a sibling Rust SDK future held across that reset remain
 unsettled at the lab's bound. Fresh calls and SQL isolation work; that is not proof
-of safe in-flight recovery. The focused thin TS-host experiment uses per-DO,
-disposable synchronous Rust instances and passes both held-sibling schedules.
-It has not passed the complete auth/SQL/backup/alarm/cost ledger and is not selected.
+of safe in-flight recovery. The thin TS-host experiment uses per-DO, disposable
+synchronous Rust instances and now passes the complete local feasibility ledger:
+exact row-returning SQL, rollback and receipt precedence, both held-sibling
+schedules, same-DO stale-capability refusal, real eviction/restart, constant-time
+bounded auth and private SDK MCP access, manifest-last R2, persisted alarm retries,
+and capture/crossing/heap costs. These remain synthetic proofs, not business parity
+or production capacity certification.
 
-**Decision: blocked pending review, not a production host selection. Stage 1 is
-incomplete; stop before stage 2.** Keep the minimal repros until one full shape
-passes, then retain only that host's useful harness. This changes no rule ownership,
+**Decision: select TS Worker + TS SQLite DOs + synchronous Rust Wasm core.
+Stage 1 is complete; stop for review before stage 2.** The losing capability
+harness was removed; only its small, still-failing shared-runtime trap repro is
+retained as evidence for this choice. The selected host needs no SDK fork,
+artifact surgery or ambient mutable SQL router. This changes no rule ownership,
 full-range integer guarantees, principal/authority recovery contracts, legacy-writer
 fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
@@ -158,11 +163,10 @@ fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
 - **Pure facts/plan engine:** hides SQL better but exposes completeness and O(history)
   costs to every adapter; larger rewrite of already-tested rules.
-- **Rust Worker + Rust DOs:** now the first feasibility branch, not proven by the
-  earlier candidate. Rust bindings still cross JS number/exception boundaries;
-  full-range precision and proven synchronous rollback remain required.
-- **TS Worker + TS DOs + Rust core:** fallback when Rust cannot hide its binding or
-  packaging complexity in a small adapter. Same domain surface, more Wasm glue.
+- **Rust Worker + Rust DOs:** tried first; rejected at the pinned shared-runtime
+  in-flight trap-recovery gate. Reconsider only with new reproducible lifetime evidence.
+- **TS Worker + TS DOs + Rust core:** selected after the full stage-1 ledger passed.
+  Same domain surface; explicit per-DO Wasm lifecycle and a narrow synchronous ABI.
 - **TS ingress + Rust DOs:** retains Rust transaction/packaging risk while adding a
   permanent ingress boundary; consider only if evidence isolates an ingress problem.
 - **Worker + D1:** still viable; D1 has atomic facilities. It does not fail for lack
@@ -174,12 +178,12 @@ fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
 ## Open questions and risks
 
-- Can pinned workers-rs bindings, or one small private binding, prove synchronous
-  rollback, exception lifetimes, storage isolation and safe trap recovery?
-- Can cf package worker-build artifacts and DO class exports without fragile surgery,
-  including any optional MCP adapter? A tooling change needs an explicit decision.
-- Can the normal Wasm core pass exactness, timezone-bundle and workerd
-  memory/startup/latency gates, including long calendar spans with little stored data?
+- The pinned Rust host's in-flight trap recovery remains blocked; the selected host
+  avoids shared Rust futures. Future SDK/runtime upgrades must repeat lifetime proofs.
+- The selected cf-built shape passes local exactness, timezone, SDK and cost gates;
+  extracting the real core still needs native/Wasm business parity.
+- Per-live-DO Wasm memory grows with active identities. Representative histories,
+  receipt growth and calendar-span admission need measured production headroom.
 - Are proposed 10-minute admission, 35-day receipts and hourly backups suitable,
   and who operates independent copies and restore drills?
 - Which measured workspace/snapshot budgets fit the real tracking history?
@@ -192,8 +196,7 @@ and recovery policies are design choices from user requirements, not historical 
 
 ## Next implementation step
 
-Review the [stage-1 evidence and blockers](../spikes/remote-host/evidence.md).
-Complete the fallback's remaining ledger or resolve and prove the pinned Rust
-in-flight lifetime issue without broad glue surgery. Do not begin stage 2 or any
-production storage refactor until one host passes all gates; if neither passes,
-scrap the host shape and redesign.
+Review the [completed stage-1 evidence and limits](../spikes/remote-host/evidence.md).
+Stage 2, only after explicit approval, extracts the shared SQL boundary and links
+the existing Rust rules with native/Wasm parity tests. No production storage
+refactor has started, and the synthetic ABI is not the final product protocol.

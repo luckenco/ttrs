@@ -1,246 +1,557 @@
 {
   "date": "2026-10-13",
   "platform": "Apple M5 Max, arm64 macOS Darwin 25.6.0",
-  "stage1_complete": false,
-  "host_selected": null,
+  "stage1_complete": true,
+  "host_selected": "TypeScript Worker + TypeScript SQLite Durable Objects + per-DO disposable synchronous Rust Wasm core",
   "versions": {
-    "node": "v24.21.0",
-    "workerd": "1.20261006.1"
+    "rust": "1.98.1",
+    "target": "wasm32-unknown-unknown",
+    "jiff": "0.2.35",
+    "jiff_tzdb": "0.1.9",
+    "serde_json": "1.0.154",
+    "node": "24.21.0",
+    "npm": "11.19.0",
+    "cf": "1.0.0-beta.14",
+    "vite": "8.1.5",
+    "cloudflare_vite_plugin": "2.0.0-beta.sha-91c870c02",
+    "miniflare": "5.20261006.1-alpha",
+    "workerd": "1.20261006.1",
+    "compatibility_date": "2026-10-06",
+    "agents": "0.28.1",
+    "mcp_server": "2.3.1",
+    "zod": "4.6.5",
+    "typescript": "5.9.3",
+    "auth_compare": "workerd crypto.subtle.timingSafeEqual on fixed SHA-256 digests",
+    "rejected_repro": {
+      "worker": "0.8.6",
+      "worker_sys": "0.8.6",
+      "worker_build": "0.8.6",
+      "wasm_bindgen": "0.2.128",
+      "js_sys": "0.3.105",
+      "wasm_bindgen_futures": "0.4.78"
+    }
   },
   "commands": {
-    "rust": "npm run build && npm test (exit 1 at lifetime gate)",
-    "fallback": "npm run build:fallback && npm run test:fallback (exit 0, focused subset)"
+    "selected": "npm ci && npm run build && npm run check:js && npm test",
+    "startup": "npm run check:startup; cf workers check --prebuilt --mode fallback --worker read-mcp --outfile results/mcp-startup.cpuprofile",
+    "blocked_repro": "npm run build:rust-repro && npm run test:rust-repro (expected exit 1)"
   },
-  "rust": {
-    "capability_assertions_passed": true,
-    "trap": {
-      "kind": "timeout",
-      "wall_ms": 2001.356041
-    },
-    "trap_recovery_gate": "OPEN: request never settled within bound",
-    "costs": [
-      {
-        "wall_ms": 10.104375000000005,
-        "bundled_zone": "America/New_York",
-        "calendar": [
-          {
-            "elapsed_ms": 0,
-            "months": 1,
-            "nanos": "2678400000000000",
-            "sql_crossings": 1
-          },
-          {
-            "elapsed_ms": 0,
-            "months": 120,
-            "nanos": "315532800000000000",
-            "sql_crossings": 120
-          },
-          {
-            "elapsed_ms": 6,
-            "months": 2400,
-            "nanos": "6311433600000000000",
-            "sql_crossings": 2400
-          }
-        ],
-        "calendar_crossings": 2400,
-        "calendar_months": 2400,
-        "calendar_ms": 6,
-        "calendar_nanos": "6311433600000000000",
-        "capture_crossings": 8,
-        "capture_json_bytes": 10423,
-        "capture_json_capacity_bytes": 16384,
-        "capture_ms": 0,
-        "capture_rows": 283,
-        "capture_tables": 8,
-        "clock_resolution": "Date.now milliseconds; may report zero",
-        "indexed_crossings": 128,
-        "indexed_iterations": 128,
-        "indexed_ms": 1,
-        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
-        "synthetic_not_billing": true,
-        "wasm_page_bytes": 65536,
-        "wasm_pages_before_capture": 24,
-        "wasm_pages_peak_after_capture": 25,
-        "database_bytes": 77824
-      },
-      {
-        "wall_ms": 6.592915999999946,
-        "bundled_zone": "America/New_York",
-        "calendar": [
-          {
-            "elapsed_ms": 0,
-            "months": 1,
-            "nanos": "2678400000000000",
-            "sql_crossings": 1
-          },
-          {
-            "elapsed_ms": 0,
-            "months": 120,
-            "nanos": "315532800000000000",
-            "sql_crossings": 120
-          },
-          {
-            "elapsed_ms": 5,
-            "months": 2400,
-            "nanos": "6311433600000000000",
-            "sql_crossings": 2400
-          }
-        ],
-        "calendar_crossings": 2400,
-        "calendar_months": 2400,
-        "calendar_ms": 5,
-        "calendar_nanos": "6311433600000000000",
-        "capture_crossings": 8,
-        "capture_json_bytes": 10423,
-        "capture_json_capacity_bytes": 16384,
-        "capture_ms": 0,
-        "capture_rows": 283,
-        "capture_tables": 8,
-        "clock_resolution": "Date.now milliseconds; may report zero",
-        "indexed_crossings": 128,
-        "indexed_iterations": 128,
-        "indexed_ms": 1,
-        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
-        "synthetic_not_billing": true,
-        "wasm_page_bytes": 65536,
-        "wasm_pages_before_capture": 25,
-        "wasm_pages_peak_after_capture": 25,
-        "database_bytes": 77824
-      },
-      {
-        "wall_ms": 7.244041999999922,
-        "bundled_zone": "America/New_York",
-        "calendar": [
-          {
-            "elapsed_ms": 0,
-            "months": 1,
-            "nanos": "2678400000000000",
-            "sql_crossings": 1
-          },
-          {
-            "elapsed_ms": 0,
-            "months": 120,
-            "nanos": "315532800000000000",
-            "sql_crossings": 120
-          },
-          {
-            "elapsed_ms": 5,
-            "months": 2400,
-            "nanos": "6311433600000000000",
-            "sql_crossings": 2400
-          }
-        ],
-        "calendar_crossings": 2400,
-        "calendar_months": 2400,
-        "calendar_ms": 5,
-        "calendar_nanos": "6311433600000000000",
-        "capture_crossings": 8,
-        "capture_json_bytes": 10423,
-        "capture_json_capacity_bytes": 16384,
-        "capture_ms": 1,
-        "capture_rows": 283,
-        "capture_tables": 8,
-        "clock_resolution": "Date.now milliseconds; may report zero",
-        "indexed_crossings": 128,
-        "indexed_iterations": 128,
-        "indexed_ms": 0,
-        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
-        "synthetic_not_billing": true,
-        "wasm_page_bytes": 65536,
-        "wasm_pages_before_capture": 25,
-        "wasm_pages_peak_after_capture": 25,
-        "database_bytes": 77824
-      },
-      {
-        "wall_ms": 6.977500000000077,
-        "bundled_zone": "America/New_York",
-        "calendar": [
-          {
-            "elapsed_ms": 0,
-            "months": 1,
-            "nanos": "2678400000000000",
-            "sql_crossings": 1
-          },
-          {
-            "elapsed_ms": 0,
-            "months": 120,
-            "nanos": "315532800000000000",
-            "sql_crossings": 120
-          },
-          {
-            "elapsed_ms": 4,
-            "months": 2400,
-            "nanos": "6311433600000000000",
-            "sql_crossings": 2400
-          }
-        ],
-        "calendar_crossings": 2400,
-        "calendar_months": 2400,
-        "calendar_ms": 4,
-        "calendar_nanos": "6311433600000000000",
-        "capture_crossings": 8,
-        "capture_json_bytes": 10423,
-        "capture_json_capacity_bytes": 16384,
-        "capture_ms": 1,
-        "capture_rows": 283,
-        "capture_tables": 8,
-        "clock_resolution": "Date.now milliseconds; may report zero",
-        "indexed_crossings": 128,
-        "indexed_iterations": 128,
-        "indexed_ms": 0,
-        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
-        "synthetic_not_billing": true,
-        "wasm_page_bytes": 65536,
-        "wasm_pages_before_capture": 25,
-        "wasm_pages_peak_after_capture": 25,
-        "database_bytes": 77824
-      },
-      {
-        "wall_ms": 6.320375000000013,
-        "bundled_zone": "America/New_York",
-        "calendar": [
-          {
-            "elapsed_ms": 0,
-            "months": 1,
-            "nanos": "2678400000000000",
-            "sql_crossings": 1
-          },
-          {
-            "elapsed_ms": 0,
-            "months": 120,
-            "nanos": "315532800000000000",
-            "sql_crossings": 120
-          },
-          {
-            "elapsed_ms": 4,
-            "months": 2400,
-            "nanos": "6311433600000000000",
-            "sql_crossings": 2400
-          }
-        ],
-        "calendar_crossings": 2400,
-        "calendar_months": 2400,
-        "calendar_ms": 4,
-        "calendar_nanos": "6311433600000000000",
-        "capture_crossings": 8,
-        "capture_json_bytes": 10423,
-        "capture_json_capacity_bytes": 16384,
-        "capture_ms": 0,
-        "capture_rows": 283,
-        "capture_tables": 8,
-        "clock_resolution": "Date.now milliseconds; may report zero",
-        "indexed_crossings": 128,
-        "indexed_iterations": 128,
-        "indexed_ms": 0,
-        "memory_measure": "linear memory high-water pages and serialized Vec bytes/capacity; not allocator heap peak",
-        "synthetic_not_billing": true,
-        "wasm_page_bytes": 65536,
-        "wasm_pages_before_capture": 25,
-        "wasm_pages_peak_after_capture": 25,
-        "database_bytes": 77824
-      }
+  "selected": {
+    "gates": [
+      "cryptographic constant-time bounded auth; stable read rotation; streamed ingress; SDK MCP private original-credential flow; Host/Origin and read-only enforcement",
+      "domain rollback + receipt-only existing wins; thrown import rollback/discard; negative control commits",
+      "generic exact text/null row-returning ABI; canonical rejection; i64/i128/Jiff extrema; RETURNING; numeric-result rejection; STRICT/FK/partial index; sequence high-water",
+      "oversized unpaged SQL output refuses and discards even before route execution",
+      "actual synchronous trap settles; replacement usable; held sibling resumes (replacement-first)",
+      "actual synchronous trap settles; replacement usable; held sibling resumes (callback-first)",
+      "same-DO held capability invalidated after replacement: no stale SQL mutation",
+      "namespace isolation; genuine workerd graceful eviction and process restart preserve acknowledged SQL/receipts/sequence",
+      "real R2 manifest-last; immutable raw-row capture/receipts/high-water; persisted jobs/completions; stable incarnation; checksum primitive; idempotent completion",
+      "real before-payload retry; workerd automatic alarm retry with isRetry (no manual fake alarm)",
+      "real alarm explicit rearm survives process restart; exactly one completion receipt",
+      "one pending job enforced; eight-completion capacity rejects without pruning",
+      "single-turn capture remains immutable while R2 I/O held and same DO commits afterward",
+      "full capture 256/257/1000/10000: paused JS + external heap, Rust allocation peak, exact paging and <512KiB JSON",
+      "128 primary-key crossings; 1/120/2400 indexed calendar crossings with exact i128 nanos (static index review, no runtime query-plan claim)",
+      "core-only live identities 1/8/32: concurrent requests, distinct stable Wasm instances, measured capacity growth, 32 completed eviction requests and raw heap comparison (no forced GC or production grant)"
     ],
+    "incomplete": [],
+    "costs": {
+      "full_heap": "passed",
+      "captures": [
+        {
+          "identity": "cost-capture-256",
+          "cost_rows": 256,
+          "baseline": {
+            "usedSize": 2245676,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 265892
+          },
+          "row_count": 260,
+          "json_bytes": 3180,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 85530,
+          "memory_bytes": 1507328,
+          "crossings": 10,
+          "synchronous_ms": 1,
+          "startup_ms": 0,
+          "heap_at_emit": {
+            "usedSize": 1614268,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 235863
+          },
+          "paused_elapsed_ms": 1,
+          "after_capture": {
+            "usedSize": 1619140,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 235863
+          }
+        },
+        {
+          "identity": "cost-capture-257",
+          "cost_rows": 257,
+          "baseline": {
+            "usedSize": 1760584,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 239792
+          },
+          "row_count": 261,
+          "json_bytes": 3192,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 85632,
+          "memory_bytes": 1507328,
+          "crossings": 10,
+          "synchronous_ms": 0,
+          "startup_ms": 0,
+          "heap_at_emit": {
+            "usedSize": 1848056,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 243303
+          },
+          "paused_elapsed_ms": 1,
+          "after_capture": {
+            "usedSize": 1852940,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 644840,
+            "backingStorageSize": 243303
+          }
+        },
+        {
+          "identity": "cost-capture-1000",
+          "cost_rows": 1000,
+          "baseline": {
+            "usedSize": 2146060,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 256275
+          },
+          "row_count": 1004,
+          "json_bytes": 12233,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 133561,
+          "memory_bytes": 1572864,
+          "crossings": 12,
+          "synchronous_ms": 1,
+          "startup_ms": 0,
+          "heap_at_emit": {
+            "usedSize": 2360680,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 268829
+          },
+          "paused_elapsed_ms": 1,
+          "after_capture": {
+            "usedSize": 1641088,
+            "totalSize": 4718592,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 232569
+          }
+        },
+        {
+          "identity": "cost-capture-10000",
+          "cost_rows": 10000,
+          "baseline": {
+            "usedSize": 1832548,
+            "totalSize": 6029312,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 232569
+          },
+          "row_count": 10004,
+          "json_bytes": 130734,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 858835,
+          "memory_bytes": 2752512,
+          "crossings": 48,
+          "synchronous_ms": 8,
+          "startup_ms": 0,
+          "heap_at_emit": {
+            "usedSize": 3595432,
+            "totalSize": 6815744,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 363660
+          },
+          "paused_elapsed_ms": 8,
+          "after_capture": {
+            "usedSize": 1838768,
+            "totalSize": 6815744,
+            "embedderHeapUsedSize": 773792,
+            "backingStorageSize": 232569
+          }
+        }
+      ],
+      "indexed": [
+        {
+          "iterations": 128,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 66090,
+          "memory_bytes": 1507328,
+          "crossings": 128,
+          "synchronous_ms": 0,
+          "startup_ms": 0
+        }
+      ],
+      "calendar": [
+        {
+          "months": 1,
+          "nanos": "2678400000000000",
+          "rust_live_bytes": 4924,
+          "rust_peak_bytes": 72372,
+          "memory_bytes": 1507328,
+          "crossings": 1,
+          "synchronous_ms": 2,
+          "startup_ms": 0
+        },
+        {
+          "months": 120,
+          "nanos": "315532800000000000",
+          "rust_live_bytes": 4924,
+          "rust_peak_bytes": 71033,
+          "memory_bytes": 1507328,
+          "crossings": 120,
+          "synchronous_ms": 1,
+          "startup_ms": 0
+        },
+        {
+          "months": 2400,
+          "nanos": "6311433600000000000",
+          "rust_live_bytes": 4924,
+          "rust_peak_bytes": 71034,
+          "memory_bytes": 1507328,
+          "crossings": 2400,
+          "synchronous_ms": 10,
+          "startup_ms": 0
+        }
+      ],
+      "live_identities": [
+        {
+          "controlled_active": 1,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 0,
+          "memory_bytes": 1507328,
+          "startup_ms": [
+            0
+          ],
+          "heap": {
+            "usedSize": 2633856,
+            "totalSize": 7077888,
+            "embedderHeapUsedSize": 1160680,
+            "backingStorageSize": 237244
+          },
+          "heap_delta_from_baseline": {
+            "usedSize": 81524,
+            "totalSize": 0,
+            "embedderHeapUsedSize": 0,
+            "backingStorageSize": 826
+          }
+        },
+        {
+          "controlled_active": 8,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 0,
+          "memory_bytes": 12058624,
+          "startup_ms": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "heap": {
+            "usedSize": 3229988,
+            "totalSize": 7077888,
+            "embedderHeapUsedSize": 1289648,
+            "backingStorageSize": 243438
+          },
+          "heap_delta_from_baseline": {
+            "usedSize": 677656,
+            "totalSize": 0,
+            "embedderHeapUsedSize": 128968,
+            "backingStorageSize": 7020
+          }
+        },
+        {
+          "controlled_active": 32,
+          "rust_live_bytes": 0,
+          "rust_peak_bytes": 0,
+          "memory_bytes": 48234496,
+          "startup_ms": [
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0
+          ],
+          "heap": {
+            "usedSize": 1979140,
+            "totalSize": 7077888,
+            "embedderHeapUsedSize": 305544,
+            "backingStorageSize": 233187
+          },
+          "heap_delta_from_baseline": {
+            "usedSize": -573192,
+            "totalSize": 0,
+            "embedderHeapUsedSize": -855136,
+            "backingStorageSize": -3231
+          }
+        }
+      ],
+      "gc": "not forced: samples include garbage and do not prove post-eviction reclamation",
+      "accounting": "Worker Runtime.getHeapUsage fields reported separately. Rust allocator live/peak bytes are actual allocations; memory_bytes is Wasm capacity. Do not add capacity to backingStorageSize or other heap fields (overlap). No Node process memory measurements.",
+      "inspector_target": "workerd: worker core:user:ttrs-remote-host-lab",
+      "query_plan": {
+        "evidence": "static Rust schema/query review only, NOT runtime EXPLAIN QUERY PLAN",
+        "indexed": "INTEGER PRIMARY KEY equality",
+        "calendar": "cost_month equality index; id is rowid tie order"
+      },
+      "memory_baseline": {
+        "controlled_active": 0,
+        "known_cost_identities": 5,
+        "prior_test_identities": "not controlled; baseline includes previous live DOs and uncollected garbage",
+        "baseline": {
+          "usedSize": 2552332,
+          "totalSize": 7077888,
+          "embedderHeapUsedSize": 1160680,
+          "backingStorageSize": 236418
+        }
+      },
+      "eviction": {
+        "eviction_requests_completed": 32,
+        "controlled_active": 0,
+        "after_eviction": {
+          "usedSize": 1979140,
+          "totalSize": 7077888,
+          "embedderHeapUsedSize": 305544,
+          "backingStorageSize": 233187
+        },
+        "delta_from_baseline": {
+          "usedSize": -573192,
+          "totalSize": 0,
+          "embedderHeapUsedSize": -855136,
+          "backingStorageSize": -3231
+        },
+        "delta_from_32": {
+          "usedSize": 0,
+          "totalSize": 0,
+          "embedderHeapUsedSize": 0,
+          "backingStorageSize": 0
+        },
+        "note": "No forced GC: these samples do not prove reclaimed memory or a physical-memory cap."
+      },
+      "lab_policy": {
+        "proposed_live_identities": 8,
+        "proposed_memory_budget_bytes": 67108864,
+        "core_capacity_headroom_bytes": 55050240,
+        "budget_note": "Capacity-only headroom is not total memory headroom; compare separate heap fields and capture peaks before adopting this proposal.",
+        "status": "local lab proposal only; N=8/32 success does not grant production concurrency under a 128MiB limit",
+        "limitation": "core-only identities exclude Jiff and capture peaks; prior DOs contaminate absolute heap baseline; inspector external fields are runtime-dependent. Production needs workload-specific admission/eviction and headroom; unbounded live identities can exhaust isolate memory."
+      }
+    },
+    "passed": true,
+    "stage1_complete": true,
     "startup": {
+      "bundle": {
+        "sizeBytes": 727643,
+        "gzipSizeBytes": 215153
+      },
+      "startup": {
+        "profileWindowMs": 14.672,
+        "sampledTimeMs": 2.46,
+        "activeTimeMs": 0,
+        "garbageCollectionTimeMs": 0,
+        "idleTimeMs": 2.46,
+        "sampleCount": 1
+      },
+      "profile": "results/fallback-startup.cpuprofile",
+      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
+    }
+  },
+  "mcp": {
+    "passed": true,
+    "startup": {
+      "bundle": {
+        "sizeBytes": 761185,
+        "gzipSizeBytes": 177280
+      },
+      "startup": {
+        "profileWindowMs": 30.729,
+        "sampledTimeMs": 26.458,
+        "activeTimeMs": 20.056,
+        "garbageCollectionTimeMs": 2.499,
+        "idleTimeMs": 6.402,
+        "sampleCount": 14
+      },
+      "profile": "results/mcp-startup.cpuprofile",
+      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
+    }
+  },
+  "blocked_rust_repro": [
+    {
+      "order": "replacement-first",
+      "runtime_before": "0.6532434630128714",
+      "trap": {
+        "kind": "timeout"
+      },
+      "fresh_before_release": {
+        "kind": "response",
+        "status": 200,
+        "body": {
+          "assertions": {
+            "receipts": [],
+            "state": [
+              [
+                "partial",
+                "clean"
+              ],
+              [
+                "revision",
+                "0"
+              ]
+            ]
+          },
+          "probe": "state",
+          "runtime_id": "0.868007991385859"
+        }
+      },
+      "pending": {
+        "kind": "timeout"
+      },
+      "a_after": {
+        "kind": "response",
+        "status": 200,
+        "body": {
+          "assertions": {
+            "receipts": [],
+            "state": [
+              [
+                "partial",
+                "clean"
+              ],
+              [
+                "revision",
+                "0"
+              ]
+            ]
+          },
+          "probe": "state",
+          "runtime_id": "0.868007991385859"
+        }
+      },
+      "b_after": {
+        "kind": "response",
+        "status": 200,
+        "body": {
+          "assertions": {
+            "receipts": [],
+            "state": [
+              [
+                "partial",
+                "clean"
+              ],
+              [
+                "revision",
+                "0"
+              ]
+            ]
+          },
+          "probe": "state",
+          "runtime_id": "0.868007991385859"
+        }
+      },
+      "passed": false
+    },
+    {
+      "order": "callback-first",
+      "runtime_before": "0.7370137070840147",
+      "trap": {
+        "kind": "timeout"
+      },
+      "pending": {
+        "kind": "timeout"
+      },
+      "a_after": {
+        "kind": "response",
+        "status": 200,
+        "body": {
+          "assertions": {
+            "receipts": [],
+            "state": [
+              [
+                "partial",
+                "clean"
+              ],
+              [
+                "revision",
+                "0"
+              ]
+            ]
+          },
+          "probe": "state",
+          "runtime_id": "0.8612363747607076"
+        }
+      },
+      "b_after": {
+        "kind": "response",
+        "status": 200,
+        "body": {
+          "assertions": {
+            "receipts": [],
+            "state": [
+              [
+                "partial",
+                "clean"
+              ],
+              [
+                "revision",
+                "0"
+              ]
+            ]
+          },
+          "probe": "state",
+          "runtime_id": "0.8612363747607076"
+        }
+      },
+      "passed": false
+    }
+  ],
+  "historical": {
+    "revision": "4591dec0",
+    "note": "Original Rust-first and focused TS capability suites were reduced/replaced after complete host selection; measurements below describe that old artifact, not the selected bundle.",
+    "rust_startup": {
       "bundle": {
         "sizeBytes": 1114432,
         "gzipSizeBytes": 364721
@@ -256,357 +567,7 @@
       "profile": "results/rust-startup.cpuprofile",
       "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
     },
-    "alarm_final": {
-      "alarm": null,
-      "completion_receipts": [
-        [
-          "job:retry",
-          "success"
-        ]
-      ],
-      "jobs": [
-        [
-          "retry",
-          "done",
-          "2"
-        ]
-      ],
-      "r2_prefix": "lab/c79e245669bf5cb09913d958f7c9052fbae5fa1d56d112d2fce749a8334f779e/"
-    }
-  },
-  "gate": [
-    {
-      "order": "replacement-first",
-      "passed": false,
-      "runtime_before": "0.40132350479323164",
-      "runtime_after": "0.7286691215611434",
-      "trap": {
-        "kind": "timeout"
-      },
-      "pending": {
-        "kind": "timeout"
-      },
-      "a_sql": {
-        "receipts": [],
-        "state": [
-          [
-            "partial",
-            "clean"
-          ],
-          [
-            "probe:trap",
-            "1"
-          ],
-          [
-            "requests",
-            "1"
-          ],
-          [
-            "revision",
-            "0"
-          ]
-        ]
-      },
-      "b_sql": {
-        "receipts": [],
-        "state": [
-          [
-            "partial",
-            "clean"
-          ],
-          [
-            "probe:await-gate",
-            "1"
-          ],
-          [
-            "requests",
-            "1"
-          ],
-          [
-            "revision",
-            "0"
-          ]
-        ]
-      }
-    },
-    {
-      "order": "callback-first",
-      "passed": false,
-      "runtime_before": "0.4641327235329793",
-      "runtime_after": "0.8228922285205077",
-      "trap": {
-        "kind": "timeout"
-      },
-      "pending": {
-        "kind": "timeout"
-      },
-      "a_sql": {
-        "receipts": [],
-        "state": [
-          [
-            "partial",
-            "clean"
-          ],
-          [
-            "probe:trap",
-            "1"
-          ],
-          [
-            "requests",
-            "1"
-          ],
-          [
-            "revision",
-            "0"
-          ]
-        ]
-      },
-      "b_sql": {
-        "receipts": [],
-        "state": [
-          [
-            "partial",
-            "clean"
-          ],
-          [
-            "probe:await-gate",
-            "1"
-          ],
-          [
-            "requests",
-            "1"
-          ],
-          [
-            "revision",
-            "0"
-          ]
-        ]
-      }
-    }
-  ],
-  "fallback": {
-    "gates": [
-      "domain rollback + receipt-only existing wins; JS rollback; negative control",
-      "Rust exact i64/text/null, i128, Jiff MAX and 2400-month bundled-zone calculation",
-      "synchronous trap settles; replacement usable; held sibling resumes (replacement-first)",
-      "synchronous trap settles; replacement usable; held sibling resumes (callback-first)",
-      "namespace isolation; persisted SQLite state/receipts/exact values and sequence across runtime restart"
-    ],
-    "observations": [
-      {
-        "identity": "auth",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 3.4742499999999836,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "auth",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.91112499999997,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "tx",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 2.377917000000025,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "tx",
-        "probe": "rollback-err",
-        "status": 200,
-        "wall_ms": 1.487542000000019,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "tx",
-        "probe": "seed-existing",
-        "status": 200,
-        "wall_ms": 1.1143750000000523,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "tx",
-        "probe": "rollback-err?receipt=existing",
-        "status": 200,
-        "wall_ms": 1.683791000000042,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "tx",
-        "probe": "rollback-js",
-        "status": 500,
-        "wall_ms": 1.5765420000000177,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "negative",
-        "probe": "negative-control",
-        "status": 200,
-        "wall_ms": 3.084541999999999,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "exact",
-        "probe": "exact",
-        "status": 200,
-        "wall_ms": 5.255875000000003,
-        "memory_bytes": 1441792
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 2.011665999999991,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "b-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.762666999999965,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "trap",
-        "status": 500,
-        "wall_ms": 1.142167000000029,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "commit",
-        "status": 200,
-        "wall_ms": 0.9590000000000032,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "b-replacement-first",
-        "probe": "await-gate",
-        "status": 200,
-        "wall_ms": 5.803333000000009,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.7422080000000051,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.6595419999999876,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-callback-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.6175409999999601,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "b-callback-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.8812500000000227,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-callback-first",
-        "probe": "trap",
-        "status": 500,
-        "wall_ms": 0.9912090000000262,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "b-callback-first",
-        "probe": "await-gate",
-        "status": 200,
-        "wall_ms": 2.741624999999999,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-callback-first",
-        "probe": "commit",
-        "status": 200,
-        "wall_ms": 0.6986670000000004,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-callback-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.45954100000000153,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-callback-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.5708329999999933,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.7792079999999828,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "exact",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.8703329999999596,
-        "memory_bytes": 1441792
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 0.6566249999999627,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "exact",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 3.333084000000042,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "a-replacement-first",
-        "probe": "state",
-        "status": 200,
-        "wall_ms": 1.8092909999999733,
-        "memory_bytes": 1376256
-      },
-      {
-        "identity": "exact",
-        "probe": "next-sequence",
-        "status": 200,
-        "wall_ms": 1.0300829999999905,
-        "memory_bytes": 1376256
-      }
-    ],
-    "incomplete": [
-      "R2/alarm retry and backup/restore",
-      "full cost and memory ledger",
-      "full ingress/auth hardening",
-      "canonical numeric rejection and SQL constraint suite",
-      "MCP credential flow against fallback service"
-    ],
-    "passed": true,
-    "stage1_complete": false,
-    "startup": {
+    "focused_fallback_startup": {
       "bundle": {
         "sizeBytes": 614300,
         "gzipSizeBytes": 179066
@@ -623,24 +584,9 @@
       "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
     }
   },
-  "mcp": {
-    "passed": true,
-    "command": "node mcp-test.mjs after cf build --mode spike",
-    "startup": {
-      "bundle": {
-        "sizeBytes": 761185,
-        "gzipSizeBytes": 177280
-      },
-      "startup": {
-        "profileWindowMs": 52.888,
-        "sampledTimeMs": 42.639,
-        "activeTimeMs": 31.496,
-        "garbageCollectionTimeMs": 4.586,
-        "idleTimeMs": 11.143,
-        "sampleCount": 15
-      },
-      "profile": "results/mcp-startup.cpuprofile",
-      "note": "This profile was measured locally. Use it to understand where startup time is spent, not to predict startup time on Cloudflare."
-    }
-  }
+  "remaining": [
+    "Stage 2 not started: production shared SQL/core extraction and native/Wasm business parity",
+    "Product auth/protocol/journal/authority/restore/legacy fencing/server-time contracts",
+    "Representative production histories/receipts, workload admission, capture growth, memory headroom and operating budgets"
+  ]
 }
