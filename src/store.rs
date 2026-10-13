@@ -6,6 +6,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, 
 use crate::{Error, Result, model};
 
 mod billing;
+mod calendar;
 mod dashboard;
 mod lists;
 mod retainers;

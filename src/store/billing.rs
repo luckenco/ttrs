@@ -3,7 +3,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{Error, Result, model};
 
-const HOUR_US: i128 = 3_600_000_000;
+use super::calendar::{self, HOUR_US};
 
 pub(super) fn validate_agreement_period(
     connection: &Connection,
@@ -46,14 +46,7 @@ pub(super) fn validate_month_capacity(
     let Some(maximum) = month_maximum_us(connection, project, agreement, month)? else {
         return Ok(());
     };
-    let month_start = super::day_start(month, project.billing_timezone())?;
-    let month_end = super::day_start(
-        month
-            .last_of_month()
-            .tomorrow()
-            .map_err(super::time_error)?,
-        project.billing_timezone(),
-    )?;
+    let (month_start, month_end) = calendar::month_bounds(month, project.billing_timezone())?;
     if used_us(connection, project.id(), month_start, month_end)? > maximum {
         return Err(Error::MonthlyMaximumReached(project.id()));
     }
@@ -78,12 +71,7 @@ pub(super) fn ensure_capacity(
             .to_zoned(project.billing_timezone().clone())
             .date()
             .first_of_month();
-        let month_end_date = month
-            .last_of_month()
-            .tomorrow()
-            .map_err(super::time_error)?;
-        let month_start = super::day_start(month, project.billing_timezone())?;
-        let month_end = super::day_start(month_end_date, project.billing_timezone())?;
+        let (month_start, month_end) = calendar::month_bounds(month, project.billing_timezone())?;
         let segment_end = ended_at.min(month_end);
         if let Some(maximum) = month_maximum_us(connection, project, agreement, month)? {
             let used = used_us(connection, project.id(), month_start, month_end)?;
@@ -113,16 +101,9 @@ pub(super) fn capped_end(
             .to_zoned(project.billing_timezone().clone())
             .date()
             .first_of_month();
-        let month_end = super::day_start(
-            month
-                .last_of_month()
-                .tomorrow()
-                .map_err(super::time_error)?,
-            project.billing_timezone(),
-        )?;
+        let (month_start, month_end) = calendar::month_bounds(month, project.billing_timezone())?;
         let segment_end = requested_end.min(month_end);
         if let Some(maximum) = month_maximum_us(connection, project, agreement, month)? {
-            let month_start = super::day_start(month, project.billing_timezone())?;
             let used = used_us(connection, project.id(), month_start, month_end)?;
             let available = (maximum - used).max(0);
             let segment_us = i128::from(segment_end.as_microsecond() - cursor.as_microsecond());
@@ -172,14 +153,7 @@ pub(super) fn timer_limit(
     let Some(maximum) = month_maximum_us(connection, project, agreement, month)? else {
         return Ok(None);
     };
-    let month_start = super::day_start(month, project.billing_timezone())?;
-    let month_end = super::day_start(
-        month
-            .last_of_month()
-            .tomorrow()
-            .map_err(super::time_error)?,
-        project.billing_timezone(),
-    )?;
+    let (month_start, month_end) = calendar::month_bounds(month, project.billing_timezone())?;
     let used = used_us(connection, project.id(), month_start, month_end)?;
     let timer_used = i128::from(overlap_us(
         timer.started_at(),
@@ -218,16 +192,11 @@ fn month_maximum_us(
         .last_of_month()
         .tomorrow()
         .map_err(super::time_error)?;
-    let project_end = project
-        .archived_on()
-        .map(|date| date.tomorrow().map_err(super::time_error))
-        .transpose()?;
+    let current_coverage =
+        calendar::coverage(month, agreement.effective_on(), None, project.archived_on())?;
     // Current terms have no successor. A fully covered month needs no history
     // lookup or day-based proration.
-    if agreement.is_current()
-        && agreement.effective_on() <= month
-        && project_end.is_none_or(|end| end >= month_end)
-    {
+    if agreement.is_current() && current_coverage == Some((month, month_end)) {
         return Ok(agreement
             .monthly_hours()
             .maximum()
@@ -254,16 +223,12 @@ fn month_maximum_us(
         .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut numerator = 0_i128;
     for (index, &(effective_on, maximum)) in agreements.iter().enumerate() {
-        let start = effective_on.max(month);
         let next = agreements.get(index + 1).map(|&(date, _)| date);
-        let end = [Some(month_end), next, project_end]
-            .into_iter()
-            .flatten()
-            .min()
-            .expect("month end is always present");
-        if start >= end {
+        let Some((start, end)) =
+            calendar::coverage(month, effective_on, next, project.archived_on())?
+        else {
             continue;
-        }
+        };
         let Some(maximum) = maximum else {
             return Ok(None);
         };

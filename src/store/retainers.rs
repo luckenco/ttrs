@@ -5,7 +5,7 @@ use rusqlite::params;
 
 use crate::{Result, model};
 
-const HOUR_US: i128 = 3_600_000_000;
+use super::calendar::{self, HOUR_US};
 
 impl super::Store {
     // Daily earnings remain weighted (microseconds × rate micros/hour) so the
@@ -33,26 +33,22 @@ impl super::Store {
                 .get(index + 1)
                 .filter(|next| next.project() == project.id())
                 .map(model::ServiceAgreement::effective_on);
-            let archived = project
-                .archived_on()
-                .map(|date| date.tomorrow().map_err(super::time_error))
-                .transpose()?;
             let current = now.to_zoned(zone.clone()).date().first_of_month();
             let previous = today.to_zoned(zone.clone()).date().first_of_month();
             // A display day can straddle a project-local month boundary. Charge
             // today's overage in both months, but display only the current month.
             for month in std::iter::once(current).chain((previous != current).then_some(previous)) {
-                let month_end = month
-                    .last_of_month()
-                    .tomorrow()
-                    .map_err(super::time_error)?;
-                let start = month.max(agreement.effective_on());
-                let end = [Some(month_end), next, archived]
-                    .into_iter()
-                    .flatten()
-                    .min()
-                    .expect("month end is always present");
-                if start >= end || super::day_start(start, zone)? > now {
+                let Some((start, end)) = calendar::coverage(
+                    month,
+                    agreement.effective_on(),
+                    next,
+                    project.archived_on(),
+                )?
+                else {
+                    continue;
+                };
+                let start_at = super::day_start(start, zone)?;
+                if start_at > now {
                     continue;
                 }
                 let days = i128::from(start.duration_until(end).as_hours() / 24);
@@ -60,7 +56,7 @@ impl super::Store {
                 let included_us = i128::from(terms.included_hours()) * HOUR_US * days / month_days;
                 let (worked_us, before_today) = self.retainer_usage(
                     agreement.id(),
-                    super::day_start(start, zone)?,
+                    start_at,
                     super::day_start(end, zone)?.min(now),
                     today,
                     timers,

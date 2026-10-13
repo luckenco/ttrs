@@ -156,6 +156,15 @@ fn live_caps_stop_earnings_and_remain_consistent_after_stopping() {
     assert_eq!(before.today.earnings_micros["EUR"], 50_000_000);
     assert!(before.timers[0].limit.unwrap().is_reached());
     assert_eq!(before.month_earnings_micros["EUR"], 100_000_000);
+    let far_future = tracker
+        .timer_limit(timer.id(), Timestamp::MAX)
+        .unwrap()
+        .unwrap();
+    assert!(far_future.is_reached());
+    assert_eq!(
+        far_future.cap_at(),
+        before.timers[0].limit.unwrap().cap_at()
+    );
     tracker.end_if_current(&timer, now).unwrap();
     assert_eq!(
         tracker
