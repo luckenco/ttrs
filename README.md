@@ -77,6 +77,10 @@ Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt stat
 - [x] Delete entries with confirmation.
 - [ ] Edit completed entries.
 
+## Remote workspace design
+
+[Local and connected-remote workspaces](docs/remote-workspace.md) describes the proposed backend, contracts, backups, and staged implementation. Remote mode is not implemented yet. Start with the [next-agent handoff](docs/remote-workspace-handoff.md) for the workers-rs-first feasibility spike.
+
 ## Development
 
 Use `cargo run` to try local changes. Before committing:
