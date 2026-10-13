@@ -124,6 +124,9 @@ pub enum Error {
     /// Switching cannot stop a timer belonging to a different client.
     #[error("switching must stay within one client")]
     SwitchClientMismatch,
+    /// The database still permits reuse of running-timer identifiers.
+    #[error("database schema is outdated; back up your data and create a fresh database")]
+    DatabaseSchemaOutdated,
     /// Persistence failed.
     #[error("storage failed: {0}")]
     Storage(#[source] Box<dyn error::Error + Send + Sync>),

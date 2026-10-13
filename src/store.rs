@@ -58,7 +58,7 @@ const SCHEMA: &str = "
         ON service_agreements(project_id, effective_on);
 
     CREATE TABLE running_timers (
-        id            INTEGER PRIMARY KEY,
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
         agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
         scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
         started_at_us INTEGER NOT NULL
@@ -95,6 +95,14 @@ impl Store {
         configure(&connection)?;
         if initialize(&mut connection)? {
             connection.pragma_update(None, "journal_mode", "WAL")?;
+        }
+        let timer_schema: String = connection.query_row(
+            "SELECT sql FROM sqlite_schema WHERE type = 'table' AND name = 'running_timers'",
+            [],
+            |row| row.get(0),
+        )?;
+        if !timer_schema.to_ascii_uppercase().contains("AUTOINCREMENT") {
+            return Err(Error::DatabaseSchemaOutdated);
         }
         Ok(Self { connection })
     }
@@ -825,6 +833,27 @@ mod tests {
             );
             assert!(result.is_err(), "{rate:?} {fee:?} {included:?} {minimum:?}");
         }
+    }
+
+    #[test]
+    fn rejects_reusable_timer_schema_without_changing_existing_data() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let connection = Connection::open(&path).unwrap();
+        connection
+            .execute_batch(&SCHEMA.replace("PRIMARY KEY AUTOINCREMENT", "PRIMARY KEY"))
+            .unwrap();
+        connection
+            .execute("INSERT INTO clients(name) VALUES ('Acme')", [])
+            .unwrap();
+        assert!(matches!(
+            Store::open(&path),
+            Err(Error::DatabaseSchemaOutdated)
+        ));
+        let name: String = connection
+            .query_row("SELECT name FROM clients", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(name, "Acme");
     }
 
     #[test]

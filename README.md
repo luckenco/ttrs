@@ -2,7 +2,7 @@
 
 **tt** tracks work under hourly agreements and monthly retainers, with a keyboard-first TUI and a CLI. See running timers, daily earnings, and monthly estimates. For macOS and Linux.
 
-> Early development: schema changes currently require a fresh database. Back up your data before updating.
+> Early development: schema changes currently require a fresh database. Back up your data before updating. Older databases that permit timer ID reuse are rejected; no automatic migration is provided.
 
 ## Get started
 

@@ -151,7 +151,7 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
     let replacement = tracker
         .start(command::Start::new(project, "External".into(), now).unwrap())
         .unwrap();
-    assert_eq!(replacement.id(), timer.id()); // SQLite reuses the now-empty table's ID.
+    assert_ne!(replacement.id(), timer.id());
     app.refresh(&tracker, now, &TimeZone::UTC);
     assert_eq!(app.selection.selected(), None);
     let later = now.checked_add(jiff::SignedDuration::from_secs(1)).unwrap();

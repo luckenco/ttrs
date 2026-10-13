@@ -188,6 +188,48 @@ fn explicit_commands_route_through_the_shared_application() {
 }
 
 #[test]
+fn stopped_timer_ids_are_not_reused_across_reopened_commands() {
+    let case = Case::new();
+    for (client, project) in [("Acme", "website"), ("Other", "api")] {
+        case.ok(&["client", "add", "--name", client]);
+        case.ok(&[
+            "project",
+            "add",
+            "--client",
+            client,
+            "--name",
+            project,
+            "--timezone",
+            "UTC",
+            "--agreement",
+            "Support",
+            "--rate",
+            "100",
+            "--currency",
+            "EUR",
+            "--effective-on",
+            "2026-03-01",
+        ]);
+    }
+    assert!(
+        case.ok(&["start", "-p", "website", "-s", "Old work", "--at", "0900"])
+            .contains("id:1")
+    );
+    case.ok(&["stop", "--id", "id:1", "--at", "1000"]);
+    assert!(
+        case.ok(&["start", "-p", "api", "-s", "New work", "--at", "1100"])
+            .contains("id:2")
+    );
+    let running = case.ok(&["status"]);
+    assert!(running.contains("New work") && running.contains("id:2"));
+    assert!(
+        case.fails(1, &["stop", "--id", "id:1", "--at", "1200"])
+            .contains("running timer 1 does not exist")
+    );
+    assert_eq!(case.ok(&["status"]), running);
+}
+
+#[test]
 fn list_queries_preserve_filters_labels_and_order() {
     let case = Case::new();
     assert_eq!(case.ok(&["project", "list"]), "No projects.\n");

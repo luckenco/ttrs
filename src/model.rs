@@ -77,6 +77,8 @@ id_type!(
     TimerId,
     r#"The identifier of a running timer.
 
+Identifiers are never reused within a database, even after a timer is stopped.
+
 # Examples
 
 ```

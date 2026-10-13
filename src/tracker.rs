@@ -197,8 +197,8 @@ impl Tracker {
 
     /// Ends exactly the displayed timer, rejecting a stopped or replaced value.
     ///
-    /// This guards long-lived frontends against concurrent CLI changes and
-    /// reused database IDs. The timestamp is stored at microsecond precision.
+    /// This guards long-lived frontends against concurrent CLI changes.
+    /// The timestamp is stored at microsecond precision.
     pub fn end_if_current(
         &mut self,
         timer: &model::RunningTimer,
@@ -1071,6 +1071,48 @@ mod tests {
         };
         let tracker = Tracker::open(&path).unwrap();
         assert_eq!(tracker.running().unwrap(), [timer]);
+    }
+
+    #[test]
+    fn timer_ids_are_not_reused_after_empty_table_or_reopen() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("tt.sqlite3");
+        let mut selected = Tracker::open(&path).unwrap();
+        let (project, _) = project(&mut selected);
+        let at = timestamp("2026-01-04T09:00:00Z");
+        let end = timestamp("2026-01-04T10:00:00Z");
+        let start = command::Start::new(project.id(), "same".into(), at).unwrap();
+        let first = selected.start(start.clone()).unwrap();
+        let stale_end = command::End::new(first.id(), end);
+        let mut writer = Tracker::open(&path).unwrap();
+        writer.end(stale_end).unwrap();
+        assert!(selected.running().unwrap().is_empty());
+        let second = writer.start(start.clone()).unwrap();
+        assert!(second.id() > first.id());
+        assert!(matches!(
+            selected.end(stale_end),
+            Err(Error::TimerNotFound(id)) if id == first.id()
+        ));
+        assert_eq!(
+            writer.running().unwrap().as_slice(),
+            std::slice::from_ref(&second)
+        );
+        writer.end(command::End::new(second.id(), end)).unwrap();
+        drop(writer);
+        drop(selected);
+
+        let mut reopened = Tracker::open(&path).unwrap();
+        let third = reopened.start(start).unwrap();
+        assert!(third.id() > second.id());
+        assert!(matches!(
+            reopened.end(command::End::new(second.id(), end)),
+            Err(Error::TimerNotFound(id)) if id == second.id()
+        ));
+        assert!(matches!(
+            reopened.end_if_current(&second, end),
+            Err(Error::TimerChanged(id)) if id == second.id()
+        ));
+        assert_eq!(reopened.running().unwrap(), [third]);
     }
 
     #[test]
