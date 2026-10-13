@@ -317,12 +317,26 @@ impl Tracker {
         self.store.delete_entry_if_current(expected)
     }
 
+    /// Returns timers and their cap information from one consistent read snapshot.
+    ///
+    /// Concurrent writes cannot mix timer values with limits from another state.
+    ///
+    /// ```
+    /// let tracker = tt::Tracker::memory()?;
+    /// assert!(tracker.status(tt::Timestamp::UNIX_EPOCH)?.is_empty());
+    /// # Ok::<(), Box<dyn std::error::Error>>(())
+    /// ```
+    pub fn status(&self, now: Timestamp) -> Result<Vec<model::RunningStatus>> {
+        self.store.status(now)
+    }
+
     /// Returns all running timers, oldest first.
     pub fn running(&self) -> Result<Vec<model::RunningTimer>> {
         self.store.running()
     }
 
     /// Returns cap information for a running timer, if it has a maximum.
+    /// The timer and its allowance are read from one consistent snapshot.
     pub fn timer_limit(
         &self,
         timer: model::TimerId,

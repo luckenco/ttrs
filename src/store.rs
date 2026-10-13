@@ -494,7 +494,18 @@ impl Store {
         timer: model::TimerId,
         now: Timestamp,
     ) -> Result<Option<model::TimerLimit>> {
-        let running = find_timer(&self.connection, timer)?.ok_or(Error::TimerNotFound(timer))?;
+        let transaction = self.connection.unchecked_transaction()?;
+        let running = find_timer(&transaction, timer)?.ok_or(Error::TimerNotFound(timer))?;
+        let limit = self.limit(&running, now)?;
+        transaction.commit()?;
+        Ok(limit)
+    }
+
+    fn limit(
+        &self,
+        running: &model::RunningTimer,
+        now: Timestamp,
+    ) -> Result<Option<model::TimerLimit>> {
         let agreement = find_agreement(&self.connection, running.agreement())?
             .expect("running timers always reference an agreement");
         if agreement.monthly_hours().maximum().is_none() {
@@ -502,7 +513,7 @@ impl Store {
         }
         let project = find_project(&self.connection, agreement.project())?
             .expect("agreements always reference a project");
-        billing::timer_limit(&self.connection, &project, &agreement, &running, now)
+        billing::timer_limit(&self.connection, &project, &agreement, running, now)
     }
 
     pub(crate) fn recent_scopes(

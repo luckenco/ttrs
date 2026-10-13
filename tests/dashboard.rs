@@ -78,6 +78,58 @@ fn repeated_refreshes_observe_external_writes_and_new_time_bounds() {
 }
 
 #[test]
+fn status_and_limits_stay_consistent_during_concurrent_stops() {
+    use std::{sync, thread};
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tt.sqlite3");
+    let mut writer = Tracker::open(&path).unwrap();
+    let client = writer.add_client("Acme".into()).unwrap();
+    let (_, agreement) = project(&mut writer, client.id(), "website", "EUR", Some(2));
+    let start =
+        command::Start::new(agreement.id(), "live".into(), ts("2026-01-02T09:00:00Z")).unwrap();
+    let now = ts("2026-01-02T10:00:00Z");
+    let first = writer.start(start.clone()).unwrap();
+    let reader = Tracker::open(&path).unwrap();
+    let captured = reader.status(now).unwrap();
+    assert_eq!(captured.len(), 1);
+    assert_eq!(captured[0].timer, first);
+    let barrier = sync::Arc::new(sync::Barrier::new(2));
+    let worker_barrier = barrier.clone();
+    let worker = thread::spawn(move || {
+        worker_barrier.wait();
+        let mut timer = first;
+        for _ in 0..200 {
+            let entry = writer.end(command::End::new(timer.id(), now)).unwrap();
+            writer.delete_entry_if_current(&entry).unwrap();
+            timer = writer.start(start.clone()).unwrap();
+        }
+        writer.cancel_if_current(&timer).unwrap();
+    });
+    barrier.wait();
+    for _ in 0..500 {
+        let statuses = reader.status(now).unwrap();
+        assert!(statuses.len() <= 1);
+        for status in statuses {
+            assert_eq!(status.agreement.id(), agreement.id());
+            assert_eq!(status.project.name(), "website");
+            assert_eq!(status.timer.scope(), "live");
+            assert_eq!(status.limit.unwrap().remaining_us(), 3_600_000_000);
+            match reader.timer_limit(status.timer.id(), now) {
+                Ok(Some(limit)) => assert_eq!(limit.remaining_us(), 3_600_000_000),
+                Err(Error::TimerNotFound(_)) => {}
+                result => panic!("unexpected allowance: {result:?}"),
+            }
+        }
+    }
+    worker.join().unwrap();
+    assert!(reader.status(now).unwrap().is_empty());
+    // Returned labels and allowances remain usable after the timer disappears.
+    assert_eq!(captured[0].project.name(), "website");
+    assert_eq!(captured[0].limit.unwrap().remaining_us(), 3_600_000_000);
+}
+
+#[test]
 fn totals_clip_midnight_sum_overlaps_and_keep_currencies_separate() {
     let mut tracker = Tracker::memory().unwrap();
     let acme = tracker.add_client("Acme".into()).unwrap();

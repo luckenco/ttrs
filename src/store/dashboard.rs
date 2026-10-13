@@ -6,6 +6,29 @@ use rusqlite::params;
 use crate::{Result, model};
 
 impl super::Store {
+    pub(crate) fn status(&self, now: Timestamp) -> Result<Vec<model::RunningStatus>> {
+        let transaction = self.connection.unchecked_transaction()?;
+        let statuses = self
+            .running()?
+            .into_iter()
+            .map(|timer| {
+                let agreement = super::find_agreement(&transaction, timer.agreement())?
+                    .expect("running timers always reference an agreement");
+                let project = super::find_project(&transaction, agreement.project())?
+                    .expect("agreements always reference a project");
+                let limit = self.limit(&timer, now)?;
+                Ok(model::RunningStatus {
+                    timer,
+                    agreement,
+                    project,
+                    limit,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        transaction.commit()?;
+        Ok(statuses)
+    }
+
     pub(crate) fn dashboard(&self, now: Timestamp, zone: &TimeZone) -> Result<model::Dashboard> {
         // All reads share one SQLite snapshot, including CLI writes between refreshes.
         let transaction = self.connection.unchecked_transaction()?;
@@ -30,7 +53,7 @@ impl super::Store {
             .running()?
             .into_iter()
             .map(|timer| {
-                let limit = self.timer_limit(timer.id(), now)?;
+                let limit = self.limit(&timer, now)?;
                 Ok(model::TimerStatus { timer, limit })
             })
             .collect::<Result<Vec<_>>>()?;

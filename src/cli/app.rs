@@ -216,25 +216,24 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
 }
 
 fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Error> {
-    let timers = tracker.running().map_err(core_error)?;
-    if timers.is_empty() {
+    let statuses = tracker.status(now).map_err(core_error)?;
+    if statuses.is_empty() {
         return line(format_args!("No running timers."));
     }
     line(format_args!(
         "ID\tAGREEMENT\tPROJECT\tSCOPE\tSTARTED\tELAPSED\tCAP LEFT"
     ))?;
-    for timer in timers {
-        let (agreement, project) = work_names(tracker, timer.agreement())?;
-        let limit = tracker.timer_limit(timer.id(), now).map_err(core_error)?;
+    for status in statuses {
+        let timer = status.timer;
         line(format_args!(
             "id:{}\t{}\t{}\t{}\t{}\t{}\t{}",
             timer.id(),
-            agreement,
-            project,
+            status.agreement.name(),
+            status.project.name(),
             timer.scope(),
             clock(timer.started_at(), zone),
             elapsed(timer.started_at(), now),
-            format_limit(limit)
+            format_limit(status.limit)
         ))?;
     }
     Ok(())
@@ -374,15 +373,6 @@ fn resolve_agreement(tracker: &Tracker, reference: &str) -> Result<model::Servic
         .parse::<model::ServiceAgreementId>()
         .map_err(|_| Error::usage(format!("invalid agreement reference '{reference}'")))?;
     tracker.service_agreement(id).map_err(core_error)
-}
-
-fn work_names(
-    tracker: &Tracker,
-    agreement: model::ServiceAgreementId,
-) -> Result<(String, String), Error> {
-    let agreement = tracker.service_agreement(agreement).map_err(core_error)?;
-    let project = tracker.project(agreement.project()).map_err(core_error)?;
-    Ok((agreement.name().to_owned(), project.name().to_owned()))
 }
 
 fn print_limit(

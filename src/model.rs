@@ -4,7 +4,9 @@ use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 mod dashboard;
 mod pricing;
-pub use dashboard::{DailyTotal, Dashboard, ProjectSummary, RetainerMonth, TimerStatus};
+pub use dashboard::{
+    DailyTotal, Dashboard, ProjectSummary, RetainerMonth, RunningStatus, TimerStatus,
+};
 pub use pricing::{MonthlyFee, Pricing, Retainer};
 
 /// Returned when an identifier is not a positive integer.

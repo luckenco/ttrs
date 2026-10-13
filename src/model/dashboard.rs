@@ -47,6 +47,19 @@ pub struct TimerStatus {
     pub limit: Option<TimerLimit>,
 }
 
+/// A running timer, its labels, and allowance from one consistent read snapshot.
+#[derive(Clone, Debug)]
+pub struct RunningStatus {
+    /// The captured timer; retain it for checked cancellation or stopping.
+    pub timer: RunningTimer,
+    /// Immutable agreement terms governing this timer.
+    pub agreement: ServiceAgreement,
+    /// The timer's project, including its display name.
+    pub project: Project,
+    /// Monthly cap information at the requested instant.
+    pub limit: Option<TimerLimit>,
+}
+
 /// Daily tracked work, not an invoice or a billing-rounded report.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct DailyTotal {
