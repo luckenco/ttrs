@@ -17,6 +17,7 @@ mod catalog;
 mod choose;
 mod form;
 mod input;
+mod recovery;
 mod search;
 mod state;
 #[cfg(test)]

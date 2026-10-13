@@ -34,6 +34,8 @@ In an empty workspace, press **n** to create a client, then **: → New project 
 
 Forms use `Tab` to move between fields, `Enter` to choose or review, and `Esc` to go back. Administrative changes require confirmation; the quick timer picker starts on `Enter`. Small terminal splits work down to **32×10**.
 
+**Need to undo a mistake?** On Dashboard, select a timer and use **: → Cancel selected timer**; confirmation removes it without recording completed time. In Agreements, select an agreement and use **: → Browse completed entries**. Search the list, press `Tab` for full details, or `Enter` to review deletion and `Enter` again to confirm. `Esc` cancels without changing work. Historical and archived agreements are available with `a`. Deletion is permanent and updates recorded usage and hourly/overage estimates; it does not remove a retainer’s fixed fee.
+
 **Forgot to track something?** Open Agreements (`2`), select the agreement, and press `l`. Enter a scope (ticket or description) and From/To times, then review and save. Historical agreements are available with `a`. Stop that client's running timer before logging.
 
 Times like `0900` or `09:00` mean **today** in the display timezone. For past or overnight work, use explicit dates such as `2026-03-12 09:00`. Offset timestamps are also accepted. Change the display timezone in Settings; otherwise your device timezone is used.
@@ -71,8 +73,8 @@ Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt stat
 
 ## TODO
 
-- [ ] Browse completed-entry history per agreement.
-- [ ] Delete entries with confirmation.
+- [x] Browse completed-entry history per agreement.
+- [x] Delete entries with confirmation.
 - [ ] Edit completed entries.
 
 ## Development

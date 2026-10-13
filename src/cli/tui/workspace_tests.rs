@@ -787,3 +787,254 @@ fn details_actions_and_every_total_are_accessible_in_small_splits() {
     assert!(terminal.backend().to_string().contains("C49"));
     insta::assert_snapshot!("workspace_totals_scrolled_32x10", terminal.backend());
 }
+
+#[test]
+fn cancelling_future_timer_requires_review_and_escape_never_records_work() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let future = "2026-02-01T09:00:00Z".parse().unwrap();
+    let timer = tracker
+        .start(command::Start::new(agreement, "Future".into(), future).unwrap())
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.selection.select(Some(0));
+    action(&mut app, &mut tracker, now, "Cancel selected timer");
+    let summary = &form(&mut app).review.as_ref().unwrap().summary;
+    assert!(summary.contains("2026-02-01 09:00:00 +00:00"));
+    assert!(summary.contains("No completed entry will be recorded"));
+    app.paste("\nEnter x q");
+    assert_eq!(
+        tracker.running().unwrap().as_slice(),
+        std::slice::from_ref(&timer)
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    assert!(app.workspace.overlay.is_none());
+    assert_eq!(tracker.running().unwrap(), [timer]);
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+    action(&mut app, &mut tracker, now, "Cancel selected timer");
+    app.refresh_error = Some("offline".into());
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert_eq!(tracker.running().unwrap().len(), 1);
+    assert!(form(&mut app).review.is_some());
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.running().unwrap().is_empty());
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+}
+
+#[test]
+fn stale_cancellation_preserves_review_and_does_not_cancel_replacement() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let timer = tracker
+        .start(command::Start::new(agreement, "Original".into(), now).unwrap())
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.selection.select(Some(0));
+    action(&mut app, &mut tracker, now, "Cancel selected timer");
+    tracker.cancel_if_current(&timer).unwrap();
+    let replacement = tracker
+        .start(command::Start::new(agreement, "Replacement".into(), now).unwrap())
+        .unwrap();
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(tracker.running().unwrap(), [replacement]);
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("Original")
+    );
+    assert!(form(&mut app).error.is_some());
+}
+
+#[test]
+fn recovery_actions_are_disabled_when_refresh_failed() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    tracker
+        .start(command::Start::new(agreement, "Running".into(), now).unwrap())
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.selection.select(Some(0));
+    for (section, name) in [
+        (Section::Dashboard, "Cancel selected timer"),
+        (Section::Agreements, "Browse completed entries"),
+    ] {
+        app.workspace.section = section;
+        app.refresh_error = Some("offline".into());
+        press(&mut app, &mut tracker, now, &[KeyCode::Char(':')]);
+        app.paste(name);
+        assert!(
+            matches!(&app.workspace.overlay, Some(Overlay::Actions(p)) if p.selected().unwrap().disabled.as_ref().unwrap().contains("Database unavailable"))
+        );
+        assert!(
+            app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+                .is_err()
+        );
+        assert!(matches!(app.workspace.overlay, Some(Overlay::Actions(_))));
+        press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    }
+    assert_eq!(tracker.running().unwrap().len(), 1);
+}
+
+#[test]
+fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let from = "2026-01-03T09:00:00Z".parse().unwrap();
+    let to = "2026-01-03T10:00:00Z".parse().unwrap();
+    let entry = tracker
+        .log(command::LogEntry::new(agreement, "Future entry".into(), from, to).unwrap())
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    action(&mut app, &mut tracker, now, "Browse completed entries");
+    app.paste("Future");
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected() == Some(&entry))
+    );
+    assert_eq!(
+        tracker.entries(agreement).unwrap().as_slice(),
+        std::slice::from_ref(&entry)
+    );
+    let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("recovery_entries_32x10", terminal.backend());
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab, KeyCode::End]);
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    assert!(terminal.backend().to_string().contains("Duration"));
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc, KeyCode::Enter]);
+    let summary = &form(&mut app).review.as_ref().unwrap().summary;
+    assert!(summary.contains("2026-01-03 09:00:00 +00:00"));
+    assert!(summary.contains("agreement:"));
+    assert!(summary.contains("IRREVERSIBLE"));
+    assert!(summary.contains("monthly estimates"));
+    assert!(summary.contains("capacity"));
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    insta::assert_snapshot!("recovery_delete_review_32x10", terminal.backend());
+    assert_eq!(
+        tracker
+            .dashboard(to, &TimeZone::UTC)
+            .unwrap()
+            .month_earnings_micros
+            .get("EUR"),
+        Some(&100_000_000)
+    );
+    app.paste("\n");
+    assert_eq!(
+        tracker.entries(agreement).unwrap().as_slice(),
+        std::slice::from_ref(&entry)
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    assert!(matches!(app.workspace.overlay, Some(Overlay::Entries(_))));
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    app.refresh_error = Some("offline".into());
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert_eq!(tracker.entries(agreement).unwrap(), [entry]);
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+    assert!(
+        tracker
+            .dashboard(to, &TimeZone::UTC)
+            .unwrap()
+            .month_earnings_micros
+            .values()
+            .all(|amount| *amount == 0)
+    );
+    action(&mut app, &mut tracker, now, "Browse completed entries");
+    assert!(matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected().is_none()));
+}
+
+#[test]
+fn stale_entry_deletion_preserves_review_and_does_not_delete_replacement() {
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let from = "2026-01-02T09:00:00Z".parse().unwrap();
+    let entry = tracker
+        .log(command::LogEntry::new(agreement, "Original".into(), from, now).unwrap())
+        .unwrap();
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    action(&mut app, &mut tracker, now, "Browse completed entries");
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    tracker.delete_entry_if_current(&entry).unwrap();
+    let replacement = tracker
+        .log(command::LogEntry::new(agreement, "Replacement".into(), from, now).unwrap())
+        .unwrap();
+    assert!(
+        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(tracker.entries(agreement).unwrap(), [replacement]);
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("Original")
+    );
+    assert!(form(&mut app).error.is_some());
+}
+
+#[test]
+fn historical_entries_in_archived_projects_can_be_deleted() {
+    let (mut tracker, mut app, now) = setup();
+    let previous = app.snapshot.projects[0].agreement.clone();
+    let from = "2026-01-01T09:00:00Z".parse().unwrap();
+    let to = "2026-01-01T10:00:00Z".parse().unwrap();
+    let entry = tracker
+        .log(command::LogEntry::new(previous.id(), "Historical".into(), from, to).unwrap())
+        .unwrap();
+    tracker
+        .add_service_agreement(
+            previous.id(),
+            model::NewAgreement::new(
+                "Replacement".into(),
+                model::HourlyRate::new(100_000_000, "EUR".into()).unwrap(),
+                model::MonthlyHours::default(),
+                "2026-01-02".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    tracker
+        .archive_project(previous.project(), Some("2026-01-02".parse().unwrap()), now)
+        .unwrap();
+    app.refresh(&tracker, now, &TimeZone::UTC);
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('2'), KeyCode::Char('a'), KeyCode::Char('/')],
+    );
+    app.paste("Support");
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert_eq!(
+        app.workspace.reference(),
+        Some(Reference::Agreement(previous.id()))
+    );
+    action(&mut app, &mut tracker, now, "Browse completed entries");
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected() == Some(&entry))
+    );
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Enter, KeyCode::Enter],
+    );
+    assert!(tracker.entries(previous.id()).unwrap().is_empty());
+}

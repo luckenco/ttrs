@@ -36,6 +36,8 @@ enum Mutation {
         on: Date,
     },
     Unarchive(model::Project),
+    Cancel(model::RunningTimer),
+    DeleteEntry(model::TimeEntry),
     Timezone(String),
 }
 
@@ -115,6 +117,18 @@ impl Prepared {
                     .unarchive_project(project.id())
                     .map_err(core_error)?;
                 outcome.message = format!("Restored continuous coverage for {}.", project.name());
+            }
+            Mutation::Cancel(timer) => {
+                tracker.cancel_if_current(timer).map_err(core_error)?;
+                outcome.message = format!(
+                    "Cancelled {} · id:{}. No entry recorded.",
+                    timer.scope(),
+                    timer.id()
+                );
+            }
+            Mutation::DeleteEntry(entry) => {
+                tracker.delete_entry_if_current(entry).map_err(core_error)?;
+                outcome.message = format!("Deleted {} · id:{}.", entry.scope(), entry.id());
             }
             Mutation::Timezone(name) => {
                 outcome.zone = Some(app::save_timezone(name)?);
@@ -235,6 +249,27 @@ impl Form {
                 Mutation::Archive { project, on }
             }
             Kind::Unarchive(project) => Mutation::Unarchive(project.clone()),
+            Kind::Cancel(timer) => {
+                self.context = format!(
+                    "{}\nid:{} · agreement:{}\nStarted: {}\nNo completed entry will be recorded.",
+                    timer.scope(),
+                    timer.id(),
+                    timer.agreement(),
+                    timer
+                        .started_at()
+                        .to_zoned(zone.clone())
+                        .strftime("%F %T%.f %:z %Z")
+                );
+                Mutation::Cancel(timer.clone())
+            }
+            Kind::DeleteEntry(entry) => {
+                self.context = format!(
+                    "IRREVERSIBLE DELETION\n{}",
+                    super::recovery::entry_detail(entry, zone)
+                );
+                extra = "IRREVERSIBLE: deleting this entry changes work totals and monthly estimates, and frees recording capacity under monthly caps. It cannot be undone.".into();
+                Mutation::DeleteEntry(entry.clone())
+            }
             Kind::Timezone => {
                 let name = self.required(F::Zone)?;
                 app::iana_timezone(&name)

@@ -56,6 +56,8 @@ pub(super) enum Action {
     StartAt,
     StopNow,
     StopAt,
+    Cancel,
+    Entries,
     Log,
     NewClient,
     NewProject,
@@ -81,6 +83,7 @@ pub(super) enum Overlay {
     Actions(Choose<ActionItem>),
     Filter(Choose<(Option<model::ClientId>, String)>),
     Form(Box<Form>),
+    Entries(Choose<model::TimeEntry>),
     Detail {
         title: String,
         text: String,
@@ -152,6 +155,7 @@ impl Workspace {
         match &mut self.overlay {
             Some(Overlay::Actions(picker)) => picker.paste(text),
             Some(Overlay::Filter(picker)) => picker.paste(text),
+            Some(Overlay::Entries(picker)) => picker.paste(text),
             Some(Overlay::Form(form)) => form.paste(text),
             _ => {
                 if let Some(browser) = self.browser_mut()
@@ -386,6 +390,9 @@ impl App {
                     }
                     Ok(())
                 } else if key.code == KeyCode::Esc && form.picker.is_none() {
+                    if matches!(form.kind, Kind::Cancel(_) | Kind::DeleteEntry(_)) {
+                        return Ok(());
+                    }
                     if form.review.take().is_some() {
                         form.error = None;
                     } else if form.step > 0 {
@@ -488,6 +495,32 @@ impl App {
                     Ok(())
                 }
             }
+            Overlay::Entries(picker) => {
+                if key.code == KeyCode::Esc {
+                    return Ok(());
+                }
+                if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
+                    if let Some(entry) = picker.selected() {
+                        if key.code == KeyCode::Tab {
+                            self.workspace.overlay = Some(Overlay::Detail {
+                                title: "Completed entry · Esc back".into(),
+                                text: super::recovery::entry_detail(entry, zone),
+                                scroll: 0,
+                            });
+                        } else if let Err(error) =
+                            self.recovery_form(Kind::DeleteEntry(entry.clone()), now, zone)
+                        {
+                            self.workspace.overlay = Some(overlay);
+                            return Err(error);
+                        }
+                        self.workspace.back.push(overlay);
+                        return Ok(());
+                    }
+                } else {
+                    picker.key(key);
+                }
+                Ok(())
+            }
             Overlay::Filter(picker) => {
                 if key.code == KeyCode::Esc {
                     return Ok(());
@@ -545,6 +578,7 @@ impl App {
                 | Action::Archive
                 | Action::Unarchive
                 | Action::FilterClient
+                | Action::Entries
         ) {
             self.workspace.load(tracker)?;
         }
@@ -561,6 +595,8 @@ impl App {
                 self.workspace.back.clear();
                 self.key(KeyCode::Char('s').into(), tracker, now, zone)?;
             }
+            Action::Entries => self.browse_entries(tracker, zone)?,
+            Action::Cancel => self.cancel_review(now, zone)?,
             Action::StopNow => {
                 self.key(KeyCode::Char('x').into(), tracker, now, zone)?;
             }
@@ -803,6 +839,7 @@ impl App {
             for (action, label) in [
                 (Action::StopNow, "Stop selected timer now · x"),
                 (Action::StopAt, "Stop selected timer at… · X"),
+                (Action::Cancel, "Cancel selected timer"),
             ] {
                 items.push(ActionItem {
                     action,
@@ -824,6 +861,13 @@ impl App {
                     None,
                 ),
                 (Action::FilterClient, "Filter by client · f", None),
+                (
+                    Action::Entries,
+                    "Browse completed entries",
+                    project
+                        .is_none()
+                        .then_some("Select a project or agreement first."),
+                ),
                 (
                     Action::ProjectAgreements,
                     "Browse selected project's agreements",
@@ -879,6 +923,8 @@ impl App {
                         | Action::StartAt
                         | Action::StopNow
                         | Action::StopAt
+                        | Action::Cancel
+                        | Action::Entries
                         | Action::Log
                         | Action::NewClient
                         | Action::NewProject
@@ -910,7 +956,7 @@ pub(super) fn scroll(position: &mut u16, code: KeyCode) {
 
 fn help(section: Section) -> String {
     format!(
-        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log completed time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
+        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log completed time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nRecovery: use : Cancel selected timer on Dashboard, or : Browse completed entries in Agreements/Projects. Search entries; Tab opens full details. Enter opens a review; Enter again confirms. Esc cancels without changing work.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
         section.title()
     )
 }

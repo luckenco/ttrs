@@ -75,6 +75,13 @@ pub(super) fn draw(
                     &detail,
                 );
             }
+            Overlay::Entries(picker) => choose(
+                frame,
+                picker,
+                area,
+                |entry| super::recovery::entry_label(entry, zone),
+                "Enter: review deletion · Tab: details · Esc: back",
+            ),
             Overlay::Filter(picker) => choose(
                 frame,
                 picker,
@@ -459,6 +466,15 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         Some(Overlay::Form(form)) if form.picker.is_some() => {
             Some("↑↓ choose  Enter set  Esc back")
         }
+        Some(Overlay::Form(form))
+            if form.review.is_some()
+                && matches!(
+                    form.kind,
+                    super::form::Kind::Cancel(_) | super::form::Kind::DeleteEntry(_)
+                ) =>
+        {
+            Some("↑↓ scroll  Esc cancel  F1 help")
+        }
         Some(Overlay::Form(form)) if form.review.is_some() => {
             Some("↑↓ scroll  Esc edit  F1 details")
         }
@@ -466,6 +482,7 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         Some(Overlay::Form(_)) => {
             Some("Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details")
         }
+        Some(Overlay::Entries(_)) => Some("Search  Enter review  Tab info"),
         Some(Overlay::Detail { .. }) => Some("↑↓ scroll  : actions  Esc back"),
         Some(_) => Some("↑↓ choose  Enter open  Esc back"),
         None if app.workspace.section == Section::Agreements

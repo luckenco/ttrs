@@ -1,0 +1,15 @@
+---
+source: src/cli/tui/workspace_tests.rs
+assertion_line: 925
+expression: terminal.backend()
+---
+" 1 Dash  [2 Agreements]  : menu "
+"Review · Delete completed entry…"
+"IRREVERSIBLE DELETION           "
+"Future entry                    "
+"id:1 · agreement:1              "
+"From: 2026-01-03 09:00:00 +00:00"
+"UTC                             "
+"To: 2026-01-03 10:00:00 +00:00  "
+"Enter: Delete entry permanently "
+"↑↓ scroll  Esc cancel  F1 help  "
