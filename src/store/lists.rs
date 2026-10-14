@@ -9,9 +9,9 @@ const SELECT: &str = "
            agreement.effective_on, CAST(agreement.current AS TEXT),
            CAST(agreement.fee_micros AS TEXT), CAST(agreement.included_hours AS TEXT),
            project.name, client.name, CAST(project.archived_on IS NULL AS TEXT)
-    FROM service_agreements agreement
-    JOIN projects project ON project.id = agreement.project_id
-    JOIN clients client ON client.id = project.client_id
+    FROM tt_service_agreements agreement
+    JOIN tt_projects project ON project.id = agreement.project_id
+    JOIN tt_clients client ON client.id = project.client_id
 ";
 
 impl<S: ReadSql> super::Store<S> {

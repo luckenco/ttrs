@@ -157,7 +157,21 @@ transactions remain host-owned, and default Tracker behavior and schema are pres
 Review hardened transaction ownership with SQLite's authorizer rather than relying
 only on statement readonly flags. Core-only Wasm compiles without native dependencies;
 actual native/workerd business parity and the remote product remain later-stage work.
-Stage 3 migrations and portable backups have not started.
+Stage 3 subsequently completed native data safety; see below.
+
+### Data-safety follow-on (2026-10-14)
+
+The user requested stage 3. [Migrations and portable snapshots](remote-workspace.md#stage-3-data-safety-evidence)
+are complete as native library capabilities: verified safety copies before atomic
+legacy fencing, daily-on-use standalone backups, exact row/sequence/revision export,
+empty-target import and exclusive-lease restore under a fresh incarnation. Invalid
+schemas/backups fail closed; supported databases no longer need a reset. Format 1
+receipts are explicitly empty until stage 4 introduces the operation service.
+
+The native restore drill retains the final discarded work, but is a destructive
+low-level call rather than the future frozen-report activation protocol. Full-history
+memory, indefinitely retained on-device copies, off-device operations and platform
+fault testing remain explicit limits in [the native contracts](data-safety.md).
 
 ## Tradeoffs accepted
 
@@ -207,9 +221,9 @@ and recovery policies are design choices from user requirements, not historical 
 
 ## Next implementation step
 
-Review the [completed native seam and checks](remote-workspace.md#stage-2-native-seam-evidence)
-and the [stage-1 host limits](../spikes/remote-host/evidence.md). Stage 3 introduces
-non-destructive migrations, legacy-writer fencing, consistent portable backups and
-sequence/identity-preserving import/restore. The database-reset policy remains unchanged
-until that preservation path exists. Remote protocol/authority and runtime business
-parity remain later stages; the synthetic spike ABI is not the final product protocol.
+Review the [completed data safety and checks](remote-workspace.md#stage-3-data-safety-evidence)
+and the [stage-1 host limits](../spikes/remote-host/evidence.md). Stage 4 introduces
+coherent operations, reviewed-authority guards, canonical requests/receipts, journals
+and frontend effects. Extend portable snapshots for retained receipt state before
+using that service with real data. Remote authority and runtime business parity remain
+later stages; the synthetic spike ABI is not the final product protocol.

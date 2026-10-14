@@ -5,8 +5,10 @@
 //! and rendering output belong to frontend adapters.
 //!
 //! Start, switch, and replacement operations act on the selected agreement ID
-//! and reject agreements replaced before the write transaction. During early
-//! development, schema changes require a fresh database; no migrations are provided.
+//! and reject agreements replaced before the write transaction. Supported legacy
+//! databases migrate only after a verified safety backup. [`portable`] snapshots
+//! preserve tracked work and identifier high-water marks; native `maintenance`
+//! imports and restores create fresh authority incarnations.
 //!
 //! The default `native` feature provides `Tracker` and the CLI, backed by
 //! SQLite. Disabling default features builds the same private SQL rules and
@@ -75,7 +77,12 @@
 
 pub mod command;
 pub mod error;
+#[cfg(feature = "native")]
+pub mod maintenance;
 pub mod model;
+pub mod portable;
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+mod schema;
 // Compile shared rules on core-only targets even before a host is attached.
 #[cfg(feature = "native")]
 mod native;

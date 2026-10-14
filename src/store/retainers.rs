@@ -110,7 +110,7 @@ impl<S: ReadSql> super::Store<S> {
         let intervals = sql::query(
             &self.connection,
             "SELECT CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
-             FROM time_entries
+             FROM tt_time_entries
              WHERE agreement_id = CAST(?1 AS INTEGER) AND ended_at_us > CAST(?2 AS INTEGER) AND
                  started_at_us < CAST(?3 AS INTEGER)",
             params![

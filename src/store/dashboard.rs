@@ -103,8 +103,8 @@ impl<S: ReadSql> super::Store<S> {
             "SELECT CAST(agreement.project_id AS TEXT), CAST(entry.started_at_us AS TEXT),
                     CAST(entry.ended_at_us AS TEXT),
                     CAST(agreement.hourly_rate_micros AS TEXT), agreement.currency
-             FROM time_entries entry
-             JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+             FROM tt_time_entries entry
+             JOIN tt_service_agreements agreement ON agreement.id = entry.agreement_id
              WHERE entry.ended_at_us > CAST(?1 AS INTEGER) AND entry.started_at_us < CAST(?2 AS INTEGER)
                AND agreement.fee_micros IS NULL",
         params![first.as_microsecond(), now.as_microsecond()],
@@ -177,8 +177,8 @@ impl<S: ReadSql> super::Store<S> {
             "SELECT CAST(entry.started_at_us AS TEXT), CAST(entry.ended_at_us AS TEXT),
                     CAST(CASE WHEN agreement.fee_micros IS NULL THEN agreement.hourly_rate_micros END AS TEXT),
                     agreement.currency
-             FROM time_entries entry
-             JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+             FROM tt_time_entries entry
+             JOIN tt_service_agreements agreement ON agreement.id = entry.agreement_id
              WHERE entry.ended_at_us > CAST(?1 AS INTEGER) AND entry.started_at_us < CAST(?2 AS INTEGER)",
         params![start.as_microsecond(), now.as_microsecond()],
             |row| {

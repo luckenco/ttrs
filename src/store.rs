@@ -11,80 +11,6 @@ mod recovery;
 mod retainers;
 mod timers;
 
-pub(crate) const SCHEMA: &str = "
-    CREATE TABLE clients (
-        id   INTEGER PRIMARY KEY,
-        name TEXT NOT NULL UNIQUE CHECK (length(trim(name)) > 0)
-    ) STRICT;
-
-    CREATE TABLE projects (
-        id               INTEGER PRIMARY KEY,
-        client_id        INTEGER NOT NULL REFERENCES clients(id) ON DELETE RESTRICT,
-        name             TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        billing_timezone TEXT NOT NULL CHECK (length(trim(billing_timezone)) > 0),
-        archived_on      TEXT,
-        UNIQUE (client_id, name)
-    ) STRICT;
-
-    CREATE INDEX projects_name ON projects(name, id);
-
-    CREATE TABLE service_agreements (
-        id                  INTEGER PRIMARY KEY,
-        project_id          INTEGER NOT NULL REFERENCES projects(id) ON DELETE RESTRICT,
-        name                TEXT NOT NULL CHECK (length(trim(name)) > 0),
-        hourly_rate_micros   INTEGER CHECK (hourly_rate_micros >= 0),
-        fee_micros          INTEGER CHECK (fee_micros >= 0),
-        included_hours      INTEGER CHECK (included_hours BETWEEN 0 AND 4294967295),
-        currency            TEXT NOT NULL CHECK (currency GLOB '[A-Z][A-Z][A-Z]'),
-        minimum_hours       INTEGER CHECK (minimum_hours >= 0),
-        maximum_hours       INTEGER CHECK (maximum_hours >= 0),
-        effective_on        TEXT NOT NULL,
-        current             INTEGER NOT NULL CHECK (current IN (0, 1)),
-        UNIQUE (project_id, name),
-        CHECK (
-            (fee_micros IS NULL AND included_hours IS NULL AND hourly_rate_micros IS NOT NULL)
-            OR (fee_micros IS NOT NULL AND included_hours IS NOT NULL AND minimum_hours IS NULL)
-        ),
-        CHECK (
-            minimum_hours IS NULL OR maximum_hours IS NULL
-            OR minimum_hours <= maximum_hours
-        )
-    ) STRICT;
-
-    CREATE UNIQUE INDEX service_agreements_one_current_per_project
-        ON service_agreements(project_id) WHERE current = 1;
-
-    CREATE INDEX service_agreements_project_effective
-        ON service_agreements(project_id, effective_on);
-
-    CREATE TABLE running_timers (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
-        scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
-        started_at_us INTEGER NOT NULL
-    ) STRICT;
-
-    CREATE INDEX running_timers_agreement_started
-        ON running_timers(agreement_id, started_at_us DESC);
-
-    CREATE TABLE time_entries (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        agreement_id  INTEGER NOT NULL REFERENCES service_agreements(id) ON DELETE RESTRICT,
-        scope         TEXT NOT NULL CHECK (length(trim(scope)) > 0),
-        started_at_us INTEGER NOT NULL,
-        ended_at_us   INTEGER NOT NULL,
-        CHECK (ended_at_us > started_at_us)
-    ) STRICT;
-
-    CREATE INDEX time_entries_agreement_started
-        ON time_entries(agreement_id, started_at_us DESC);
-
-    CREATE INDEX time_entries_agreement_ended
-        ON time_entries(agreement_id, ended_at_us, started_at_us);
-
-    CREATE INDEX time_entries_ended ON time_entries(ended_at_us);
-";
-
 /// Shared rules over an explicit, transaction-scoped SQL capability.
 /// The host owns snapshot isolation and commit/rollback; this store owns neither
 /// connections nor clocks. Write methods require the stronger capability.
@@ -98,7 +24,7 @@ impl<S: ReadSql> Store<S> {
         S: WriteSql,
     {
         let changed = self.connection.write(
-            "INSERT OR IGNORE INTO clients (name) VALUES (?1) RETURNING CAST(id AS TEXT)",
+            "INSERT OR IGNORE INTO tt_clients (name) VALUES (?1) RETURNING CAST(id AS TEXT)",
             params![&name],
         )?;
         if changed.is_empty() {
@@ -112,7 +38,7 @@ impl<S: ReadSql> Store<S> {
         sql::query(
             &self.connection,
             "SELECT CAST(id AS TEXT), name
-             FROM clients ORDER BY name",
+             FROM tt_clients ORDER BY name",
             params![],
             client_from_row,
         )
@@ -126,7 +52,7 @@ impl<S: ReadSql> Store<S> {
         sql::optional(
             &self.connection,
             "SELECT CAST(id AS TEXT), name
-             FROM clients WHERE name = ?1",
+             FROM tt_clients WHERE name = ?1",
             params![name],
             client_from_row,
         )
@@ -147,7 +73,7 @@ impl<S: ReadSql> Store<S> {
             return Err(Error::ClientNotFound(client));
         }
         let changed = self.connection.write(
-            "INSERT OR IGNORE INTO projects (
+            "INSERT OR IGNORE INTO tt_projects (
                  client_id, name, billing_timezone
              ) VALUES (
                  CAST(?1 AS INTEGER), ?2, ?3
@@ -208,7 +134,7 @@ impl<S: ReadSql> Store<S> {
         }
 
         self.connection.write(
-            "UPDATE service_agreements SET current = 0
+            "UPDATE tt_service_agreements SET current = 0
              WHERE project_id = CAST(?1 AS INTEGER) AND current = 1
              RETURNING CAST(id AS TEXT)",
             params![project.get()],
@@ -232,7 +158,7 @@ impl<S: ReadSql> Store<S> {
                     CAST(hourly_rate_micros AS TEXT), currency, CAST(minimum_hours AS TEXT),
                     CAST(maximum_hours AS TEXT), effective_on, CAST(current AS TEXT),
                     CAST(fee_micros AS TEXT), CAST(included_hours AS TEXT)
-             FROM service_agreements ORDER BY project_id, effective_on, id",
+             FROM tt_service_agreements ORDER BY project_id, effective_on, id",
             params![],
             agreement_from_row,
         )
@@ -256,7 +182,7 @@ impl<S: ReadSql> Store<S> {
                     CAST(hourly_rate_micros AS TEXT), currency, CAST(minimum_hours AS TEXT),
                     CAST(maximum_hours AS TEXT), effective_on, CAST(current AS TEXT),
                     CAST(fee_micros AS TEXT), CAST(included_hours AS TEXT)
-             FROM service_agreements WHERE project_id = CAST(?1 AS INTEGER) AND name = ?2",
+             FROM tt_service_agreements WHERE project_id = CAST(?1 AS INTEGER) AND name = ?2",
             params![project.get(), name],
             agreement_from_row,
         )
@@ -274,7 +200,7 @@ impl<S: ReadSql> Store<S> {
             &self.connection,
             "SELECT CAST(id AS TEXT), CAST(client_id AS TEXT), name, billing_timezone,
                     archived_on
-             FROM projects ORDER BY name, id",
+             FROM tt_projects ORDER BY name, id",
             params![],
             project_from_row,
         )
@@ -290,7 +216,7 @@ impl<S: ReadSql> Store<S> {
             &self.connection,
             "SELECT CAST(id AS TEXT), CAST(client_id AS TEXT), name, billing_timezone,
                     archived_on
-             FROM projects WHERE name = ?1 ORDER BY id LIMIT 2",
+             FROM tt_projects WHERE name = ?1 ORDER BY id LIMIT 2",
             params![name],
             project_from_row,
         )
@@ -320,7 +246,7 @@ impl<S: ReadSql> Store<S> {
             return Err(Error::WorkAfterArchiveDate);
         }
         self.connection.write(
-            "UPDATE projects SET archived_on = ?1 WHERE id = CAST(?2 AS INTEGER)
+            "UPDATE tt_projects SET archived_on = ?1 WHERE id = CAST(?2 AS INTEGER)
              RETURNING CAST(id AS TEXT)",
             params![archived_on.to_string(), project.get()],
         )?;
@@ -340,7 +266,7 @@ impl<S: ReadSql> Store<S> {
             return Err(Error::ProjectNotArchived(project));
         }
         self.connection.write(
-            "UPDATE projects SET archived_on = NULL WHERE id = CAST(?1 AS INTEGER)
+            "UPDATE tt_projects SET archived_on = NULL WHERE id = CAST(?1 AS INTEGER)
              RETURNING CAST(id AS TEXT)",
             params![project.get()],
         )?;
@@ -443,7 +369,7 @@ impl<S: ReadSql> Store<S> {
         )?;
 
         let inserted = self.connection.write(
-            "INSERT INTO time_entries (
+            "INSERT INTO tt_time_entries (
                  agreement_id, scope, started_at_us, ended_at_us
              ) VALUES (
                  CAST(?1 AS INTEGER), ?2, CAST(?3 AS INTEGER), CAST(?4 AS INTEGER)
@@ -467,7 +393,7 @@ impl<S: ReadSql> Store<S> {
             &self.connection,
             "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
                     CAST(started_at_us AS TEXT)
-             FROM running_timers ORDER BY started_at_us, id",
+             FROM tt_running_timers ORDER BY started_at_us, id",
             params![],
             timer_from_row,
         )
@@ -515,13 +441,13 @@ impl<S: ReadSql> Store<S> {
             "SELECT scope
              FROM (
                  SELECT work.scope, work.started_at_us
-                 FROM running_timers work
-                 JOIN service_agreements agreement ON agreement.id = work.agreement_id
+                 FROM tt_running_timers work
+                 JOIN tt_service_agreements agreement ON agreement.id = work.agreement_id
                  WHERE agreement.project_id = CAST(?1 AS INTEGER)
                  UNION ALL
                  SELECT work.scope, work.started_at_us
-                 FROM time_entries work
-                 JOIN service_agreements agreement ON agreement.id = work.agreement_id
+                 FROM tt_time_entries work
+                 JOIN tt_service_agreements agreement ON agreement.id = work.agreement_id
                  WHERE agreement.project_id = CAST(?1 AS INTEGER)
              )
              GROUP BY scope
@@ -549,7 +475,7 @@ fn insert_agreement(
         ),
     };
     let changed = transaction.write(
-        "INSERT OR IGNORE INTO service_agreements (
+        "INSERT OR IGNORE INTO tt_service_agreements (
              project_id, name, hourly_rate_micros, currency,
              minimum_hours, maximum_hours, effective_on, current, fee_micros, included_hours
          ) VALUES (
@@ -601,9 +527,9 @@ fn reject_client_timer(
         connection,
         "SELECT CAST(EXISTS(
              SELECT 1
-             FROM running_timers timer
-             JOIN service_agreements agreement ON agreement.id = timer.agreement_id
-             JOIN projects project ON project.id = agreement.project_id
+             FROM tt_running_timers timer
+             JOIN tt_service_agreements agreement ON agreement.id = timer.agreement_id
+             JOIN tt_projects project ON project.id = agreement.project_id
              WHERE project.client_id = CAST(?1 AS INTEGER)
          ) AS TEXT)",
         params![client.get()],
@@ -624,8 +550,8 @@ fn project_has_work_after(
         connection,
         "SELECT CAST(EXISTS(
              SELECT 1
-             FROM time_entries entry
-             JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+             FROM tt_time_entries entry
+             JOIN tt_service_agreements agreement ON agreement.id = entry.agreement_id
              WHERE agreement.project_id = CAST(?1 AS INTEGER)
                AND entry.ended_at_us > CAST(?2 AS INTEGER)
          ) AS TEXT)",
@@ -644,7 +570,7 @@ fn current_agreement(
                     CAST(hourly_rate_micros AS TEXT), currency, CAST(minimum_hours AS TEXT),
                     CAST(maximum_hours AS TEXT), effective_on, CAST(current AS TEXT),
                     CAST(fee_micros AS TEXT), CAST(included_hours AS TEXT)
-             FROM service_agreements WHERE project_id = CAST(?1 AS INTEGER) AND current = 1",
+             FROM tt_service_agreements WHERE project_id = CAST(?1 AS INTEGER) AND current = 1",
         params![project.get()],
         agreement_from_row,
     )
@@ -657,7 +583,7 @@ fn find_client(
     sql::optional(
         connection,
         "SELECT CAST(id AS TEXT), name
-             FROM clients WHERE id = CAST(?1 AS INTEGER)",
+             FROM tt_clients WHERE id = CAST(?1 AS INTEGER)",
         params![id.get()],
         client_from_row,
     )
@@ -671,7 +597,7 @@ fn find_project(
         connection,
         "SELECT CAST(id AS TEXT), CAST(client_id AS TEXT), name, billing_timezone,
                     archived_on
-             FROM projects WHERE id = CAST(?1 AS INTEGER)",
+             FROM tt_projects WHERE id = CAST(?1 AS INTEGER)",
         params![id.get()],
         project_from_row,
     )
@@ -687,7 +613,7 @@ fn find_agreement(
                     CAST(hourly_rate_micros AS TEXT), currency, CAST(minimum_hours AS TEXT),
                     CAST(maximum_hours AS TEXT), effective_on, CAST(current AS TEXT),
                     CAST(fee_micros AS TEXT), CAST(included_hours AS TEXT)
-             FROM service_agreements WHERE id = CAST(?1 AS INTEGER)",
+             FROM tt_service_agreements WHERE id = CAST(?1 AS INTEGER)",
         params![id.get()],
         agreement_from_row,
     )
@@ -701,7 +627,7 @@ fn find_timer(
         connection,
         "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
                     CAST(started_at_us AS TEXT)
-             FROM running_timers WHERE id = CAST(?1 AS INTEGER)",
+             FROM tt_running_timers WHERE id = CAST(?1 AS INTEGER)",
         params![id.get()],
         timer_from_row,
     )
@@ -797,8 +723,8 @@ mod tests {
     fn schema_rejects_incomplete_or_conflicting_pricing() {
         let store = Store::memory().unwrap();
         store.connection.execute_batch(
-            "INSERT INTO clients (id, name) VALUES (1, 'Vertex');
-             INSERT INTO projects (id, client_id, name, billing_timezone) VALUES (1, 1, 'shapeID', 'UTC');"
+            "INSERT INTO tt_clients (id, name) VALUES (1, 'Vertex');
+             INSERT INTO tt_projects (id, client_id, name, billing_timezone) VALUES (1, 1, 'shapeID', 'UTC');"
         ).unwrap();
         for (rate, fee, included, minimum) in [
             (None, None, None, None),
@@ -810,7 +736,7 @@ mod tests {
             (None, Some(5000), Some(4_294_967_296_i64), None),
         ] {
             let result = store.connection.execute(
-                "INSERT INTO service_agreements (
+                "INSERT INTO tt_service_agreements (
                     project_id, name, hourly_rate_micros, fee_micros, included_hours,
                     minimum_hours, currency, effective_on, current
                 ) VALUES (1, 'invalid', ?1, ?2, ?3, ?4, 'EUR', '2026-01-01', 1)",
@@ -822,25 +748,25 @@ mod tests {
 
     #[test]
     fn rejects_reusable_ids_without_changing_existing_data() {
-        for table in ["running_timers", "time_entries"] {
+        for table in ["tt_running_timers", "tt_time_entries"] {
             let directory = tempfile::tempdir().unwrap();
             let path = directory.path().join("tt.sqlite3");
             let connection = Connection::open(&path).unwrap();
             connection
-            .execute_batch(&SCHEMA.replace(
+            .execute_batch(&crate::schema::SCHEMA.replace(
                 &format!("CREATE TABLE {table} (\n        id            INTEGER PRIMARY KEY AUTOINCREMENT"),
                 &format!("CREATE TABLE {table} (\n        id            INTEGER PRIMARY KEY"),
             ))
             .unwrap();
             connection
-                .execute("INSERT INTO clients(name) VALUES ('Acme')", [])
+                .execute("INSERT INTO tt_clients(name) VALUES ('Acme')", [])
                 .unwrap();
             assert!(matches!(
                 Store::open(&path),
                 Err(Error::DatabaseSchemaOutdated)
             ));
             let name: String = connection
-                .query_row("SELECT name FROM clients", [], |row| row.get(0))
+                .query_row("SELECT name FROM tt_clients", [], |row| row.get(0))
                 .unwrap();
             assert_eq!(name, "Acme");
         }
@@ -852,7 +778,7 @@ mod tests {
         let plan: String = store
             .connection
             .query_row(
-                "EXPLAIN QUERY PLAN SELECT started_at_us, ended_at_us FROM time_entries
+                "EXPLAIN QUERY PLAN SELECT started_at_us, ended_at_us FROM tt_time_entries
              WHERE ended_at_us > 0 AND started_at_us < 10",
                 [],
                 |row| row.get(3),
@@ -874,7 +800,7 @@ mod tests {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .unwrap();
         transaction
-            .execute("INSERT INTO clients(name) VALUES ('Uncommitted')", [])
+            .execute("INSERT INTO tt_clients(name) VALUES ('Uncommitted')", [])
             .unwrap();
 
         let reader = Store::open(&path).unwrap();

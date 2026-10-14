@@ -22,7 +22,7 @@ impl<S: ReadSql> super::Store<S> {
             &self.connection,
             "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
                     CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
-             FROM time_entries WHERE agreement_id = CAST(?1 AS INTEGER) ORDER BY started_at_us DESC, id DESC",
+             FROM tt_time_entries WHERE agreement_id = CAST(?1 AS INTEGER) ORDER BY started_at_us DESC, id DESC",
         params![agreement.get()],
             entry_from_row,
         )
@@ -34,7 +34,7 @@ impl<S: ReadSql> super::Store<S> {
     {
         super::timers::check(&self.connection, expected)?;
         let changed = self.connection.write(
-            "DELETE FROM running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+            "DELETE FROM tt_running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
             params![expected.id().get()],
         )?;
         assert_eq!(changed.len(), 1, "the checked timer must still exist");
@@ -49,7 +49,7 @@ impl<S: ReadSql> super::Store<S> {
             return Err(Error::EntryChanged(expected.id()));
         }
         let changed = self.connection.write(
-            "DELETE FROM time_entries WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+            "DELETE FROM tt_time_entries WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
             params![expected.id().get()],
         )?;
         assert_eq!(changed.len(), 1, "the checked entry must still exist");
@@ -65,7 +65,7 @@ fn find_entry(
         connection,
         "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
                     CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
-             FROM time_entries WHERE id = CAST(?1 AS INTEGER)",
+             FROM tt_time_entries WHERE id = CAST(?1 AS INTEGER)",
         params![id.get()],
         entry_from_row,
     )

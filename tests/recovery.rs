@@ -299,13 +299,13 @@ fn changed_values_with_same_ids_are_not_deleted() {
     let connection = rusqlite::Connection::open(&path).unwrap();
     connection
         .execute(
-            "UPDATE time_entries SET scope = 'changed' WHERE id = ?1",
+            "UPDATE tt_time_entries SET scope = 'changed' WHERE id = ?1",
             [entry.id().get()],
         )
         .unwrap();
     connection
         .execute(
-            "UPDATE running_timers SET scope = 'changed' WHERE id = ?1",
+            "UPDATE tt_running_timers SET scope = 'changed' WHERE id = ?1",
             [timer.id().get()],
         )
         .unwrap();

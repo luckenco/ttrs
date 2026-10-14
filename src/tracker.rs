@@ -12,8 +12,10 @@ pub struct Tracker {
 impl Tracker {
     /// Opens or creates a tracker database at `path`.
     ///
-    /// Existing databases must use the current schema. Schema changes during
-    /// development require recreating the database; no migrations are provided.
+    /// Supported legacy schemas migrate only after a verified safety backup;
+    /// unknown/newer schemas are left unchanged. On-disk handles hold shared
+    /// maintenance leases, and the first open per incarnation/UTC day captures
+    /// a verified daily backup alongside the database.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
         crate::native::Store::open(path.as_ref()).map(|store| Self { store })
     }
@@ -1332,7 +1334,9 @@ mod tests {
         );
         let connection = rusqlite::Connection::open(&path).unwrap();
         let mut statement = connection
-            .prepare("SELECT id, agreement_id, scope, started_at_us, ended_at_us FROM time_entries")
+            .prepare(
+                "SELECT id, agreement_id, scope, started_at_us, ended_at_us FROM tt_time_entries",
+            )
             .unwrap();
         let entries = statement
             .query_map([], |row| {

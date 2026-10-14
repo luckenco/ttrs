@@ -1,10 +1,13 @@
 # Remote-host feasibility spike: completed dispatch
 
-**Stages 1 and 2 are complete.** [Host evidence](../spikes/remote-host/evidence.md)
+**Stages 1–3 are complete.** [Host evidence](../spikes/remote-host/evidence.md)
 selects the thin TS host with synchronous, disposable Rust instances. Stage 2 was
 approved and implemented after review; [native-seam evidence](remote-workspace.md#stage-2-native-seam-evidence)
-records its contracts and checks. Stage 3 data safety has not started. The original
-stage-1 dispatch below is retained as its historical acceptance contract.
+records its contracts and checks. [Stage-3 evidence](remote-workspace.md#stage-3-data-safety-evidence)
+and [native data-safety contracts](data-safety.md) cover migrations, portable snapshots
+and native restore. Stage 4 operation service/protocol is next; maintenance CLI and
+remote mode remain unimplemented. Retained receipts will require a new portable format.
+The original stage-1 dispatch below is retained as its historical acceptance contract.
 
 ## Original dispatch scope
 

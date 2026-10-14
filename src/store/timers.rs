@@ -41,7 +41,7 @@ pub(super) fn start(
         started_at,
     )?;
     let inserted = transaction.write(
-        "INSERT INTO running_timers (agreement_id, scope, started_at_us)
+        "INSERT INTO tt_running_timers (agreement_id, scope, started_at_us)
          VALUES (
                  CAST(?1 AS INTEGER), ?2, CAST(?3 AS INTEGER)
              ) RETURNING CAST(id AS TEXT)",
@@ -82,7 +82,7 @@ pub(super) fn end(
         return Err(Error::MonthlyMaximumReached(agreement.project()));
     }
     let inserted = transaction.write(
-        "INSERT INTO time_entries (
+        "INSERT INTO tt_time_entries (
              agreement_id, scope, started_at_us, ended_at_us
          ) VALUES (
                  CAST(?1 AS INTEGER), ?2, CAST(?3 AS INTEGER), CAST(?4 AS INTEGER)
@@ -97,7 +97,7 @@ pub(super) fn end(
     )?;
     let entry = model::EntryId::from_raw(inserted[0].get(0)?);
     let removed = transaction.write(
-        "DELETE FROM running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+        "DELETE FROM tt_running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
         params![timer.get()],
     )?;
     assert_eq!(

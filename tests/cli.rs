@@ -825,7 +825,7 @@ fn list_exits_cleanly_when_its_consumer_closes_the_pipe() {
             "WITH RECURSIVE n(x) AS (
                  VALUES(1) UNION ALL SELECT x + 1 FROM n WHERE x < 5000
              )
-             INSERT INTO clients(name)
+             INSERT INTO tt_clients(name)
              SELECT printf('client-%05d', x) FROM n;",
         )
         .unwrap();

@@ -9,8 +9,10 @@ but shared-runtime trap recovery leaves in-flight requests unsettled. The select
 thin TS host passes the complete local workerd feasibility ledger, with explicit
 synthetic-workload and capacity limits. **Stage 2 is also complete:** existing native
 rules now use the shared exact SQL seam; default `Tracker` behavior remains compatible.
-See [native-seam evidence](#stage-2-native-seam-evidence). Stage 3 data safety has not
-started. Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
+See [native-seam evidence](#stage-2-native-seam-evidence). **Stage 3 data safety is complete:**
+versioned native migrations, consistent backups and verified portable import/restore
+are implemented as library capabilities; see [data-safety evidence](#stage-3-data-safety-evidence).
+Maintenance CLI commands and remote storage remain unimplemented. Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
 [rationale](remote-workspace-rationale.md), and [next-agent handoff](remote-workspace-handoff.md).
 
 ## Usage first
@@ -546,8 +548,74 @@ materialization adds text/row memory proportional to selected results; it is not
 whole-workspace load. Authorizer changes can expire cached statements between
 operations. Large history/calendar workloads still need measured memory/CPU budgets.
 
-Next: stage 3, versioned non-destructive migrations and consistent portable backups,
-including every legacy-writer/sentinel fence and restore/sequence preservation.
+At this checkpoint, stage 3 was next. No deployment, provisioning, push or bookmark
+movement occurred during stage 2.
+
+## Stage-3 data-safety evidence
+
+Completed 2026-10-14. [Native data-safety contracts and limits](data-safety.md)
+document the implemented public library capabilities; proposed maintenance CLI
+commands, remote storage and reviewed-authority application checks are not added.
+
+- `src/schema.rs` and `schema/*.sql` define schema/rules version 1 and exact legacy
+  recognition. A verified/fsynced online safety backup gates atomic five-table rename,
+  new identity/metadata and the write-rejecting legacy sentinel. Unknown/newer schemas
+  and unrecoverable pre-AUTOINCREMENT history fail closed without resetting data.
+- `src/native.rs` holds maintenance leases, captures standalone WAL-consistent SQLite
+  copies, publishes no-clobber verified daily copies per incarnation/UTC day, advances
+  revision atomically, and restores only with closed handles and a final safety copy.
+  Restore preserves workspace, rotates incarnation, exits WAL and closes SQLite before
+  replacement. Failed migration rolls back fencing; invalid backups block migration.
+- `src/portable.rs` verifies complete logical snapshots with exact text integers,
+  SHA-256 data/receipt digests, counts, units, revision, sequence high-water marks,
+  fallible row/domain validation and foreign references. Version 1 receipts must be
+  empty because the operation service does not exist yet; future receipts require
+  a new format. Imported data/revision digests match despite fresh target identity.
+- `src/maintenance.rs` exposes explicit backup/export/save/import/restore capabilities.
+  Import targets must not exist or have stale sidecars. Restore is an explicitly
+  destructive low-level library call, not the later confirmed-frozen-loss-report flow.
+  README and Tracker Rustdoc no longer advise resetting supported databases.
+
+Checks run on macOS with Rust/Cargo 1.98.1:
+
+```sh
+cargo fmt --check
+cargo test --all-targets                    # 142 tests: existing 124 + 18 safety tests
+cargo test --doc                            # 10 doctests, including portable import example
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --no-default-features  # 9 core tests; native suites gated
+cargo test --doc --no-default-features      # 5 doctests
+cargo clippy --all-targets --no-default-features -- -D warnings
+cargo +1.98.1 check --locked --lib --no-default-features --target wasm32-unknown-unknown
+cargo +1.98.1 clippy --locked --lib --no-default-features \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo tree --locked --no-default-features --target wasm32-unknown-unknown -e normal
+RUSTDOCFLAGS='-D warnings' cargo doc --all-features --no-deps
+RUSTDOCFLAGS='-D warnings' cargo doc --no-default-features --no-deps
+```
+
+All passed. Native tests cover cached old add-client/unarchive writes, fresh old opens
+on fresh/imported/restored schemas, migration rollback, bad schema/value/backup refusal,
+leases, automatic daily publication races, identity-hijacking refusal, stale sidecars
+and committed-only WAL snapshots. `tests/data_safety.rs` adds seven integration tests:
+retainer/hourly and historical DST roundtrips, running timers, i64-max money, deleted
+high-water marks above 2^53, non-reuse after reopening, no-clobber import, full restore
+loss safety copy, missing-source refusal and re-signed semantic corruption without panics.
+The cached transaction-control guard regression also passed; bundled SQLite expires
+prepared statements in `sqlite3_set_authorizer`, forcing reauthorization on their next step.
+
+Added locked dependencies: serde 1.0.229/serde_json 1.0.154, SHA-256 via sha2 0.10.9,
+and native-only uuid 1.28.0. Enabled rusqlite's online-backup feature; existing rusqlite
+0.40.1 and Jiff 0.2.35/tzdb 0.1.8 remain unchanged. Core-only Wasm excludes UUID
+randomness and every native dependency. No spike/Worker code changed, so actual
+workerd was not rerun; this is not native/DO business-parity evidence.
+
+Remaining limits: full-snapshot RAM/open-time costs, indefinitely retained on-device
+copies and disk exhaustion, unimplemented corrupt-target salvage, filesystem/platform
+and power-cut fault testing, UI freshness reporting and remote snapshot budgets.
+Stage 4 is next: coherent operation service, expected-authority/admin guards,
+canonical requests/receipts/journals and frontend effects. Extending backups for
+retained requests must precede using the receipt-aware service with real data.
 No deployment, provisioning, push or bookmark movement occurred.
 
 ## Later offline-first

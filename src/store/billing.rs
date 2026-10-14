@@ -16,7 +16,7 @@ pub(super) fn validate_agreement_period(
     let next = sql::optional(
         connection,
         "SELECT effective_on
-             FROM service_agreements
+             FROM tt_service_agreements
              WHERE project_id = CAST(?1 AS INTEGER) AND effective_on > ?2
              ORDER BY effective_on LIMIT 1",
         params![project.id().get(), agreement.effective_on().to_string()],
@@ -206,10 +206,10 @@ fn month_maximum_us(
     let agreements = sql::query(
         connection,
         "SELECT effective_on, CAST(maximum_hours AS TEXT)
-             FROM service_agreements
+             FROM tt_service_agreements
          WHERE project_id = CAST(?1 AS INTEGER)
            AND effective_on >= coalesce(
-               (SELECT effective_on FROM service_agreements
+               (SELECT effective_on FROM tt_service_agreements
                 WHERE project_id = CAST(?1 AS INTEGER) AND effective_on <= ?2
                 ORDER BY effective_on DESC LIMIT 1), ?2)
            AND effective_on < ?3
@@ -246,8 +246,8 @@ fn used_us(
     let intervals = sql::query(
         connection,
         "SELECT CAST(entry.started_at_us AS TEXT), CAST(entry.ended_at_us AS TEXT)
-             FROM time_entries entry
-         JOIN service_agreements agreement ON agreement.id = entry.agreement_id
+             FROM tt_time_entries entry
+         JOIN tt_service_agreements agreement ON agreement.id = entry.agreement_id
          WHERE agreement.project_id = CAST(?1 AS INTEGER)
            AND entry.ended_at_us > CAST(?2 AS INTEGER)
            AND entry.started_at_us < CAST(?3 AS INTEGER)",

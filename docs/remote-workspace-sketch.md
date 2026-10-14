@@ -1,9 +1,12 @@
 # Remote workspace type sketch
 
 Companion to [the design](remote-workspace.md). These are **schematic contracts**,
-not installed Rust modules or deployable TypeScript. Omitted existing model types
-and `unimplemented!()` bodies intentionally mark design boundaries. Usage comes
-first in the design; no new public Rustdoc examples exist yet.
+not installed application/protocol modules or deployable TypeScript. Stages 2–3
+now implement the private SQL seam and [native data safety](data-safety.md), with
+compiled public maintenance/portable Rustdoc examples; the schematic names and
+bodies below are not those installed APIs. Omitted existing model types and
+`unimplemented!()` bodies mark remaining design boundaries. Usage comes first
+in the design.
 
 ## Caller and authority values
 

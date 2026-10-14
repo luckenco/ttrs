@@ -2,7 +2,7 @@
 
 **tt** tracks work under hourly agreements and monthly retainers, with a keyboard-first TUI and a CLI. See running timers, daily earnings, and monthly estimates. For macOS and Linux.
 
-> Early development: schema changes currently require a fresh database. Back up your data before updating. Older databases that permit timer or completed-entry ID reuse are rejected; no automatic migration is provided.
+> Supported legacy databases migrate automatically only after a verified safety backup. Unknown/newer schemas and older databases without recoverable deleted-ID high-water marks are left unchanged—preserve them, do not reset them. Native opens also create verified daily-on-use backups alongside the database.
 
 ## Get started
 
@@ -77,9 +77,24 @@ Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt stat
 - [x] Delete entries with confirmation.
 - [ ] Edit completed entries.
 
+## Data safety
+
+The Rust library provides `tt::maintenance::{backup, export, save, import, restore}`
+and `tt::portable::verify`. Consistent SQLite backups and portable snapshots preserve
+all tracked work, running timers, revision and deleted-ID high-water marks. Imports
+create a new identity; restores require closed native handles, save a final safety
+copy and rotate the incarnation. **Restore is destructive** and never silently stops
+running timers.
+
+See [native data safety](docs/data-safety.md) and the compiled `maintenance` Rustdoc
+example for usage and supported schemas. Backup/restore CLI commands are not added
+yet. Daily/safety copies remain on-device and are not automatically deleted: monitor
+disk usage and arrange independent copies. Never copy only a live WAL database's
+main file or manually replace a live workspace.
+
 ## Remote workspace design
 
-[Local and connected-remote workspaces](docs/remote-workspace.md) describes the proposed backend, contracts, backups, and staged implementation. Remote mode is not implemented yet. Start with the [next-agent handoff](docs/remote-workspace-handoff.md) for the workers-rs-first feasibility spike.
+[Local and connected-remote workspaces](docs/remote-workspace.md) describes the backend contracts and staged implementation. Stages 1–3 are complete; remote mode is not implemented yet. The [handoff](docs/remote-workspace-handoff.md) points to the completed evidence and next stage.
 
 ## Development
 

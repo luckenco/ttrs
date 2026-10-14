@@ -136,10 +136,13 @@ pub enum Error {
     /// Switching cannot stop a timer belonging to a different client.
     #[error("switching must stay within one client")]
     SwitchClientMismatch,
-    /// The database permits reuse of timer or entry identifiers.
-    /// Back up the data and create a fresh database; no migration is provided.
-    #[error("database schema is outdated; back up your data and create a fresh database")]
+    /// The database schema is unknown, unsupported or newer than this binary.
+    /// No schema or tracked-work changes are made to unsupported databases.
+    #[error("database schema is unsupported; preserve it and use a compatible version")]
     DatabaseSchemaOutdated,
+    /// A portable snapshot failed completeness or domain validation.
+    #[error("invalid backup: {0}")]
+    InvalidBackup(&'static str),
     /// Persistence failed.
     #[error("storage failed: {0}")]
     Storage(#[source] Box<dyn error::Error + Send + Sync>),
