@@ -7,8 +7,10 @@ TS owns platform lifecycle, not a second rule implementation.
 [Stage-1 evidence](../spikes/remote-host/evidence.md): workers-rs was tried first,
 but shared-runtime trap recovery leaves in-flight requests unsettled. The selected
 thin TS host passes the complete local workerd feasibility ledger, with explicit
-synthetic-workload and capacity limits. **Stop for review; stage 2 has not started.**
-Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
+synthetic-workload and capacity limits. **Stage 2 is also complete:** existing native
+rules now use the shared exact SQL seam; default `Tracker` behavior remains compatible.
+See [native-seam evidence](#stage-2-native-seam-evidence). Stage 3 data safety has not
+started. Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
 [rationale](remote-workspace-rationale.md), and [next-agent handoff](remote-workspace-handoff.md).
 
 ## Usage first
@@ -486,6 +488,67 @@ Focused contract tests must also cover:
   responses after an uncertain send retain Unknown journals.
 
 Native/Wasm golden results must match, including i128 money and historical/DST cases.
+
+## Stage-2 native-seam evidence
+
+Completed 2026-10-14 after review of stage 1. No remote implementation, migration,
+revision/receipt bookkeeping or changed database-reset policy was introduced.
+
+- `src/sql.rs` defines private synchronous read/write capabilities, text/null
+  bindings and materialized rows, canonical i64 decoding, bounded u32 and 0/1 bools.
+  Numeric result cells fail locally even when small enough for JavaScript numbers.
+- `src/store.rs` and its rule/query modules retain the shared schema, selective
+  predicates, statement order, domain checks and Rust i128/calendar arithmetic.
+  Integer inputs/outputs have explicit casts; mutations use RETURNING rather than
+  native last-insert IDs or affected-row counts.
+- `src/native.rs` owns connection configuration/schema inspection, IMMEDIATE writes
+  and deferred read snapshots. Errors/unwind roll back. The SQLite authorizer denies
+  transaction control, connection PRAGMAs and attach/detach during rule execution;
+  `readonly()` alone cannot enforce snapshot ownership. Cached statements are
+  reauthorized, and the guard drops before host commit/rollback.
+- `Tracker` keeps its signatures, pre-lock input validation and legacy ID-only end
+  semantics. It invokes shared rules directly inside native transaction closures,
+  without another per-operation repository/facade. Native SQL error sources remain
+  inspectable. Existing raw corruption fixtures and all 114 prior tests are retained.
+- The default `native` feature contains SQLite/frontend dependencies and system
+  timezone support. Core-only builds retain bundled zones, with no native adapter or
+  CLI. Native integration tests are explicitly native-only; they still run by default.
+  No dependency versions or root lockfile were changed: the product retains Jiff
+  0.2.35 / tzdb 0.1.8, distinct from the independently pinned spike's tzdb 0.1.9.
+
+Checks run from the repository root:
+
+```sh
+cargo fmt --check
+cargo test --all-targets                    # 124: original 114 + 10 seam tests
+cargo test --doc                            # 8 doctests
+cargo clippy --all-targets --all-features -- -D warnings
+cargo test --all-targets --no-default-features  # 9 core unit tests; native suites gated
+cargo test --doc --no-default-features      # 4 doctests (native-only examples cfg-gated)
+cargo clippy --all-targets --no-default-features -- -D warnings
+cargo +1.98.1 check --locked --lib --no-default-features --target wasm32-unknown-unknown
+cargo +1.98.1 clippy --locked --lib --no-default-features \
+  --target wasm32-unknown-unknown -- -D warnings
+cargo tree --locked --no-default-features --target wasm32-unknown-unknown -e normal
+```
+
+All passed. New tests cover integer/real/blob rejection, exact i64 extrema/NULL/text
+and RETURNING, canonical pre-CAST binding rejection, read-only mutation refusal,
+closure-error and unwind rollback, native error sources, cached transaction-control
+rejection and unchanged connection configuration. Existing switch, stale recovery,
+retainer, historical/DST and concurrent read fixtures remain green. The stage-1
+actual-workerd suite was rerun and passed before its commits were finalized.
+
+This is **native behavioral coverage and a core-only Wasm compile**, not an exported
+Wasm application or native/workerd business-parity proof. Attaching the product core
+and testing identical runtime results remain later-stage acceptance work. Per-statement
+materialization adds text/row memory proportional to selected results; it is not a
+whole-workspace load. Authorizer changes can expire cached statements between
+operations. Large history/calendar workloads still need measured memory/CPU budgets.
+
+Next: stage 3, versioned non-destructive migrations and consistent portable backups,
+including every legacy-writer/sentinel fence and restore/sequence preservation.
+No deployment, provisioning, push or bookmark movement occurred.
 
 ## Later offline-first
 

@@ -1,9 +1,10 @@
 # Remote-host feasibility spike: completed dispatch
 
-**Stage 1 is complete.** [Evidence and selected-host limits](../spikes/remote-host/evidence.md)
-select the thin TS host with synchronous, disposable Rust instances. Stop for review;
-stage 2 requires explicit approval and has not started. The original dispatch below
-is retained as the acceptance contract, not authorization for further implementation.
+**Stages 1 and 2 are complete.** [Host evidence](../spikes/remote-host/evidence.md)
+selects the thin TS host with synchronous, disposable Rust instances. Stage 2 was
+approved and implemented after review; [native-seam evidence](remote-workspace.md#stage-2-native-seam-evidence)
+records its contracts and checks. Stage 3 data safety has not started. The original
+stage-1 dispatch below is retained as its historical acceptance contract.
 
 ## Original dispatch scope
 

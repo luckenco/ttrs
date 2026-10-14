@@ -149,6 +149,16 @@ artifact surgery or ambient mutable SQL router. This changes no rule ownership,
 full-range integer guarantees, principal/authority recovery contracts, legacy-writer
 fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
+### Native-seam follow-on (2026-10-14)
+
+The user approved stage 2 after review. [The native shared SQL seam](remote-workspace.md#stage-2-native-seam-evidence)
+is complete: existing rule/query code uses exact text/null capabilities, native
+transactions remain host-owned, and default Tracker behavior and schema are preserved.
+Review hardened transaction ownership with SQLite's authorizer rather than relying
+only on statement readonly flags. Core-only Wasm compiles without native dependencies;
+actual native/workerd business parity and the remote product remain later-stage work.
+Stage 3 migrations and portable backups have not started.
+
 ## Tradeoffs accepted
 
 - We accept a bounded Rust-host spike, and one small binding if proven, for less host-language glue.
@@ -180,8 +190,9 @@ fencing, suspend-aware server-time anchoring or complete-backup requirements.
 
 - The pinned Rust host's in-flight trap recovery remains blocked; the selected host
   avoids shared Rust futures. Future SDK/runtime upgrades must repeat lifetime proofs.
-- The selected cf-built shape passes local exactness, timezone, SDK and cost gates;
-  extracting the real core still needs native/Wasm business parity.
+- The selected cf-built shape passes local exactness, timezone, SDK and cost gates.
+  Existing rules now use the shared SQL seam; native/Wasm runtime business parity
+  remains unproven until the product core is attached to the remote host.
 - Per-live-DO Wasm memory grows with active identities. Representative histories,
   receipt growth and calendar-span admission need measured production headroom.
 - Are proposed 10-minute admission, 35-day receipts and hourly backups suitable,
@@ -196,7 +207,9 @@ and recovery policies are design choices from user requirements, not historical 
 
 ## Next implementation step
 
-Review the [completed stage-1 evidence and limits](../spikes/remote-host/evidence.md).
-Stage 2, only after explicit approval, extracts the shared SQL boundary and links
-the existing Rust rules with native/Wasm parity tests. No production storage
-refactor has started, and the synthetic ABI is not the final product protocol.
+Review the [completed native seam and checks](remote-workspace.md#stage-2-native-seam-evidence)
+and the [stage-1 host limits](../spikes/remote-host/evidence.md). Stage 3 introduces
+non-destructive migrations, legacy-writer fencing, consistent portable backups and
+sequence/identity-preserving import/restore. The database-reset policy remains unchanged
+until that preservation path exists. Remote protocol/authority and runtime business
+parity remain later stages; the synthetic spike ABI is not the final product protocol.
