@@ -1,0 +1,26 @@
+[package]
+name = "tt-wasm"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+native-golden = ["tt/native"]
+# Private raw-ABI probes; never enabled by the production build.
+test-probes = []
+
+[[example]]
+name = "golden"
+required-features = ["native-golden"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+tt = { path = "../..", default-features = false }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.154"
+
+[profile.release]
+panic = "abort"
+lto = true
+opt-level = "s"

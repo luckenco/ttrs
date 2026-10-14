@@ -1,0 +1,31 @@
+{
+  "name": "ttrs-worker",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.21.0"
+  },
+  "packageManager": "npm@11.19.0",
+  "scripts": {
+    "build": "npm run build:wasm && cf build",
+    "build:wasm": "cargo build --manifest-path ../crates/tt-wasm/Cargo.toml --target-dir ../crates/tt-wasm/target --release --target wasm32-unknown-unknown --locked",
+    "types": "cf workers types",
+    "check": "tsc --noEmit && tsc --project test/tsconfig.json --noEmit",
+    "build:probes": "cargo build --manifest-path ../crates/tt-wasm/Cargo.toml --target-dir ../crates/tt-wasm/target/probes --release --target wasm32-unknown-unknown --features test-probes --locked",
+    "test": "npm run build:probes && node test/bridge.mjs && node test/probes.mjs && node test/faults.mjs && node test/integration.mjs && npm run test:client",
+    "test:client": "node test/client.mjs"
+  },
+  "devDependencies": {
+    "@cloudflare/build-output-utils": "0.9.0",
+    "@cloudflare/vite-plugin": "2.0.0-beta.sha-91c870c02",
+    "@modelcontextprotocol/server": "2.3.1",
+    "@types/node": "24.10.1",
+    "agents": "0.28.1",
+    "cf": "1.0.0-beta.14",
+    "esbuild": "0.28.2",
+    "miniflare": "5.20261006.1-alpha",
+    "typescript": "5.9.3",
+    "vite": "8.1.5",
+    "zod": "4.6.5"
+  }
+}
