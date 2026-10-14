@@ -61,6 +61,7 @@ impl Tracker {
         agreement: model::NewAgreement,
         now: Timestamp,
     ) -> Result<(model::Project, model::ServiceAgreement)> {
+        nonempty_name(agreement.clone().into_parts().0, Error::EmptyAgreementName)?;
         let timezone = validate_billing_timezone(billing_timezone)?;
         reject_future(agreement.effective_on(), &timezone, now)?;
         let name = project_name(name)?;
@@ -79,6 +80,7 @@ impl Tracker {
         agreement: model::NewAgreement,
         now: Timestamp,
     ) -> Result<model::ServiceAgreement> {
+        nonempty_name(agreement.clone().into_parts().0, Error::EmptyAgreementName)?;
         let selected = self.service_agreement(previous)?;
         let project_value = self.project(selected.project())?;
         reject_future(
@@ -418,7 +420,7 @@ fn reject_future(date: Date, timezone: &jiff::tz::TimeZone, now: Timestamp) -> R
 
 fn nonempty_name(name: String, error: Error) -> Result<String> {
     let trimmed = name.trim();
-    if trimmed.is_empty() {
+    if trimmed.is_empty() || name.contains('\0') {
         return Err(error);
     }
     if trimmed.len() == name.len() {

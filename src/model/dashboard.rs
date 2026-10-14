@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use super::{Client, Project, RunningTimer, ServiceAgreement, TimerLimit};
 
 /// A consistent read snapshot for an interactive frontend.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct Dashboard {
     /// Active projects, ordered by project name and ID.
     pub projects: Vec<ProjectSummary>,
@@ -20,6 +20,7 @@ pub struct Dashboard {
     /// fractions truncate after summing per currency; retainer charges retain
     /// their existing per-agreement precision. No hourly minimums, invoice
     /// rounding, currency conversion or additional daily earnings are applied.
+    #[serde(serialize_with = "crate::protocol::decimal_map")]
     pub month_earnings_micros: BTreeMap<String, i128>,
     /// Retainer agreement-months in each project's current billing month,
     /// including replaced agreements and archived projects with coverage.
@@ -28,7 +29,7 @@ pub struct Dashboard {
 }
 
 /// An active project and the current terms used when starting work.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct ProjectSummary {
     /// The project accepting work.
     pub project: Project,
@@ -39,7 +40,7 @@ pub struct ProjectSummary {
 }
 
 /// A running timer and its allowance at the snapshot instant.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct TimerStatus {
     /// The persisted timer; retain this value for checked stop/switch operations.
     pub timer: RunningTimer,
@@ -48,7 +49,7 @@ pub struct TimerStatus {
 }
 
 /// A running timer, its labels, and allowance from one consistent read snapshot.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RunningStatus {
     /// The captured timer; retain it for checked cancellation or stopping.
     pub timer: RunningTimer,
@@ -61,9 +62,10 @@ pub struct RunningStatus {
 }
 
 /// Daily tracked work, not an invoice or a billing-rounded report.
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub struct DailyTotal {
     /// Summed microseconds, including overlapping work and excluding cap overflow.
+    #[serde(serialize_with = "crate::protocol::decimal")]
     pub worked_us: i128,
     /// Earnings by currency in millionths of a currency unit.
     ///
@@ -72,6 +74,7 @@ pub struct DailyTotal {
     /// allowance resets in its project's billing timezone, not the display zone.
     /// Sub-micro-unit fractions are truncated after summing each currency.
     /// Monthly minimums and invoice rounding do not apply; currencies stay separate.
+    #[serde(serialize_with = "crate::protocol::decimal_map")]
     pub earnings_micros: BTreeMap<String, i128>,
 }
 
@@ -82,7 +85,7 @@ pub struct DailyTotal {
 /// whole period, not merely elapsed days. Work includes completed and capped live
 /// intervals through the snapshot instant, with overlaps summed. No hours carry
 /// between months or agreements. These are exact-duration estimates, not invoices.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct RetainerMonth {
     /// The project's owning client.
     pub client: Client,
@@ -93,13 +96,17 @@ pub struct RetainerMonth {
     /// First local calendar day of this billing month.
     pub month: jiff::civil::Date,
     /// Actual recorded and live work in microseconds.
+    #[serde(serialize_with = "crate::protocol::decimal")]
     pub worked_us: i128,
     /// Included duration, prorated and truncated to whole microseconds.
+    #[serde(serialize_with = "crate::protocol::decimal")]
     pub included_us: i128,
     /// Prorated base fee, truncated to millionths of a currency unit.
+    #[serde(serialize_with = "crate::protocol::decimal")]
     pub fee_micros: i128,
     /// Charge for work beyond included hours, zero without an hourly rate.
     /// Sub-micro-unit fractions are truncated; no invoice rounding is applied.
+    #[serde(serialize_with = "crate::protocol::decimal")]
     pub overage_micros: i128,
 }
 

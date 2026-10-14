@@ -19,6 +19,24 @@ use crate::model;
 /// ```
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("reviewed authority changed")]
+    AuthorityChanged,
+    #[error("authenticated principal changed")]
+    PrincipalChanged,
+    #[error("workspace is frozen")]
+    WorkspaceFrozen,
+    #[error("workspace revision changed")]
+    RevisionChanged,
+    #[error("request identity reused with different bytes")]
+    RequestIdConflict,
+    #[error("request is outside its admission window")]
+    NotAdmitted,
+    #[error("receipt capacity reached")]
+    ReceiptCapacity,
+    #[error("invalid request")]
+    InvalidRequest,
+    #[error("project {0} changed; select it again")]
+    ProjectChanged(model::ProjectId),
     /// A client name was empty or contained only whitespace.
     #[error("client name must not be empty")]
     EmptyClientName,

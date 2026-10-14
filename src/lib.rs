@@ -75,14 +75,25 @@
 //! # fn main() {}
 //! ```
 
+#[cfg(feature = "native")]
+pub mod client;
 pub mod command;
 pub mod error;
+#[doc(hidden)]
+pub mod host;
 #[cfg(feature = "native")]
 pub mod maintenance;
 pub mod model;
+pub mod operation;
 pub mod portable;
+pub mod protocol;
+#[cfg(feature = "native")]
+pub mod recovery;
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 mod schema;
+#[cfg(feature = "native")]
+pub mod time_anchor;
+pub mod workspace;
 // Compile shared rules on core-only targets even before a host is attached.
 #[cfg(feature = "native")]
 mod native;

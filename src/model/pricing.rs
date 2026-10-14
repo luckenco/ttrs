@@ -1,8 +1,9 @@
 use super::HourlyRate;
 
 /// An exact non-negative monthly fee in millionths of a currency unit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct MonthlyFee {
+    #[serde(serialize_with = "crate::protocol::decimal")]
     amount_micros: i64,
     currency: String,
 }
@@ -35,9 +36,10 @@ impl MonthlyFee {
 ///
 /// Included hours are not a recording cap. Without an hourly rate, additional
 /// work does not increase the charge. There are no carried hours or credits.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Retainer {
     fee: MonthlyFee,
+    #[serde(serialize_with = "crate::protocol::decimal")]
     included_hours: u32,
     hourly_rate: Option<HourlyRate>,
 }
@@ -91,7 +93,7 @@ impl Retainer {
 }
 
 /// Immutable pricing, independent of enforced monthly working-hour maximums.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub enum Pricing {
     /// Each tracked hour is priced at this rate.
     Hourly(HourlyRate),

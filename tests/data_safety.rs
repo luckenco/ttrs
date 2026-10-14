@@ -302,7 +302,7 @@ fn invalid_envelopes_and_existing_import_targets_never_mutate_data() {
     assert!(maintenance::import(&existing, &original).is_err());
     assert_eq!(fs::read(&existing).unwrap(), b"not a database");
     for (pointer, value) in [
-        ("/manifest/format", json!(2)),
+        ("/manifest/format", json!(999)),
         ("/manifest/schema", json!(999)),
         ("/manifest/rules", json!(999)),
         ("/receipts", json!([{}])),

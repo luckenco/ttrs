@@ -1,4 +1,4 @@
-//! Version-1 logical snapshots, independent of SQLite files and platform adapters.
+//! Versioned logical snapshots, independent of SQLite files and platform adapters.
 //!
 //! All stored integers are canonical decimal strings, timestamps are UTC
 //! microseconds, dates are ISO calendar dates, and money is in currency millionths.
@@ -9,8 +9,13 @@
 //! Format 1 covers the five domain tables, identity/revision, schema/rules versions
 //! and deleted-ID high-water marks. The digested data object has fixed field order:
 //! `tables`, `sequences`, `revision`; compact serde JSON encoding defines its bytes.
-//! Its receipt section is necessarily empty: the
-//! operation service does not exist yet. Adding receipts requires a new format.
+//! Format 1 remains readable with an empty receipt section. Format 2 adds complete
+//! retained receipts, source-scoped audit outcomes and operational fences. Imports
+//! preserve these as audit data, never as replay permission or target activation.
+//! Import discards only fences with neither source-scoped receipts nor a purge floor,
+//! including empty fences from older format-2 imports. Job-only control history is not
+//! receipt protection. Every receipt scope must have a live or audited fence; all
+//! purge floors survive even when their receipts have expired or been removed.
 //!
 //! Verification and capture materialize the entire snapshot. Local callers must
 //! allow memory proportional to their history; remote admission budgets are later work.
@@ -22,7 +27,7 @@ use sha2::{Digest, Sha256};
 
 use crate::{Error, Result, model, schema, sql};
 
-const FORMAT: u32 = 1;
+const FORMAT: u32 = 2;
 
 /// Snapshot provenance and completeness information. Wide values remain strings.
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -48,8 +53,11 @@ pub struct Manifest {
     pub data_bytes: String,
     /// SHA-256 of the data section, excluding provenance.
     pub data_digest: String,
-    /// SHA-256 of the empty format-1 receipt section.
+    /// SHA-256 of complete source-scoped receipts (empty receipts in format 1).
     pub receipt_digest: String,
+    /// SHA-256 of operational fences, separately from data and receipt outcomes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub operational_digest: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -66,7 +74,36 @@ struct Data {
 struct Snapshot {
     manifest: Manifest,
     data: Data,
-    receipts: [(); 0],
+    receipts: Vec<ReceiptData>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    fence: Option<Fence>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    fence_audit: Vec<FenceAudit>,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ReceiptData {
+    workspace: String,
+    incarnation: String,
+    principal: String,
+    request_key: String,
+    envelope: String,
+    outcome: String,
+    expires_at_us: String,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct FenceAudit {
+    workspace: String,
+    incarnation: String,
+    fence: Fence,
+}
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Fence {
+    state: String,
+    job: Option<String>,
+    receipt_floor_us: Option<String>,
 }
 
 /// A complete, verified snapshot. Its contents cannot be edited after validation.
@@ -93,6 +130,67 @@ fn invalid(message: &'static str) -> Error {
     Error::InvalidBackup(message)
 }
 
+fn receipt_digest(snapshot: &Snapshot) -> Result<String> {
+    if snapshot.manifest.format == 1 {
+        return Ok(digest(b"[]"));
+    }
+    Ok(digest(
+        &serde_json::to_vec(&snapshot.receipts).map_err(storage)?,
+    ))
+}
+fn operational_digest(snapshot: &Snapshot) -> Result<Option<String>> {
+    if snapshot.manifest.format == 1 {
+        return Ok(None);
+    }
+    Ok(Some(digest(
+        &serde_json::to_vec(&(&snapshot.fence, &snapshot.fence_audit)).map_err(storage)?,
+    )))
+}
+fn read_receipts(
+    db: &dyn sql::ReadSql,
+    manifest: &Manifest,
+) -> Result<(Vec<ReceiptData>, Option<Fence>)> {
+    let mut receipts = sql::query(
+        db,
+        "SELECT principal, request_key, envelope, outcome, CAST(expires_at_us AS TEXT) FROM tt_receipts ORDER BY principal, request_key",
+        &[],
+        |r| {
+            Ok(ReceiptData {
+                workspace: manifest.workspace.clone(),
+                incarnation: manifest.incarnation.clone(),
+                principal: r.get(0)?,
+                request_key: r.get(1)?,
+                envelope: r.get(2)?,
+                outcome: r.get(3)?,
+                expires_at_us: r.get(4)?,
+            })
+        },
+    )?;
+    receipts.extend(sql::query(db, "SELECT source_workspace, source_incarnation, principal, request_key, envelope, outcome, CAST(expires_at_us AS TEXT) FROM tt_receipt_audit ORDER BY source_workspace, source_incarnation, principal, request_key", &[], |r| Ok(ReceiptData {
+        workspace:r.get(0)?,incarnation:r.get(1)?,principal:r.get(2)?,request_key:r.get(3)?,envelope:r.get(4)?,outcome:r.get(5)?,expires_at_us:r.get(6)?,
+    }))?);
+    receipts.sort_by(|a, b| {
+        (&a.workspace, &a.incarnation, &a.principal, &a.request_key).cmp(&(
+            &b.workspace,
+            &b.incarnation,
+            &b.principal,
+            &b.request_key,
+        ))
+    });
+    let fence = sql::one(
+        db,
+        "SELECT state, job, CAST(receipt_floor_us AS TEXT) FROM tt_fence WHERE id = 1",
+        &[],
+        |r| {
+            Ok(Fence {
+                state: r.get(0)?,
+                job: r.get(1)?,
+                receipt_floor_us: r.get(2)?,
+            })
+        },
+    )?;
+    Ok((receipts, Some(fence)))
+}
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -101,6 +199,8 @@ fn digest(bytes: &[u8]) -> String {
 ///
 /// Invalid input returns an error rather than asserting model invariants.
 /// Integrity hashes do not authenticate an untrusted file.
+/// Legacy SQL names may contain surrounding whitespace; verification preserves
+/// those bytes rather than normalizing historical rows. Scopes are likewise raw.
 ///
 /// ```
 /// assert!(tt::portable::verify(b"{}").is_err());
@@ -113,9 +213,14 @@ pub fn verify(bytes: &[u8]) -> Result<Verified> {
 
 fn validate(snapshot: Snapshot) -> Result<Verified> {
     let manifest = &snapshot.manifest;
-    if manifest.format != FORMAT
-        || manifest.schema != schema::VERSION
+    if !((manifest.format == 1 && manifest.schema == 1)
+        || (manifest.format == FORMAT && manifest.schema == schema::VERSION))
+        || (manifest.format == FORMAT && snapshot.fence.is_none())
         || manifest.rules != schema::RULES
+        || (manifest.format == 1
+            && (!snapshot.receipts.is_empty()
+                || snapshot.fence.is_some()
+                || !snapshot.fence_audit.is_empty()))
     {
         return Err(invalid("unsupported format, schema or rules version"));
     }
@@ -143,7 +248,8 @@ fn validate(snapshot: Snapshot) -> Result<Verified> {
     let bytes = serde_json::to_vec(&snapshot.data).map_err(storage)?;
     if manifest.data_bytes != bytes.len().to_string()
         || manifest.data_digest != digest(&bytes)
-        || manifest.receipt_digest != digest(b"[]")
+        || manifest.receipt_digest != receipt_digest(&snapshot)?
+        || manifest.operational_digest != operational_digest(&snapshot)?
     {
         return Err(invalid("section size or digest mismatch"));
     }
@@ -153,6 +259,76 @@ fn validate(snapshot: Snapshot) -> Result<Verified> {
         }
     }
     validate_data(&snapshot.data)?;
+    let mut keys = BTreeSet::new();
+    for receipt in &snapshot.receipts {
+        let envelope = crate::protocol::Envelope::from_bytes(receipt.envelope.as_bytes())?;
+        if envelope.authority.workspace != receipt.workspace
+            || envelope.authority.incarnation != receipt.incarnation
+            || envelope.principal != receipt.principal
+            || envelope.id.key() != receipt.request_key
+            || envelope.to_bytes()? != receipt.envelope.as_bytes()
+            || !keys.insert((
+                &receipt.workspace,
+                &receipt.incarnation,
+                &receipt.principal,
+                &receipt.request_key,
+            ))
+        {
+            return Err(invalid("invalid receipt identity or duplicate"));
+        }
+        let outcome: crate::protocol::RecordedOutcome =
+            serde_json::from_str(&receipt.outcome).map_err(storage)?;
+        crate::protocol::validate_recorded(&envelope, &outcome)
+            .map_err(|_| invalid("receipt does not match original request"))?;
+        if let crate::protocol::RecordedOutcome::Committed(value) = &outcome {
+            let committed = crate::protocol::decode_committed(value)?;
+            if committed.stamp.authority.workspace != receipt.workspace
+                || committed.stamp.authority.incarnation != receipt.incarnation
+                || (receipt.workspace == manifest.workspace
+                    && receipt.incarnation == manifest.incarnation
+                    && committed.stamp.revision > sql::integer(&manifest.revision)?)
+            {
+                return Err(invalid("receipt outcome provenance mismatch"));
+            }
+        }
+        let expires = sql::integer(&receipt.expires_at_us)?;
+        Timestamp::from_microsecond(expires).map_err(storage)?;
+    }
+    if let Some(fence) = &snapshot.fence
+        && !["active", "inactive", "frozen", "retired"].contains(&fence.state.as_str())
+    {
+        return Err(invalid("invalid operational fence"));
+    }
+    if let Some(floor) = snapshot
+        .fence
+        .as_ref()
+        .and_then(|f| f.receipt_floor_us.as_deref())
+    {
+        sql::integer(floor)?;
+    }
+    let mut fence_keys = BTreeSet::new();
+    if snapshot.fence.is_some() {
+        fence_keys.insert((&manifest.workspace, &manifest.incarnation));
+    }
+    for audit in &snapshot.fence_audit {
+        if let Some(floor) = &audit.fence.receipt_floor_us {
+            sql::integer(floor)?;
+        }
+        crate::protocol::identity(&audit.workspace)?;
+        crate::protocol::identity(&audit.incarnation)?;
+        if !fence_keys.insert((&audit.workspace, &audit.incarnation))
+            || !["active", "inactive", "frozen", "retired"].contains(&audit.fence.state.as_str())
+        {
+            return Err(invalid("invalid audit fence"));
+        }
+    }
+    if snapshot
+        .receipts
+        .iter()
+        .any(|r| !fence_keys.contains(&(&r.workspace, &r.incarnation)))
+    {
+        return Err(invalid("receipt source has no operational fence"));
+    }
     Ok(Verified(snapshot))
 }
 
@@ -428,7 +604,7 @@ pub(crate) fn capture(db: &dyn sql::ReadSql, now: Timestamp) -> Result<Verified>
     )?;
     let bytes = serde_json::to_vec(&data).map_err(storage)?;
     let manifest = Manifest {
-        format: FORMAT,
+        format: if metadata.3 == 1 { 1 } else { FORMAT },
         schema: metadata.3,
         rules: metadata.4,
         workspace: metadata.0,
@@ -441,17 +617,77 @@ pub(crate) fn capture(db: &dyn sql::ReadSql, now: Timestamp) -> Result<Verified>
         data_bytes: bytes.len().to_string(),
         data_digest: digest(&bytes),
         receipt_digest: digest(b"[]"),
+        operational_digest: None,
     };
-    validate(Snapshot {
+    let (receipts, fence) = if metadata.3 == 1 {
+        (Vec::new(), None)
+    } else {
+        read_receipts(db, &manifest)?
+    };
+    let fence_audit = if metadata.3 == 1 {
+        Vec::new()
+    } else {
+        sql::query(
+            db,
+            "SELECT source_workspace, source_incarnation, state, job, CAST(receipt_floor_us AS TEXT) FROM tt_fence_audit ORDER BY source_workspace, source_incarnation",
+            &[],
+            |r| {
+                Ok(FenceAudit {
+                    workspace: r.get(0)?,
+                    incarnation: r.get(1)?,
+                    fence: Fence {
+                        state: r.get(2)?,
+                        job: r.get(3)?,
+                        receipt_floor_us: r.get(4)?,
+                    },
+                })
+            },
+        )?
+    };
+    let mut snapshot = Snapshot {
         manifest,
         data,
-        receipts: [],
-    })
+        receipts,
+        fence,
+        fence_audit,
+    };
+    snapshot.manifest.receipt_digest = receipt_digest(&snapshot)?;
+    snapshot.manifest.operational_digest = operational_digest(&snapshot)?;
+    validate(snapshot)
 }
 
 /// Inserts into a fresh, host-owned identity. Receipts are never replayed across it.
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 pub(crate) fn import(tx: &mut dyn sql::WriteSql, verified: &Verified) -> Result<()> {
+    let incarnation: String = sql::one(
+        tx,
+        "SELECT incarnation FROM tt_metadata WHERE id = 1",
+        &[],
+        |r| r.get(0),
+    )?;
+    if incarnation == verified.manifest().incarnation {
+        return Err(invalid("import requires a fresh incarnation"));
+    }
+    let floor: Option<String> = sql::one(
+        tx,
+        "SELECT CAST(receipt_floor_us AS TEXT) FROM tt_fence WHERE id = 1",
+        &[],
+        |r| r.get(0),
+    )?;
+    if floor.is_some() {
+        return Err(invalid("import target contains purge history"));
+    }
+    for table in ["tt_receipts", "tt_receipt_audit", "tt_fence_audit"] {
+        let count: i64 = sql::one(
+            tx,
+            &format!("SELECT CAST(count(*) AS TEXT) FROM {table}"),
+            &[],
+            |r| r.get(0),
+        )?;
+        if count != 0 {
+            return Err(invalid("import target contains operational history"));
+        }
+    }
     for (table, _) in schema::TABLES {
         let count: i64 = sql::one(
             tx,
@@ -507,11 +743,48 @@ pub(crate) fn import(tx: &mut dyn sql::WriteSql, verified: &Verified) -> Result<
     }
     tx.write("UPDATE tt_metadata SET revision = CAST(?1 AS INTEGER) WHERE id = 1 RETURNING CAST(revision AS TEXT)",
         &[Some(verified.manifest().revision.clone())])?;
+    for receipt in &verified.0.receipts {
+        tx.write("INSERT INTO tt_receipt_audit(source_workspace,source_incarnation,principal,request_key,envelope,outcome,expires_at_us) VALUES (?1,?2,?3,?4,?5,?6,CAST(?7 AS INTEGER)) RETURNING request_key",
+            sql::params![receipt.workspace,receipt.incarnation,receipt.principal,receipt.request_key,receipt.envelope,receipt.outcome,receipt.expires_at_us])?;
+    }
+    let receipt_scopes: BTreeSet<_> = verified
+        .0
+        .receipts
+        .iter()
+        .map(|r| (r.workspace.as_str(), r.incarnation.as_str()))
+        .collect();
+    let meaningful = |workspace: &str, incarnation: &str, fence: &Fence| {
+        fence.receipt_floor_us.is_some() || receipt_scopes.contains(&(workspace, incarnation))
+    };
+    for audit in verified
+        .0
+        .fence_audit
+        .iter()
+        .filter(|a| meaningful(&a.workspace, &a.incarnation, &a.fence))
+    {
+        tx.write("INSERT INTO tt_fence_audit(source_workspace, source_incarnation, state, job, receipt_floor_us) VALUES (?1,?2,?3,?4,CAST(?5 AS INTEGER)) RETURNING state",sql::params![audit.workspace,audit.incarnation,audit.fence.state,audit.fence.job,audit.fence.receipt_floor_us])?;
+    }
+    if let Some(fence) = &verified.0.fence
+        && meaningful(
+            &verified.manifest().workspace,
+            &verified.manifest().incarnation,
+            fence,
+        )
+    {
+        tx.write("INSERT INTO tt_fence_audit(source_workspace, source_incarnation, state, job, receipt_floor_us) VALUES (?1,?2,?3,?4,CAST(?5 AS INTEGER)) RETURNING state",sql::params![verified.manifest().workspace,verified.manifest().incarnation,fence.state,fence.job,fence.receipt_floor_us])?;
+    }
+    // Meaningful operational fences survive for audit, never target activation.
+    // Empty source fences cannot authorize replay under the fresh identity.
     // Verify inserted bytes, including sequences, before the host can commit.
     let imported = capture(
         tx,
         verified.0.manifest.captured_at.parse().map_err(storage)?,
     )?;
+    if serde_json::to_vec(&imported.0.receipts).map_err(storage)?
+        != serde_json::to_vec(&verified.0.receipts).map_err(storage)?
+    {
+        return Err(invalid("imported receipt audit mismatch"));
+    }
     if imported.manifest().data_digest != verified.manifest().data_digest {
         return Err(invalid("imported data digest mismatch"));
     }

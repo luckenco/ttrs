@@ -149,6 +149,18 @@ impl Store {
         Ok(value)
     }
     pub(crate) fn write<T>(&mut self, f: impl FnOnce(&mut dyn WriteSql) -> Result<T>) -> Result<T> {
+        self.transaction(|tx| {
+            let stamp = crate::operation::stamp(tx, jiff::Timestamp::UNIX_EPOCH, None)?;
+            crate::operation::check(tx, &stamp.authority, jiff::Timestamp::UNIX_EPOCH)?;
+            let value = f(tx)?;
+            crate::operation::bump(tx)?;
+            Ok(value)
+        })
+    }
+    pub(crate) fn transaction<T>(
+        &mut self,
+        f: impl FnOnce(&mut dyn WriteSql) -> Result<T>,
+    ) -> Result<T> {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
@@ -156,10 +168,6 @@ impl Store {
             let _guard = StatementGuard::new(&transaction)?;
             f(&mut Adapter(&transaction))?
         };
-        transaction.execute("UPDATE tt_metadata SET revision = revision + 1 WHERE id = 1 AND revision < 9223372036854775807", [])?;
-        if transaction.changes() != 1 {
-            return Err(sql::invalid("revision exhausted or missing metadata"));
-        }
         transaction.commit()?;
         Ok(value)
     }
@@ -276,7 +284,18 @@ fn verify(connection: &Connection) -> Result<()> {
         }
         return crate::portable::validate_legacy(&Adapter(connection));
     }
-    current(connection)?;
+    if matches(connection, schema::V1)? {
+        let versions: (u32, u32) = connection.query_row(
+            "SELECT schema_version, rules_version FROM tt_metadata WHERE id = 1",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )?;
+        if versions != (1, schema::RULES) {
+            return Err(Error::DatabaseSchemaOutdated);
+        }
+    } else {
+        current(connection)?;
+    }
     bookkeeping(connection)?;
     crate::portable::capture(&Adapter(connection), jiff::Timestamp::now())?;
     Ok(())
@@ -420,33 +439,14 @@ fn replacement(
     Ok(temp)
 }
 
-// Compare every user schema object against an independently created known schema.
+// Shared exact schema recognition includes every table/index/trigger and sentinel.
 // Whitespace and SQLite's ALTER-added identifier quotes are not significant.
 fn definitions(connection: &Connection) -> Result<Vec<(String, String, String)>> {
-    let mut statement = connection.prepare(
-        "SELECT type, name, sql FROM sqlite_schema WHERE name NOT GLOB 'sqlite_*' ORDER BY type, name"
-    )?;
-    let rows = statement.query_map([], |row| {
-        let definition: String = row.get(2)?;
-        let mut literal = false;
-        let normalized = definition
-            .chars()
-            .filter(|ch| {
-                if *ch == '\'' {
-                    literal = !literal;
-                }
-                literal || (!ch.is_whitespace() && *ch != '"')
-            })
-            .collect();
-        Ok((row.get(0)?, row.get(1)?, normalized))
-    })?;
-    rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+    crate::schema::definitions(&Adapter(connection))
 }
 
 fn matches(connection: &Connection, schema: &str) -> Result<bool> {
-    let expected = Connection::open_in_memory()?;
-    expected.execute_batch(schema)?;
-    Ok(definitions(connection)? == definitions(&expected)?)
+    crate::schema::matches(&Adapter(connection), schema)
 }
 
 fn current(connection: &Connection) -> Result<()> {
@@ -472,7 +472,7 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    if upgraded {
+    if upgraded && !matches(&snapshot, schema::V1)? {
         current(&snapshot)?;
         bookkeeping(&snapshot)?;
         snapshot.commit()?;
@@ -486,7 +486,45 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         |row| row.get(0),
     )?;
     if has_metadata {
-        current(&transaction)?;
+        if matches(&transaction, schema::V1)? {
+            let versions: (u32, u32) = transaction.query_row(
+                "SELECT schema_version, rules_version FROM tt_metadata WHERE id = 1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
+            if versions != (1, schema::RULES) {
+                return Err(Error::DatabaseSchemaOutdated);
+            }
+            let path = path.ok_or_else(|| sql::invalid("migration requires on-disk backup"))?;
+            let source = Connection::open(path)?;
+            configure(&source)?;
+            let safety = safety_path(path, "pre-v2-migration");
+            backup(&source, &safety)?;
+            let saved =
+                Connection::open_with_flags(&safety, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            verify(&saved)?;
+            let now = crate::Timestamp::UNIX_EPOCH;
+            let before = crate::portable::capture(&Adapter(&saved), now)?;
+            if crate::portable::capture(&Adapter(&transaction), now)?.to_bytes()?
+                != before.to_bytes()?
+            {
+                return Err(Error::InvalidBackup(
+                    "migration backup does not match source",
+                ));
+            }
+            transaction.execute_batch(schema::MIGRATE_V2)?;
+            if crate::portable::capture(&Adapter(&transaction), now)?
+                .manifest()
+                .data_digest
+                != before.manifest().data_digest
+            {
+                return Err(Error::InvalidBackup(
+                    "migration changed domain data or revision",
+                ));
+            }
+        } else {
+            current(&transaction)?;
+        }
     } else if definitions(&transaction)?.is_empty() {
         transaction.execute_batch(schema::SCHEMA)?;
         identity(&transaction, None)?;
@@ -508,6 +546,7 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         configure(&source)?;
         backup(&source, &safety_path(path, "pre-migration"))?;
         transaction.execute_batch(schema::MIGRATE)?;
+        transaction.execute_batch(schema::MIGRATE_V2)?;
         identity(&transaction, None)?;
     }
     verify(&transaction)?;

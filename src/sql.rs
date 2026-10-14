@@ -2,11 +2,11 @@
 //! Only text and null cross this seam; integers are canonical i64 decimal text.
 use crate::{Error, Result};
 
-pub(crate) type Cell = Option<String>;
+pub type Cell = Option<String>;
 
 /// Executes a read-only statement, rejecting mutation before stepping it.
 /// Results must be materialized text/null cells, never SQLite numeric values.
-pub(crate) trait ReadSql {
+pub trait ReadSql {
     fn rows(&self, sql: &str, binds: &[Cell]) -> Result<Vec<Row>>;
 
     /// Hosts may retain their compatible storage-error source for a missing row.
@@ -17,7 +17,7 @@ pub(crate) trait ReadSql {
 
 /// Executes a mutation with RETURNING inside the host's atomic write closure.
 /// Any closure error must roll back all preceding statements.
-pub(crate) trait WriteSql: ReadSql {
+pub trait WriteSql: ReadSql {
     fn write(&mut self, sql: &str, binds: &[Cell]) -> Result<Vec<Row>>;
 }
 
@@ -116,7 +116,7 @@ macro_rules! params {
 pub(crate) use params;
 
 #[derive(Debug)]
-pub(crate) struct Row(pub(crate) Vec<Cell>);
+pub struct Row(pub Vec<Cell>);
 impl Row {
     pub(crate) fn get<T: Decode>(&self, index: usize) -> Result<T> {
         T::decode(

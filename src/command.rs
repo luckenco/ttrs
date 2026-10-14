@@ -20,7 +20,7 @@ impl Start {
         scope: String,
         started_at: Timestamp,
     ) -> Result<Self> {
-        if scope.trim().is_empty() {
+        if scope.trim().is_empty() || scope.contains('\0') {
             return Err(Error::EmptyScope);
         }
 
@@ -78,7 +78,7 @@ impl LogEntry {
         started_at: Timestamp,
         ended_at: Timestamp,
     ) -> Result<Self> {
-        if scope.trim().is_empty() {
+        if scope.trim().is_empty() || scope.contains('\0') {
             return Err(Error::EmptyScope);
         }
 

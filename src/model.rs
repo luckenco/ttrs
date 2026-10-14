@@ -24,8 +24,8 @@ impl error::Error for InvalidId {}
 macro_rules! id_type {
     ($name:ident, $doc:literal) => {
         #[doc = $doc]
-        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-        pub struct $name(i64);
+        #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, serde::Serialize)]
+        pub struct $name(#[serde(serialize_with = "crate::protocol::decimal")] i64);
 
         impl $name {
             pub(crate) fn from_raw(value: i64) -> Self {
@@ -99,8 +99,9 @@ id_type!(
 );
 
 /// An exact hourly price, stored in millionths of a currency unit.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct HourlyRate {
+    #[serde(serialize_with = "crate::protocol::decimal")]
     amount_micros: i64,
     currency: String,
 }
@@ -130,9 +131,11 @@ impl HourlyRate {
 }
 
 /// Minimum and maximum whole working hours in a calendar month.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq, serde::Serialize)]
 pub struct MonthlyHours {
+    #[serde(serialize_with = "crate::protocol::optional_decimal")]
     minimum: Option<u32>,
+    #[serde(serialize_with = "crate::protocol::optional_decimal")]
     maximum: Option<u32>,
 }
 
@@ -164,7 +167,7 @@ impl MonthlyHours {
 }
 
 /// The name and immutable terms for a new service agreement.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct NewAgreement {
     name: String,
     pricing: Pricing,
@@ -215,7 +218,7 @@ impl NewAgreement {
 }
 
 /// The immutable commercial terms under which time is recorded.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct ServiceAgreement {
     id: ServiceAgreementId,
     project: ProjectId,
@@ -289,7 +292,7 @@ impl ServiceAgreement {
 }
 
 /// An agreement with the project and client labels used in list views.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize)]
 pub struct AgreementListing {
     /// The agreement and its immutable terms.
     pub agreement: ServiceAgreement,
@@ -302,7 +305,7 @@ pub struct AgreementListing {
 }
 
 /// A client that may own multiple projects.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Client {
     id: ClientId,
     name: String,
@@ -326,11 +329,12 @@ impl Client {
 }
 
 /// A project against which time can be tracked.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct Project {
     id: ProjectId,
     client: ClientId,
     name: String,
+    #[serde(serialize_with = "crate::protocol::serialize_zone")]
     billing_timezone: TimeZone,
     archived_on: Option<Date>,
 }
@@ -389,8 +393,9 @@ impl Project {
 }
 
 /// Monthly-cap information for a running timer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct TimerLimit {
+    #[serde(serialize_with = "crate::protocol::decimal")]
     remaining_us: i64,
     cap_at: Option<Timestamp>,
     reached: bool,
@@ -423,7 +428,7 @@ impl TimerLimit {
 }
 
 /// A timer that is currently tracking time.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct RunningTimer {
     id: TimerId,
     agreement: ServiceAgreementId,
@@ -469,7 +474,7 @@ impl RunningTimer {
 }
 
 /// A completed interval of tracked time.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize)]
 pub struct TimeEntry {
     id: EntryId,
     agreement: ServiceAgreementId,
