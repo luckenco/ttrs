@@ -1,5 +1,15 @@
 # Rationale: selectable workspace authority
 
+> Historical architecture/design record, not an installed API reference. Stages 4–5
+> and stage-6 local durable backup/restore are now implemented; production remains
+> unapproved. See [current contracts](worker-contract.md), [data safety](data-safety.md)
+> and [release gates](remote-runbook.md). Caller backend selection is in the native
+> Client/CLI adapter; Workspace is the local service. The selected platform host
+> is TypeScript with disposable Rust Wasm, not the original workers-rs branch.
+> Request status is POST with the original Envelope; Maintenance activation takes
+> the exact whole frozen report file and explicit confirmation. Schematic method
+> names and unimplemented bodies below record design intent, not missing code.
+
 ## Problem
 
 Add connected remote tracking and agent reads without losing local SQLite mode or
@@ -94,7 +104,9 @@ The first migration fences every legacy write target, including already-open han
 and reserves a write-rejecting `clients` sentinel to prevent legacy reinitialization.
 Authenticated session bootstrap supplies request/relative-input time with bounded,
 suspend-aware freshness; refreshing it never rewrites existing keys or reviewed times.
-These contracts have explicit acceptance cases in the design, not implemented tests.
+At this historical review these were acceptance cases, not implemented tests.
+Current service/client/Worker tests cover those boundaries locally; see the runbook
+for precise evidence and the still-unproven production/crash gates.
 
 ### Host-choice revision (2026-10-13)
 

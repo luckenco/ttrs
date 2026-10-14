@@ -1,12 +1,21 @@
 # Remote workspace type sketch
 
+> Historical architecture/design record, not an installed API reference. Stages 4–5
+> and stage-6 local durable backup/restore are now implemented; production remains
+> unapproved. See [current contracts](worker-contract.md), [data safety](data-safety.md)
+> and [release gates](remote-runbook.md). Caller backend selection is in the native
+> Client/CLI adapter; Workspace is the local service. The selected platform host
+> is TypeScript with disposable Rust Wasm, not the original workers-rs branch.
+> Request status is POST with the original Envelope; Maintenance activation takes
+> the exact whole frozen report file and explicit confirmation. Schematic method
+> names and unimplemented bodies below record design intent, not missing code.
+
 Companion to [the design](remote-workspace.md). These are **schematic contracts**,
-not installed application/protocol modules or deployable TypeScript. Stages 2–3
-now implement the private SQL seam and [native data safety](data-safety.md), with
-compiled public maintenance/portable Rustdoc examples; the schematic names and
-bodies below are not those installed APIs. Omitted existing model types and
-`unimplemented!()` bodies mark remaining design boundaries. Usage comes first
-in the design.
+not a copy of installed application/protocol modules or deployable TypeScript.
+Current stages 4–6 build on the private SQL seam and [native data safety](data-safety.md),
+with compiled public Rustdoc examples; schematic names/bodies are not installed APIs.
+Omitted types and `unimplemented!()` bodies mark historical design boundaries.
+Usage comes first in the design.
 
 ## Caller and authority values
 
@@ -261,7 +270,8 @@ assuming experimental workers-rs typed RPC accepts the sketched domain objects.
 ### Selected thin TypeScript host
 
 [Stage 1 selected this branch](../spikes/remote-host/evidence.md); it replaces the
-Rust platform host, not the Rust rules. The production code below remains pseudocode.
+Rust platform host, not the Rust rules. The design code below remains pseudocode;
+installed host code is in `worker/src/`.
 Keep one selected production host, not two maintained backends.
 
 ```ts
@@ -321,7 +331,8 @@ Rust/TS types and build artifacts rather than guess SDK or beta builder signatur
 Generated Rust DO glue may share a Wasm runtime; prove storage-capability isolation
 and safe runtime replacement after traps. For the TS fallback, prove explicitly
 bound core instances. Neither host's feasibility is established by this sketch;
-see the [stage-1 handoff](remote-workspace-handoff.md) for proofs and stop conditions.
+see the [stage-1 evidence](../spikes/remote-host/evidence.md) for historical feasibility proofs
+and the [current handoff](remote-workspace-handoff.md) for remaining release gates.
 
 ## Portable data and effects
 
@@ -367,4 +378,5 @@ opening. The effects worker uses bounded/coalesced mailboxes, not a generic task
 framework. Transport failures stay typed until presentation; completion errors
 must be owned and Send-safe without changing the compatible `tt::Error` surface.
 See the design for admission/recovery windows, no automatic reconnect submission,
-restore fault states, capacity gates and tests. Every body above remains unimplemented.
+restore fault states, capacity gates and tests. Every body above is schematic;
+it does not describe the implementation status of today's modules.

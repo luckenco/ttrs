@@ -1,114 +1,161 @@
-# Native data safety (stage 3)
+# Data safety: native and connected workspaces
 
-Stage 3 provides library capabilities, not the proposed `tt backup`/`tt restore`
-CLI commands or remote storage. Public contracts live in `tt::maintenance` and
-`tt::portable`; the import example is a compiled, executed Rustdoc test.
+Status: native preservation and stage-4 receipt-aware snapshots are implemented;
+stage-6 connected backup/restore is implemented and tested locally, **not
+production-approved**. See the [current service contract](worker-contract.md) and
+[release gates and local measurements](remote-runbook.md). Public library contracts
+live in `tt::maintenance` and `tt::portable`; Rustdoc examples are executable doctests.
 
 ## Opening and migration
 
-`Tracker::open` still creates a missing workspace. Maintenance backup/export require
-an existing source, so a mistyped source cannot silently export an empty workspace.
-Both can upgrade a supported legacy source.
+`Tracker::open` creates a missing native workspace. Maintenance backup/export require
+an existing source: a mistyped path must not export an empty workspace. Selecting
+remote occurs before native path resolution; remote failures never create a local
+fallback database. Remote ordinary access to unknown names returns 404 without
+tracking-table initialization; only explicit admin `tt workspace create` bootstraps.
 
-The supported legacy schema is the exact pre-stage-3 schema in `schema/legacy.sql`,
-including AUTOINCREMENT timers/entries and retainer columns. Unknown/newer schemas,
-extra schema objects and earlier schemas fail closed. Pre-AUTOINCREMENT databases
-cannot recover deleted-ID high-water marks; do not invent those marks or reset the
-file. Preserve it for explicit, separately reviewed recovery.
+Supported legacy schemas are recognized exactly, including AUTOINCREMENT sequence
+history. Unknown/newer schemas, extra application objects and pre-AUTOINCREMENT
+history without recoverable deleted-ID high-water marks fail closed. Preserve the
+original files; do not invent high-water marks or reset them.
 
-Migration reserves the SQLite writer lock, captures a consistent safety copy via a
-second reader, verifies integrity, foreign keys and fallible domain/sequence values,
-then fsyncs and publishes `<db>.pre-migration-UUID.sqlite`. Only then does one atomic
-transaction rename **all five** domain tables to `tt_*`, install versioned metadata,
-create a new workspace/incarnation and install the empty `clients` sentinel.
-All legacy sentinel writes abort, other legacy names disappear, and cached old
-statements fail too. Fresh/imported/restored databases install the same fence.
-Failure rolls back schema changes and fencing; a published safety copy is retained.
+Legacy migration reserves the SQLite writer lock, captures a consistent online
+safety copy through a second reader, verifies integrity, foreign keys and fallible
+domain/sequence values, then fsyncs and publishes `<db>.pre-migration-UUID.sqlite`.
+Only afterward does an atomic transaction rename all five domain tables to `tt_*`,
+install metadata/identity and the empty write-rejecting legacy `clients` sentinel.
+Schema-v1 to current schema-v2 migration likewise publishes a verified safety copy
+**before** atomic schema change. Fresh/imported/restored databases retain the sentinel;
+cached legacy writes fail too. Transaction failure rolls back schema changes, not
+an already published safety copy. No live v1 migration RPC is implemented in the
+Worker: older routed schemas fail closed; use verified import into a fresh target.
 
-Native handles hold shared file maintenance leases. Tracking mutations increment
-revision in the same IMMEDIATE transaction; errors/unwind do not advance it.
-Application expected-authority checks and receipts remain stage 4 work.
+Native handles hold shared maintenance leases. Domain writes increment revision in
+the same transaction. Workspace mutations additionally check reviewed authority and
+full captured timer/entry/project values; successful requests atomically persist
+work, revision and receipt. Rejections are recorded only after domain rollback, in
+a separate receipt-only transaction. Infrastructure failures never become rejection
+receipts. Receipt replay does not advance revision.
 
-## SQLite and portable backups
+## SQLite backup and publication
 
-SQLite backups use the online backup API, never a live WAL main-file copy. The
-standalone copy is verified, closed, fsynced, and published atomically without
-clobbering an existing output; its directory is then fsynced. `maintenance::export`
-reads an independent captured copy, not changing live tables.
+Native backup uses SQLite's online backup API, never a live WAL main-file copy.
+The standalone copy is verified, closed, fsynced and published no-clobber; its
+parent directory is then fsynced. Portable export reads an independent captured
+copy, not changing live tables.
 
-The first open per incarnation/UTC day creates and verifies
-`<canonical-db>.daily-YYYY-MM-DD-INCARNATION.sqlite`. Subsequent opens verify that
-copy without overwriting it; concurrent first opens use no-clobber publication.
-Backup failures are reported as open errors. This is a beginning-of-day-on-use
-copy, not continuous protection or an off-device schedule. No automatic deletion
-is implemented: monitor disk usage and retain independent copies. UI freshness
-reporting/retention policy remains later frontend/production work.
+First open per incarnation/UTC day creates and verifies
+`<canonical-db>.daily-YYYY-MM-DD-INCARNATION.sqlite`; subsequent opens verify rather
+than overwrite it. Concurrent first opens publish no-clobber. Failure blocks open.
+This is beginning-of-day-on-use, not continuous/off-device protection. No automatic
+native backup deletion exists: monitor disk and arrange independent copies.
 
-Portable format 1 is compact JSON with a manifest, data section and empty receipt
-section. Wide values are canonical decimal **strings**, never JSON numbers. The
-schema fixes table and column order in `src/schema.rs`; rows sort by positive ID.
+**Publication is not rollback:** file/directory fsync errors after publication may
+report failure with a valid output already installed. Inspect before retrying.
+Private replacement/download files use 0600 permissions on Unix. Filesystem leases,
+hard links, atomic replacement and directory fsync assume a supported local filesystem.
+Network filesystems, power cuts and Linux runtime behavior are not certified by macOS
+checks. Never manually replace a live workspace or copy only its WAL database main file.
 
-- Data: all clients, projects, agreements, running timers and completed entries;
-  timer/entry sequence high-water marks, including deleted maxima; source revision.
-- Manifest: format/schema/rules versions, source workspace/incarnation, revision,
-  capture time, counts, data size and SHA-256 data/receipt digests.
-- Units: UTC timestamp microseconds, whole monthly hours, currency millionths,
-  ISO dates and named IANA billing timezones.
-- Canonical data bytes: compact serde JSON, field order `tables`, `sequences`,
-  `revision`. Data digest excludes identity/capture provenance so import under
-  a new identity can be compared exactly.
-- Receipts: exactly `[]`, because no operation service/receipt schema exists yet.
-  Future receipt support requires a new format; format 1 rejects unknown fields
-  and nonempty receipt sections instead of silently dropping them.
+## Portable format 2 (format 1 remains readable)
 
-Verification is fallible, not deserialization into asserting storage constructors.
-It checks counts/digests, canonical integers, ranges, nullability, IDs, names,
-pricing/currency/limits, dates/zones, foreign references, agreement succession and
-work periods, single-client timer ownership and sequence high-water marks.
-It does not replay command admission or recalculate every historical monthly cap.
-Checksums detect corruption, **not authorship**; restore only trusted snapshots.
-No credentials, grants or frontend preferences are exported.
+Current snapshots are compact JSON format 2/schema 2. Wide values are canonical
+exact decimal strings, never JSON numbers. Table/column order is fixed; rows sort by
+positive ID. UTC times are microseconds, monthly hours whole hours, money currency
+millionths, dates ISO and billing zones named IANA zones.
 
-## Empty import and native restore drill
+- Data includes all clients/projects/agreements, running timers/completed entries,
+  revision and timer/entry high-water marks, including deleted maxima.
+- Manifest includes versions, source workspace/incarnation, capture time, counts,
+  sizes and SHA-256 digests. Data digest covers compact `tables,sequences,revision`
+  and excludes identity/capture provenance.
+- Receipt digest covers complete sorted live and source-audit receipts. Imported
+  receipts retain their source authority/principal/key/envelope/outcome but are
+  **audit-only**, never replay permission in a fresh target.
+- Operational digest covers `[fence,fence_audit]`: meaningful source fence/floor
+  proofs are retained as audit, not target activation permission. Import retains any
+  receipt-referenced scope and any non-null purge floor (even without receipts),
+  dropping only empty no-receipt/no-floor fences on carry-forward. Job-only history
+  remains in source snapshots and durable control/R2 reports, not replay authority.
+  The durable local purge floor prevents absent purged requests becoming retryable
+  or NotApplied after clock correction: status remains conservatively OutcomeExpired.
+- Format 1/schema 1 is still readable with exactly empty receipts and no operational
+  digest. Import creates fresh identities; no source identity authorizes replay.
+- Verification requires a fence or audit proof for every receipt context and rejects
+  identity collisions. Fresh identity and empty-fence compaction change the operational
+  digest; all data, sequences, revision and receipt digests remain unchanged. Meaningful
+  receipt/floor proofs persist indefinitely and may exhaust bounded Worker capacity;
+  writes/import then refuse safely rather than deleting proofs.
 
-`maintenance::import` requires a nonexistent target and no stale WAL/SHM sidecars.
-It builds a temporary empty database, creates fresh workspace/incarnation IDs,
-inserts explicit IDs in foreign-key order, restores sequences/revision and compares
-the imported data digest before committing/publishing. Failed imports leave the
-target untouched. Numeric IDs remain stable; authority identity does not.
+Verification is fallible and checks digests/counts, canonical integers, ranges,
+nullability, IDs/names, currency/pricing/limits, dates/zones, references/succession,
+work periods, timer ownership and high-water marks. It does not replay admission
+or recalculate every historical monthly cap. Checksums detect corruption, **not
+source authorship**. Restore only trusted snapshots. Credentials, grants, frontend
+preferences and remote routing/control jobs are not exported.
 
-`maintenance::restore` is an explicit destructive library call: invoking it confirms
-loss of target work not present in the supplied verified snapshot. It requires
-exclusive maintenance access (all upgraded handles closed), preserves the target
-workspace and rotates its incarnation. Supported legacy targets first migrate with
-a safety copy. The final old cut gets a verified `<db>.pre-restore-UUID.sqlite`
-before SQLite checkpoints, exits WAL mode, closes and atomically replaces the file.
-Running timers remain running. Restoring from another workspace is allowed by this
-low-level capability; it never installs the source's identity.
+## Native import and low-level restore
 
-Both paths retain the legacy sentinel and verify imported bytes before publication.
-File/directory fsync errors after publication can report failure even though a valid
-output is installed: inspect it before retrying. Replacement files are private
-(0600 on Unix). Restore refuses symlink/hard-link targets. Manual replacement of a
-live SQLite file and raw handles during maintenance are unsupported.
+`maintenance::import` requires a nonexistent target without stale WAL/SHM sidecars.
+It builds/verifies a temporary database with fresh workspace/incarnation, inserts
+explicit IDs in foreign-key order and preserves sequences/revision/data and receipt
+digests before publication. Twenty idle native import generations retain zero empty
+fence-audit rows rather than accumulating meaningless identities. Running timers
+remain running.
 
-## Limits and remaining work
+`maintenance::restore` is explicitly destructive, requires exclusive maintenance
+access (all upgraded handles closed), preserves target workspace and rotates its
+incarnation. It retains a verified final `<db>.pre-restore-UUID.sqlite` before
+checkpointing, exiting WAL, closing and atomically replacing the file. Supported
+legacy targets first migrate safely. Source identity is never installed. Symlink/
+hard-link targets are refused; corrupt/unsupported-target salvage is not implemented.
 
-- Full native integrity/domain verification and portable capture materialize history;
-  memory is O(snapshot), with additional serialized buffers. Large local workspaces
-  are not truncated or arbitrarily capped, but can exhaust RAM or delay opening.
-  Remote admission budgets and immutable staging are later work.
-- Backups are retained indefinitely and can fill disk; backup failure blocks opening
-  or migration rather than silently proceeding unprotected.
-- Restore requires a verifiable target safety copy. Corrupt/unsupported-target salvage
-  is not implemented; preserve the original files for a separately reviewed recovery.
-- Filesystem locking, atomic rename and directory fsync assume a supported local
-  filesystem. Network filesystems, power-cut fault injection and Linux runtime
-  execution have not been proven by the macOS tests.
-- Source provenance is not authenticated and timezone interpretation uses the bundled
-  Jiff tzdb. Native/workerd business parity, remote receipt-aware snapshots,
-  reviewed-authority service checks, confirmed frozen loss reports, CLI/TUI maintenance
-  commands, off-device scheduling and production restore fault matrices remain later stages.
+CLI spelling:
 
-Reproducible checks and coverage are recorded in the
-[stage-3 evidence](remote-workspace.md#stage-3-data-safety-evidence).
+```sh
+tt --backend local backup create --output cut.sqlite
+tt --backend local backup export --output cut.json
+tt backup verify cut.json                       # file-only; no backend/database open
+tt --backend local restore import cut.json      # new target only
+tt --backend local restore replace cut.json --yes
+```
+
+Native `replace --yes` is the exclusive **low-level restore**, not a frozen-loss-report
+workflow. It has no frozen report. Confirmation is checked before file/database I/O.
+
+## Connected maintenance
+
+```sh
+tt workspace create                             # explicit remote admin bootstrap
+tt backup create                                # retained remote manifest; no --output
+tt backup export --output cut.json               # create then verified download
+tt backup download MANIFEST --output cut.json    # existing published manifest only
+tt restore stage cut.json                        # fresh inactive target
+tt restore status                               # discover durable intent after uncertainty
+tt restore freeze JOB                            # drive preparation to confirm
+tt restore report JOB --output frozen-report.json
+tt restore activate JOB --report frozen-report.json --yes
+tt restore abort JOB                             # pre-flip only
+```
+
+Downloads go through the selected authenticated Worker, not arbitrary R2 URLs.
+Worker verifies manifest/payload; Rust verifies the whole-body SHA-256 and portable
+semantics before no-clobber file and directory fsync. Reports use the dedicated
+4 MiB whole-report route, validate header/status/file SHA-256 and bind job, old/target
+authorities and frozen revision. Activation requires the **exact whole frozen report
+file**, reviewed and confirmed before I/O; summaries/preliminary reports are not
+accepted. Uncertain admin responses require status inspection and explicit resumption,
+not a claim of rollback. Abort is unavailable after route flip.
+
+The host implements hourly alarms and first daily/monthly capture selection,
+immutable publication with verification, final safety copy and resumable frozen
+restore. It performs no application R2 deletion. Out-of-band locks/lifecycle,
+independent scoped copy identity and operator drill are **not configured or run**.
+Full capture is O(all rows/receipts); native history can exhaust RAM, and experimental
+remote byte limits do not certify CPU/isolate memory. See the runbook for narrow
+local boundary fixtures, control-KV accumulation and outstanding production gates.
+
+Historical stage-3 **v1** checks (142 native tests / 10 doctests) remain in the
+[checkpoint evidence](remote-workspace.md#stage-3-data-safety-evidence); they are not
+current aggregate counts. See the [final local verification ledger](remote-runbook.md#8-verification-snapshot-and-remaining-work)
+for current results and still-open production gates.

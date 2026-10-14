@@ -1,23 +1,45 @@
 # Local and connected-remote workspaces
 
-Status: implementation design; the remote product is not implemented.
-**Stage 1 is complete: select a TypeScript Worker + TypeScript SQLite Durable Objects
-with per-DO, disposable synchronous Rust Wasm instances.** Rust owns the rules;
-TS owns platform lifecycle, not a second rule implementation.
-[Stage-1 evidence](../spikes/remote-host/evidence.md): workers-rs was tried first,
-but shared-runtime trap recovery leaves in-flight requests unsettled. The selected
-thin TS host passes the complete local workerd feasibility ledger, with explicit
-synthetic-workload and capacity limits. **Stage 2 is also complete:** existing native
-rules now use the shared exact SQL seam; default `Tracker` behavior remains compatible.
-See [native-seam evidence](#stage-2-native-seam-evidence). **Stage 3 data safety is complete:**
-versioned native migrations, consistent backups and verified portable import/restore
-are implemented as library capabilities; see [data-safety evidence](#stage-3-data-safety-evidence).
-Maintenance CLI commands and remote storage remain unimplemented. Offline writes and Lexware execution are separate future work. See [type sketch](remote-workspace-sketch.md),
-[rationale](remote-workspace-rationale.md), and [next-agent handoff](remote-workspace-handoff.md).
+Status: **stages 1–5 implemented; stage-6 local durable backup/restore and fault
+matrix implemented. Connected mode is a local/pilot implementation, NOT
+production-approved or deployed.** Production safety is an open release gate,
+not a consequence of passing a happy-path restore.
+
+- Stage 1 selected a thin TypeScript Worker/SQLite Durable Object host with
+  disposable synchronous Rust Wasm instances; [spike evidence](../spikes/remote-host/evidence.md)
+  is historical feasibility evidence, not product capacity certification.
+- Stages 2–3 supplied the shared exact SQL seam and native preservation path.
+  Their evidence below records historical schema/format-1 checkpoints.
+- Stage 4 supplies coherent Workspace projections, reviewed-authority/full-value
+  guards, durable receipts/revisions/purge floor, canonical envelopes and the
+  durable per-request journal. Current snapshots are format 2/schema 2.
+- Stage 5 connects CLI/TUI, Rust Client/Maintenance, authenticated HTTP, the
+  pinned cf-built Wasm host and established read-only SDK MCP. Native/workerd
+  parity uses the **same golden operation/query fixture**, including i64-max money,
+  i128 totals, historical DST and a 120-year calendar span.
+- Stage 6 implements hourly alarms, daily/monthly tier selection, immutable R2
+  publication, resumable freeze/report/accept/CAS/retire/enable and local restart,
+  trap and real-effect fault tests. Independent retention locks/copy identities,
+  monthly operator drills, release CPU/isolate-heap capacity, bounded control-KV
+  cleanup and exhaustive hard-crash coverage remain unapproved.
+
+Current installed contracts: [worker contract](worker-contract.md),
+[native data safety](data-safety.md), [Worker package](../worker/README.md) and
+[release runbook](remote-runbook.md). The [handoff](remote-workspace-handoff.md)
+records completed local integration and remaining release work. Final local native
+checks passed 245 tests and 13 doctests; the core/Wasm/bridge and full Worker checks,
+including the Rust CLI roundtrip, are detailed in the
+[verification ledger](remote-runbook.md#8-verification-snapshot-and-remaining-work).
+Offline writes and Lexware execution remain separate future work.
+
+The architecture discussion below preserves the original design and acceptance
+plan. Proposed types/method names are historical sketches, not API reference;
+use the current contract above. The [rationale](remote-workspace-rationale.md)
+and [type sketch](remote-workspace-sketch.md) are likewise historical design records.
 
 ## Usage first
 
-Existing command spelling stays unchanged. The new commands below are proposed:
+Tracking command spelling stays unchanged. These maintenance/backend commands are implemented:
 
 ```sh
 tt config backend local                         # default; current SQLite workspace
@@ -27,13 +49,20 @@ tt start -p website -s ISSUE-123
 tt status
 tt stop --id id:7
 tt --backend local status                        # explicit override, never fallback
+tt workspace create                             # remote admin; explicit bootstrap only
+tt request list                                 # file-only, every saved namespace
 tt request status REQUEST                       # reconcile an uncertain remote mutation
 tt request retry REQUEST                        # identical saved request, if still admissible
-tt backup create                                # snapshot selected authority
+tt backup create                                # remote: publish manifest, no --output
+tt --backend local backup create --output cut.sqlite # native standalone SQLite
+tt backup export --output cut.json               # portable; remote creates then downloads
 tt backup verify FILE
-tt backup download BACKUP --output FILE          # remote backup -> independent local copy
+tt backup download MANIFEST --output FILE          # remote backup -> independent local copy
 tt restore stage FILE                           # admin; new inactive authority
 tt restore freeze RESTORE                       # final safety copy and frozen loss report
+tt restore status [JOB]                          # inspect/discover durable job after uncertainty
+tt restore report RESTORE --output REPORT        # whole immutable report; review this file
+tt restore abort RESTORE                         # only before route flip
 tt restore activate RESTORE --report REPORT --yes # confirmation binds the frozen cut
 ```
 
@@ -236,9 +265,11 @@ anchor and random 128-bit nonce. Its timestamp is **part of the key**, not an ed
 retry field; refreshing an anchor never changes an existing request.
 No per-mutation signing/prepare service is needed for this authenticated protocol.
 
-Proposed recovery policy: new requests must arrive within 10 minutes of their
-key's creation time (at most 30 seconds into the future); terminal receipts remain
-for 35 days. These are protocol choices to test, not Cloudflare limits.
+Implemented recovery policy: missing requests admit through age 10 minutes inclusive,
+at most 30 seconds into the future; receipts persist at least 35 days from the later
+of execution/key time. These are protocol choices, not Cloudflare limits. Retained
+receipts win first; durable purge-floor history conservatively preserves OutcomeExpired
+for absent purged keys even after clock correction.
 
 Execution: authenticate/authorize -> require envelope principal to match the
 trusted authenticated principal -> validate envelope -> inside transaction check
@@ -253,8 +284,9 @@ admission fails before changing tracked work. Expired missing requests never run
 
 Before sending, atomically create and fsync a **per-request** 0600 journal file
 containing exact bytes, original principal/authority, identity and endpoint; never
-credentials. Use atomic installation-ID initialization and short metadata locks,
-not one shared pending.json that concurrent CLI/TUI processes overwrite. Journals
+credentials. Current journals use independent UUID-v4 request nonces and no persistent
+installation ID or lock across HTTP; not one shared pending.json that concurrent
+CLI/TUI processes overwrite. Journals
 are uncertainty records,
 not an offline outbox. Persist the terminal outcome before clearing pending state.
 
@@ -553,9 +585,10 @@ movement occurred during stage 2.
 
 ## Stage-3 data-safety evidence
 
+**Historical v1 checkpoint, not current aggregate counts or current format.**
 Completed 2026-10-14. [Native data-safety contracts and limits](data-safety.md)
-document the implemented public library capabilities; proposed maintenance CLI
-commands, remote storage and reviewed-authority application checks are not added.
+document today's public capabilities. At this v1 checkpoint maintenance CLI
+commands, remote storage and reviewed-authority checks had not yet been added.
 
 - `src/schema.rs` and `schema/*.sql` define schema/rules version 1 and exact legacy
   recognition. A verified/fsynced online safety backup gates atomic five-table rename,
@@ -613,7 +646,7 @@ workerd was not rerun; this is not native/DO business-parity evidence.
 Remaining limits: full-snapshot RAM/open-time costs, indefinitely retained on-device
 copies and disk exhaustion, unimplemented corrupt-target salvage, filesystem/platform
 and power-cut fault testing, UI freshness reporting and remote snapshot budgets.
-Stage 4 is next: coherent operation service, expected-authority/admin guards,
+At that checkpoint stage 4 was next: coherent operation service, expected-authority/admin guards,
 canonical requests/receipts/journals and frontend effects. Extending backups for
 retained requests must precede using the receipt-aware service with real data.
 No deployment, provisioning, push or bookmark movement occurred.
@@ -624,7 +657,8 @@ Explicit times, request identities and expected values preserve useful option va
 They do not make offline-first "upload a file on reconnect": concurrent timers,
 order-dependent cap truncation, archival and replacement boundaries require a new
 outbox/conflict policy. Revisit admission windows and provisional identities then.
-There is deliberately no queue, replicated DB, merge engine or automatic replay now.
+There is deliberately no offline mutation outbox, replicated DB, merge engine or
+automatic replay now. Bounded in-process TUI effects are not an offline queue.
 
 ## External evidence
 
