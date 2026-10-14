@@ -3,7 +3,7 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 /// A single line with a byte cursor at a grapheme boundary.
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Input {
     text: String,
     cursor: usize,

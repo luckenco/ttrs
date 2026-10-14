@@ -33,6 +33,18 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App, now: Timestamp, zone: &Time
         );
         return;
     }
+    if app.pending.context.is_none()
+        && let Some(error) = &app.refresh_error
+    {
+        frame.render_widget(
+            widgets::Paragraph::new(format!(
+                "tt · {error}\nq / Ctrl-C: quit; timers keep running"
+            ))
+            .wrap(widgets::Wrap { trim: false }),
+            area,
+        );
+        return;
+    }
     let compact = area.width < 60;
     let (feedback, feedback_style) = feedback(app);
     let feedback_height = if feedback.is_empty() && app.picker.is_none() {

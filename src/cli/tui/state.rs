@@ -3,16 +3,19 @@ use std::time::{Duration, Instant};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::{Timestamp, tz::TimeZone};
 use ratatui::widgets::ListState;
-use tt::{Tracker, command, model};
+use tt::model;
 
 use super::{
-    super::{Error, app::parse_time},
+    super::Error,
+    effects::{Apply, Pending, Read},
     input::Input,
     search, workspace,
 };
 
 pub(super) struct App {
     pub workspace: workspace::Workspace,
+    pub pending: Pending,
+    picker_context: Option<tt::client::Context>,
     pub snapshot: model::Dashboard,
     pub selection: ListState,
     pub picker: Option<Picker>,
@@ -70,37 +73,14 @@ impl App {
         }
         Self {
             workspace: workspace::Workspace::default(),
+            pending: Pending::default(),
+            picker_context: None,
             snapshot,
             selection,
             picker: None,
             message: None,
             error: None,
             refresh_error: None,
-        }
-    }
-
-    pub fn refresh(&mut self, tracker: &Tracker, now: Timestamp, zone: &TimeZone) {
-        let zone = self.workspace.zone.clone().unwrap_or_else(|| zone.clone());
-        let result = tracker
-            .dashboard(now, &zone)
-            .map_err(core_error)
-            .and_then(|snapshot| self.workspace.refresh(tracker).map(|()| snapshot));
-        match result {
-            Ok(snapshot) => {
-                let selected = self
-                    .selection
-                    .selected()
-                    .and_then(|i| self.snapshot.timers.get(i))
-                    .and_then(|old| snapshot.timers.iter().position(|s| s.timer == old.timer));
-                self.selection.select(selected);
-                self.snapshot = snapshot;
-                if self.refresh_error.take().is_some() {
-                    self.notify("Connection restored.".into(), None);
-                }
-            }
-            Err(error) => {
-                self.refresh_error = Some(format!("Refresh failed; actions disabled: {error}"));
-            }
         }
     }
 
@@ -122,6 +102,10 @@ impl App {
     }
 
     pub fn paste(&mut self, text: &str) {
+        if matches!(&self.workspace.overlay, Some(workspace::Overlay::Form(form)) if form.review.is_none() && !form.helping)
+        {
+            self.pending.cancel_prepare();
+        }
         match &mut self.picker {
             Some(Picker::Project {
                 projects,
@@ -142,8 +126,11 @@ impl App {
                 ..
             }) => {
                 if *field == Field::Time {
-                    at.insert(text);
+                    if at.insert(text) {
+                        self.pending.edited();
+                    }
                 } else if input.insert(text) {
+                    self.pending.edited();
                     selection.select(Some(0));
                 }
             }
@@ -152,15 +139,17 @@ impl App {
     }
 
     /// Returns true only for an explicit quit. Errors keep the current form intact.
-    pub fn key(
-        &mut self,
-        key: KeyEvent,
-        tracker: &mut Tracker,
-        now: Timestamp,
-        zone: &TimeZone,
-    ) -> Result<bool, Error> {
+    pub fn key(&mut self, key: KeyEvent, now: Timestamp, zone: &TimeZone) -> Result<bool, Error> {
+        if self.pending.context.is_none() && self.refresh_error.is_some() {
+            return Ok(key.code == KeyCode::Char('q')
+                || (key.code == KeyCode::Char('c')
+                    && key.modifiers.contains(KeyModifiers::CONTROL)));
+        }
+        if key.code == KeyCode::Esc {
+            self.pending.cancel_read();
+        }
         let zone = self.workspace.zone.clone().unwrap_or_else(|| zone.clone());
-        let result = self.handle(key, tracker, now, &zone);
+        let result = self.handle(key, now, &zone);
         if let Err(error) = &result {
             let field = match &self.picker {
                 Some(Picker::Scope { field, .. }) => Some(*field),
@@ -174,22 +163,17 @@ impl App {
         result
     }
 
-    fn handle(
-        &mut self,
-        key: KeyEvent,
-        tracker: &mut Tracker,
-        now: Timestamp,
-        zone: &TimeZone,
-    ) -> Result<bool, Error> {
+    fn handle(&mut self, key: KeyEvent, now: Timestamp, zone: &TimeZone) -> Result<bool, Error> {
         if key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char('c') {
             return Ok(true);
         }
         if self.picker.is_none()
-            && let Some(quit) = self.workspace_key(key, tracker, now, zone)?
+            && let Some(quit) = self.workspace_key(key, now, zone)?
         {
             return Ok(quit);
         }
         if key.code == KeyCode::Esc {
+            self.pending.view += 1;
             if self.picker.take().is_none() {
                 self.message = None;
             }
@@ -197,7 +181,7 @@ impl App {
             return Ok(false);
         }
         if self.picker.is_some() {
-            self.picker_key(key, tracker, now, zone)?;
+            self.picker_key(key, zone)?;
             return Ok(false);
         }
         match key.code {
@@ -212,6 +196,8 @@ impl App {
                 if self.refresh_error.is_none() && !self.snapshot.projects.is_empty() =>
             {
                 self.error = None;
+                self.pending.view += 1;
+                self.picker_context = self.pending.context.clone();
                 self.picker = Some(Picker::Project {
                     projects: search::Projects::new(self.snapshot.projects.clone()),
                     query: Input::default(),
@@ -224,12 +210,11 @@ impl App {
                     .selected()
                     .and_then(|i| self.snapshot.timers.get(i))
                 {
-                    let entry = tracker
-                        .end_if_current(&status.timer, now)
-                        .map_err(core_error)?;
-                    self.notify(format!("Stopped {}", entry.scope()), overflow(&entry, now));
+                    self.request_apply(
+                        Apply::Stop(status.timer.clone()),
+                        self.pending.context.clone(),
+                    )?;
                     self.error = None;
-                    self.refresh(tracker, now, zone);
                 }
             }
             _ => {}
@@ -237,13 +222,7 @@ impl App {
         Ok(false)
     }
 
-    fn picker_key(
-        &mut self,
-        key: KeyEvent,
-        tracker: &mut Tracker,
-        now: Timestamp,
-        zone: &TimeZone,
-    ) -> Result<(), Error> {
+    fn picker_key(&mut self, key: KeyEvent, zone: &TimeZone) -> Result<(), Error> {
         let picker = self.picker.as_mut().expect("a picker is open");
         match picker {
             Picker::Project {
@@ -261,9 +240,8 @@ impl App {
                     else {
                         return Ok(());
                     };
-                    let recent = tracker
-                        .recent_scopes(project.project.id(), 3)
-                        .map_err(core_error)?;
+                    let recent = Vec::new();
+                    self.request_read(Read::Scopes(project.project.id()), zone)?;
                     let previous = self
                         .snapshot
                         .timers
@@ -325,40 +303,23 @@ impl App {
                         *field = Field::Scope;
                         return Err(Error::usage("Enter a scope or choose a recent one."));
                     }
-                    let mut time = at.as_str().trim();
-                    if time.is_empty() {
-                        time = "now";
-                    }
-                    let time = parse_time(time, zone, now).inspect_err(|_| *field = Field::Time)?;
-                    if time > now {
-                        *field = Field::Time;
-                        return Err(Error::usage(
-                            "Future start: use : Start timer at for review.",
-                        ));
-                    }
-                    let start = command::Start::new(project.agreement.id(), scope.to_owned(), time)
-                        .map_err(core_error)?;
-                    let (message, timer, warning) = if let Some(old) = previous {
-                        let (entry, timer) = tracker.switch(old, start).map_err(core_error)?;
-                        (
-                            format!("Switched to {}", timer.scope()),
-                            timer,
-                            overflow(&entry, time),
-                        )
-                    } else {
-                        let timer = tracker.start(start).map_err(core_error)?;
-                        (format!("Started {}", timer.scope()), timer, None)
+                    let operation = Apply::Start {
+                        project: project.clone(),
+                        previous: previous.clone(),
+                        scope: scope.to_owned(),
+                        time: at.as_str().to_owned(),
+                        zone: zone.clone(),
                     };
-                    self.notify(message, warning);
-                    self.picker = None;
-                    self.refresh(tracker, now, zone);
-                    self.selection
-                        .select(self.snapshot.timers.iter().position(|s| s.timer == timer));
+                    let expected = self.picker_context.clone();
+                    self.request_apply(operation, expected)?;
                 }
                 _ => {
                     if *field == Field::Time {
-                        at.key(key);
+                        if at.key(key) {
+                            self.pending.edited();
+                        }
                     } else if input.key(key) {
+                        self.pending.edited();
                         selection.select(Some(0));
                     }
                 }
@@ -407,6 +368,6 @@ pub(super) fn overflow(entry: &model::TimeEntry, requested: Timestamp) -> Option
     ))
 }
 
-pub(super) fn core_error(error: tt::Error) -> Error {
+pub(super) fn core_error(error: impl std::fmt::Display) -> Error {
     Error::runtime(error.to_string())
 }

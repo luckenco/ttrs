@@ -1,15 +1,18 @@
+#[cfg(test)]
+use crate::cli::backend::Backend;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::{Timestamp, tz::TimeZone};
-use tt::{Tracker, model};
+use tt::model;
 
 use super::{
     catalog::{self, Browser, Catalogs, Reference},
     choose::Choose,
+    effects::Apply,
     form::{Form, Kind},
-    state::{App, core_error, move_selection},
+    state::{App, move_selection},
     view,
 };
-use crate::cli::{Error, app};
+use crate::cli::Error;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Section {
@@ -101,7 +104,6 @@ pub(super) struct Workspace {
     pub zone: Option<TimeZone>,
     pub source: String,
     pub settings_scroll: u16,
-    loaded: bool,
 }
 
 impl Workspace {
@@ -130,18 +132,38 @@ impl Workspace {
         self.catalogs.project(id).ok()
     }
 
-    pub fn load(&mut self, tracker: &Tracker) -> Result<(), Error> {
-        self.catalogs = Catalogs::load(tracker).map_err(core_error)?;
-        self.loaded = true;
-        self.rebuild();
+    #[cfg(test)]
+    pub fn load(&mut self, tracker: &Backend) -> Result<(), Error> {
+        self.install(Catalogs::load(tracker).map_err(super::state::core_error)?);
         Ok(())
     }
 
-    pub fn refresh(&mut self, tracker: &Tracker) -> Result<(), Error> {
-        if self.loaded {
-            self.load(tracker)?;
+    pub fn install(&mut self, catalogs: Catalogs) {
+        self.catalogs = catalogs;
+        self.rebuild();
+    }
+
+    pub fn invalidate_reviews(&mut self) {
+        self.back.clear();
+        if let Some(Overlay::Form(form)) = &mut self.overlay {
+            form.review = None;
+            form.admission = None;
+            form.error =
+                Some("Display context changed. Reopen this draft before reviewing.".into());
+        } else {
+            self.overlay = None;
         }
-        Ok(())
+        for browser in &mut self.browsers {
+            browser.selection.select(None);
+            browser.client = None;
+        }
+    }
+
+    pub fn close_applied(&mut self) {
+        self.back.clear();
+        if matches!(self.overlay, Some(Overlay::Form(_))) {
+            self.overlay = None;
+        }
     }
 
     fn rebuild(&mut self) {
@@ -174,13 +196,13 @@ impl App {
     pub(super) fn workspace_key(
         &mut self,
         key: KeyEvent,
-        tracker: &mut Tracker,
         now: Timestamp,
         zone: &TimeZone,
     ) -> Result<Option<bool>, Error> {
         if self.workspace.overlay.is_some() {
-            let result = self.overlay_key(key, tracker, now, zone);
+            let result = self.overlay_key(key, now, zone);
             if self.workspace.overlay.is_none() && self.picker.is_none() {
+                self.pending.view += 1;
                 self.workspace.overlay = self.workspace.back.pop();
             }
             result?;
@@ -252,7 +274,6 @@ impl App {
                 Some(Action::Go(Section::ALL[c as usize - '1' as usize]))
             }
             KeyCode::Char(':') => {
-                self.workspace.load(tracker)?;
                 let items = self.actions();
                 self.error = None;
                 self.workspace.overlay = Some(Overlay::Actions(Choose::new(
@@ -276,7 +297,6 @@ impl App {
                 }
                 Section::Settings => Action::Timezone,
                 Section::Dashboard | Section::Agreements => {
-                    self.workspace.load(tracker)?;
                     if self.workspace.catalogs.clients.is_empty() {
                         Action::NewClient
                     } else {
@@ -334,7 +354,7 @@ impl App {
             _ => None,
         };
         if let Some(action) = action {
-            self.action(action, tracker, now, zone)?;
+            self.action(action, now, zone)?;
             return Ok(Some(false));
         }
         if self.workspace.section != Section::Dashboard
@@ -345,21 +365,21 @@ impl App {
         Ok(None)
     }
 
-    fn overlay_key(
-        &mut self,
-        key: KeyEvent,
-        tracker: &mut Tracker,
-        now: Timestamp,
-        zone: &TimeZone,
-    ) -> Result<(), Error> {
+    fn overlay_key(&mut self, key: KeyEvent, now: Timestamp, zone: &TimeZone) -> Result<(), Error> {
         let mut overlay = self.workspace.overlay.take().expect("open overlay");
+        if matches!(&overlay, Overlay::Form(form) if form.review.is_none() && !form.helping)
+            && key.code != KeyCode::F(1)
+        {
+            self.pending.cancel_prepare();
+        }
         if key.code == KeyCode::Char(':') && matches!(overlay, Overlay::Detail { .. }) {
-            if let Err(error) = self.workspace.load(tracker) {
-                self.workspace.overlay = Some(overlay);
-                return Err(error);
-            }
+            let loading = self.pending.reading();
+            self.pending.cancel_read();
+            self.pending.view += 1;
             let items = self.actions();
-            self.workspace.back.push(overlay);
+            if !loading {
+                self.workspace.back.push(overlay);
+            }
             self.workspace.overlay = Some(Overlay::Actions(Choose::new(
                 "Actions",
                 items.into_iter().map(|item| {
@@ -394,6 +414,7 @@ impl App {
                         return Ok(());
                     }
                     if form.review.take().is_some() {
+                        self.pending.view += 1;
                         form.error = None;
                     } else if form.step > 0 {
                         form.step = 0;
@@ -406,45 +427,8 @@ impl App {
                     Ok(())
                 } else if let Some(review) = &form.review {
                     match key.code {
-                        KeyCode::Enter if self.refresh_error.is_none() => {
-                            match review.apply(tracker, now) {
-                                Ok(outcome) => {
-                                    self.workspace.back.clear();
-                                    if let Some(zone) = outcome.zone {
-                                        self.workspace.zone = Some(zone);
-                                        self.workspace.source = "Configured".into();
-                                    }
-                                    self.notify(outcome.message, outcome.warning);
-                                    self.error = None;
-                                    self.refresh(tracker, now, zone);
-                                    if let Some(timer) = outcome.timer {
-                                        self.selection.select(
-                                            self.snapshot
-                                                .timers
-                                                .iter()
-                                                .position(|s| s.timer == timer),
-                                        );
-                                    }
-                                    if let Some(reference) = outcome.reference {
-                                        self.workspace.section = match reference {
-                                            Reference::Client(_) => Section::Clients,
-                                            Reference::Project(_) => Section::Projects,
-                                            Reference::Agreement(_) => Section::Agreements,
-                                        };
-                                        if let Some(browser) = self.workspace.browser_mut() {
-                                            browser.selection.select(
-                                                browser
-                                                    .rows
-                                                    .matches()
-                                                    .position(|r| r.reference == reference),
-                                            );
-                                        }
-                                    }
-                                    return Ok(());
-                                }
-                                Err(error) => Err(error),
-                            }
-                        }
+                        KeyCode::Enter if self.refresh_error.is_none() => self
+                            .request_apply(Apply::Prepared(review.clone()), form.admission.clone()),
                         _ => {
                             scroll(&mut form.scroll, key.code);
                             Ok(())
@@ -461,11 +445,7 @@ impl App {
                                     "Database unavailable. Your draft is preserved.",
                                 ));
                             }
-                            self.workspace.load(tracker)?;
-                            form.review =
-                                Some(form.prepare(&self.workspace.catalogs, now, zone)?);
-                            form.scroll = 0;
-                            Ok(())
+                            self.prepare_form(form, zone)
                         })
                 }
             }
@@ -481,7 +461,7 @@ impl App {
                         } else {
                             let action = item.action;
                             // Failed actions retain the menu, including its search and selection.
-                            let result = self.action(action, tracker, now, zone);
+                            let result = self.action(action, now, zone);
                             if result.is_ok() {
                                 return Ok(());
                             }
@@ -560,45 +540,23 @@ impl App {
         result
     }
 
-    fn action(
-        &mut self,
-        action: Action,
-        tracker: &mut Tracker,
-        now: Timestamp,
-        zone: &TimeZone,
-    ) -> Result<(), Error> {
-        if matches!(
-            action,
-            Action::Go(_)
-                | Action::NewClient
-                | Action::NewProject
-                | Action::Replace
-                | Action::Log
-                | Action::StartAt
-                | Action::Archive
-                | Action::Unarchive
-                | Action::FilterClient
-                | Action::Entries
-        ) {
-            self.workspace.load(tracker)?;
-        }
+    fn action(&mut self, action: Action, now: Timestamp, zone: &TimeZone) -> Result<(), Error> {
+        self.pending.cancel_read();
+        self.pending.view += 1;
         match action {
             Action::Go(section) => {
                 self.workspace.back.clear();
-                if section == Section::Settings {
-                    self.workspace.source = app::timezone_source()?.into();
-                }
                 self.workspace.section = section;
                 self.error = None;
             }
             Action::Start => {
                 self.workspace.back.clear();
-                self.key(KeyCode::Char('s').into(), tracker, now, zone)?;
+                self.key(KeyCode::Char('s').into(), now, zone)?;
             }
-            Action::Entries => self.browse_entries(tracker, zone)?,
+            Action::Entries => self.browse_entries(zone)?,
             Action::Cancel => self.cancel_review(now, zone)?,
             Action::StopNow => {
-                self.key(KeyCode::Char('x').into(), tracker, now, zone)?;
+                self.key(KeyCode::Char('x').into(), now, zone)?;
             }
             Action::Details => {
                 if self.workspace.section == Section::Dashboard {
@@ -745,7 +703,7 @@ impl App {
                     Action::Timezone => Kind::Timezone,
                     _ => unreachable!("non-form actions handled above"),
                 };
-                let form = Form::new(
+                let mut form = Form::new(
                     kind,
                     &self.workspace.catalogs,
                     self.workspace.reference().or_else(|| {
@@ -757,6 +715,7 @@ impl App {
                     now,
                     zone,
                 )?;
+                form.admission = self.pending.context.clone();
                 self.error = None;
                 self.workspace.overlay = Some(Overlay::Form(Box::new(form)));
             }

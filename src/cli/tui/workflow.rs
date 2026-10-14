@@ -1,5 +1,6 @@
+use crate::cli::backend::{Backend, command};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
-use tt::{Tracker, command, model};
+use tt::model;
 
 use super::{
     catalog::{self, Catalogs, Reference},
@@ -8,11 +9,13 @@ use super::{
 };
 use crate::cli::{Error, app, terms};
 
+#[derive(Clone)]
 pub(super) struct Prepared {
     mutation: Mutation,
     pub summary: String,
 }
 
+#[derive(Clone)]
 enum Mutation {
     Client(String),
     Project {
@@ -32,10 +35,10 @@ enum Mutation {
         at: Timestamp,
     },
     Archive {
-        project: model::Project,
+        expected: tt::workspace::ProjectSelection,
         on: Date,
     },
-    Unarchive(model::Project),
+    Unarchive(tt::workspace::ProjectSelection),
     Cancel(model::RunningTimer),
     DeleteEntry(model::TimeEntry),
     Timezone(String),
@@ -51,7 +54,7 @@ pub(super) struct Outcome {
 
 impl Prepared {
     /// Executes the reviewed values. Failures leave the draft and review intact.
-    pub fn apply(&self, tracker: &mut Tracker, now: Timestamp) -> Result<Outcome, Error> {
+    pub fn apply(&self, tracker: &mut Backend, now: Timestamp) -> Result<Outcome, Error> {
         let mut outcome = Outcome {
             message: String::new(),
             warning: None,
@@ -104,19 +107,18 @@ impl Prepared {
                 outcome.warning = overflow(&entry, *at);
                 outcome.message = format!("Stopped {}.", entry.scope());
             }
-            Mutation::Archive { project, on } => {
-                unchanged_project(tracker, project)?;
+            Mutation::Archive { expected, on } => {
                 tracker
-                    .archive_project(project.id(), Some(*on), now)
+                    .archive(expected.clone(), Some(*on))
                     .map_err(core_error)?;
-                outcome.message = format!("Archived {} through {on}.", project.name());
+                outcome.message = format!("Archived {} through {on}.", expected.project.name());
             }
-            Mutation::Unarchive(project) => {
-                unchanged_project(tracker, project)?;
-                tracker
-                    .unarchive_project(project.id())
-                    .map_err(core_error)?;
-                outcome.message = format!("Restored continuous coverage for {}.", project.name());
+            Mutation::Unarchive(expected) => {
+                tracker.unarchive(expected.clone()).map_err(core_error)?;
+                outcome.message = format!(
+                    "Restored continuous coverage for {}.",
+                    expected.project.name()
+                );
             }
             Mutation::Cancel(timer) => {
                 tracker.cancel_if_current(timer).map_err(core_error)?;
@@ -137,15 +139,6 @@ impl Prepared {
         }
         Ok(outcome)
     }
-}
-
-fn unchanged_project(tracker: &Tracker, project: &model::Project) -> Result<(), Error> {
-    if tracker.project(project.id()).map_err(core_error)? != *project {
-        return Err(Error::runtime(
-            "Project changed externally. Reopen this action to review its current state.",
-        ));
-    }
-    Ok(())
 }
 
 impl Form {
@@ -246,9 +239,16 @@ impl Form {
             Kind::Archive(project) => {
                 let project = project.clone();
                 let on = self.date(F::Effective, now, project.billing_timezone())?;
-                Mutation::Archive { project, on }
+                let agreement = catalogs.current(project.id())?.id();
+                Mutation::Archive {
+                    expected: tt::workspace::ProjectSelection { project, agreement },
+                    on,
+                }
             }
-            Kind::Unarchive(project) => Mutation::Unarchive(project.clone()),
+            Kind::Unarchive(project) => Mutation::Unarchive(tt::workspace::ProjectSelection {
+                project: project.clone(),
+                agreement: catalogs.current(project.id())?.id(),
+            }),
             Kind::Cancel(timer) => {
                 self.context = format!(
                     "{}\nid:{} · agreement:{}\nStarted: {}\nNo completed entry will be recorded.",

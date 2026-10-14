@@ -39,6 +39,7 @@ pub(super) enum Choice {
     Retainer,
 }
 
+#[derive(Clone)]
 pub(super) enum Value {
     Text(Input),
     Choice {
@@ -47,6 +48,7 @@ pub(super) enum Value {
     },
 }
 
+#[derive(Clone)]
 pub(super) struct Field {
     pub id: FieldId,
     pub label: &'static str,
@@ -103,6 +105,7 @@ impl Field {
     }
 }
 
+#[derive(Clone)]
 pub(super) enum Kind {
     Client,
     Project,
@@ -131,6 +134,7 @@ pub(super) struct Form {
     pub helping: bool,
     terms_initialized: bool,
     pub context: String,
+    pub admission: Option<tt::client::Context>,
 }
 
 impl Form {
@@ -331,6 +335,7 @@ impl Form {
             helping: false,
             terms_initialized: false,
             context,
+            admission: None,
         };
         form.project_changed(catalogs, now)?;
         if let Some(Reference::Agreement(id)) = reference
@@ -340,6 +345,26 @@ impl Form {
             form.focus_field(F::Scope);
         }
         Ok(form)
+    }
+
+    /// Plain draft data; picker scratch state and a previous review are not submitted.
+    pub fn draft(&self) -> Self {
+        Self {
+            kind: self.kind.clone(),
+            fields: self.fields.clone(),
+            focus: self.focus,
+            step: self.step,
+            picker: None,
+            review: None,
+            scroll: self.scroll,
+            error: None,
+            dirty: self.dirty,
+            discarding: false,
+            helping: false,
+            terms_initialized: self.terms_initialized,
+            context: self.context.clone(),
+            admission: self.admission.clone(),
+        }
     }
 
     pub fn title(&self) -> &'static str {

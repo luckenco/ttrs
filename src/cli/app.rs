@@ -6,11 +6,27 @@ use std::{
 
 use jiff::{Timestamp, civil, tz::TimeZone};
 
-use tt::{Tracker, command, model};
+use super::backend::{self, Backend};
+use tt::{command, model, workspace::WorkTime};
 
 use super::{Command, Error, TrackingTarget, io_error, terms};
 
 pub(super) fn run(command: Command) -> Result<(), Error> {
+    let (command, explicit) = match command {
+        Command::WithBackend { backend, command } => (*command, Some(backend)),
+        command => (command, None),
+    };
+    if let Command::ConfigBackend {
+        backend,
+        url,
+        workspace,
+        credential_env,
+        credential_file,
+    } = command
+    {
+        backend::save(backend, url, workspace, credential_env, credential_file)?;
+        return line(format_args!("Backend set to {backend:?}"));
+    }
     if let Command::ConfigSetTimezone { timezone } = command {
         return set_timezone(&timezone);
     }
@@ -19,6 +35,16 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
         return line(format_args!("{}", timezone_name(&zone)?));
     }
 
+    if command == Command::Bare {
+        return super::tui::run(explicit);
+    }
+    if command == Command::RequestList {
+        return backend::request_list();
+    }
+    if let Some(result) = super::maintenance::run(&command, explicit) {
+        return result;
+    }
+    let selected = backend::selection(explicit)?;
     match &command {
         Command::Cancel { yes: false, .. } => {
             return Err(Error::usage(
@@ -32,24 +58,43 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
         }
         _ => {}
     }
-    let zone = timezone()?;
-    let path = database_path()?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent).map_err(io_error)?;
+    if selected == backend::Selection::Local
+        && matches!(
+            command,
+            Command::RequestStatus { .. } | Command::RequestRetry { .. }
+        )
+    {
+        return Err(Error::usage("request recovery requires the remote backend"));
     }
-    let mut tracker = Tracker::open(path).map_err(core_error)?;
+    let zone = timezone()?;
+    let client = backend::open(selected)?;
+    let mut tracker = Backend::new(client, zone.clone()).map_err(core_error)?;
 
     match command {
-        Command::Bare => super::tui::run(&mut tracker, &zone),
+        Command::Bare => unreachable!("interactive startup belongs to the worker"),
+        Command::RequestStatus { request } => {
+            let resolution = tracker.request_status(&request).map_err(core_error)?;
+            line(format_args!(
+                "{}",
+                serde_json::to_string(&resolution).map_err(core_error)?
+            ))
+        }
+        Command::RequestRetry { request } => {
+            let committed = tracker.retry(&request).map_err(core_error)?;
+            line(format_args!(
+                "{}",
+                serde_json::to_string(&committed).map_err(core_error)?
+            ))
+        }
         Command::Start { project, scope, at } => {
             let project = resolve_project(&tracker, &project)?;
-            let reference = now()?;
+            let reference = tracker.reference_time().map_err(core_error)?;
             let started_at = parse_time(at.as_deref().unwrap_or("now"), &zone, reference)?;
             let agreement = tracker
                 .current_service_agreement(project.id())
                 .map_err(core_error)?;
             let timer = tracker
-                .start(command::Start::new(agreement.id(), scope, started_at).map_err(core_error)?)
+                .start_at(agreement.id(), scope, work_time(at.as_deref(), started_at))
                 .map_err(core_error)?;
             line(format_args!(
                 "Started {} for {} at {} (id:{})",
@@ -66,9 +111,11 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 .unwrap_or(&id)
                 .parse::<model::TimerId>()
                 .map_err(|error| Error::usage(error.to_string()))?;
-            let ended_at = parse_time(at.as_deref().unwrap_or("now"), &zone, now()?)?;
+            let expected = tracker.timer(id).map_err(core_error)?;
+            let reference = tracker.reference_time().map_err(core_error)?;
+            let ended_at = parse_time(at.as_deref().unwrap_or("now"), &zone, reference)?;
             let entry = tracker
-                .end(command::End::new(id, ended_at))
+                .stop(expected, work_time(at.as_deref(), ended_at))
                 .map_err(core_error)?;
             line(format_args!(
                 "Stopped {} at {} (id:{})",
@@ -84,7 +131,11 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             }
             Ok(())
         }
-        Command::Status => status(&tracker, &zone, now()?),
+        Command::Status => status(
+            &tracker,
+            &zone,
+            tracker.reference_time().map_err(core_error)?,
+        ),
         Command::Cancel { id, .. } => {
             let id = id
                 .strip_prefix("id:")
@@ -122,7 +173,7 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             to,
         } => {
             let target = resolve_target(&tracker, target)?;
-            let reference = now()?;
+            let reference = tracker.reference_time().map_err(core_error)?;
             let started_at = parse_time(&from, &zone, reference)?;
             let ended_at = parse_time(&to, &zone, reference)?;
             let entry = tracker
@@ -186,7 +237,7 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 .current_service_agreement(project.id())
                 .map_err(core_error)?;
             let agreement = tracker
-                .add_service_agreement(previous.id(), agreement, now()?)
+                .add_service_agreement(previous.id(), agreement, tracker.now().map_err(core_error)?)
                 .map_err(core_error)?;
             line(format_args!(
                 "Added service agreement {} (id:{})",
@@ -225,7 +276,13 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             )
             .map_err(core_error)?;
             let (project, agreement) = tracker
-                .add_project(client.id(), name, timezone, agreement, now()?)
+                .add_project(
+                    client.id(),
+                    name,
+                    timezone,
+                    agreement,
+                    tracker.now().map_err(core_error)?,
+                )
                 .map_err(core_error)?;
             line(format_args!(
                 "Added project {} (id:{}) with service agreement {} (id:{})",
@@ -241,7 +298,7 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 .archive_project(
                     project.id(),
                     on.as_deref().map(parse_date).transpose()?,
-                    now()?,
+                    tracker.now().map_err(core_error)?,
                 )
                 .map_err(core_error)?;
             line(format_args!("Archived project {}", project.name()))
@@ -254,11 +311,28 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             line(format_args!("Unarchived project {}", project.name()))
         }
         Command::ProjectList { all } => project_list(&tracker, all),
-        Command::ConfigSetTimezone { .. } | Command::ConfigGetTimezone => unreachable!(),
+        Command::WithBackend { .. }
+        | Command::ConfigBackend { .. }
+        | Command::ConfigSetTimezone { .. }
+        | Command::ConfigGetTimezone
+        | Command::RequestList
+        | Command::WorkspaceCreate
+        | Command::BackupDownload { .. }
+        | Command::RestoreStage { .. }
+        | Command::RestoreFreeze { .. }
+        | Command::RestoreReport { .. }
+        | Command::RestoreActivate { .. }
+        | Command::RestoreStatus { .. }
+        | Command::RestoreAbort { .. }
+        | Command::BackupCreate { .. }
+        | Command::BackupExport { .. }
+        | Command::BackupVerify { .. }
+        | Command::RestoreImport { .. }
+        | Command::RestoreReplace { .. } => unreachable!(),
     }
 }
 
-fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Error> {
+fn status(tracker: &Backend, zone: &TimeZone, now: Timestamp) -> Result<(), Error> {
     let statuses = tracker.status(now).map_err(core_error)?;
     if statuses.is_empty() {
         return line(format_args!("No running timers."));
@@ -283,7 +357,7 @@ fn status(tracker: &Tracker, zone: &TimeZone, now: Timestamp) -> Result<(), Erro
 }
 
 fn entry_list(
-    tracker: &Tracker,
+    tracker: &Backend,
     agreement: model::ServiceAgreementId,
     zone: &TimeZone,
 ) -> Result<(), Error> {
@@ -311,7 +385,7 @@ fn entry_list(
     Ok(())
 }
 
-fn project_list(tracker: &Tracker, all: bool) -> Result<(), Error> {
+fn project_list(tracker: &Backend, all: bool) -> Result<(), Error> {
     let projects = tracker.project_list(all).map_err(core_error)?;
     if projects.is_empty() {
         return line(format_args!("No projects."));
@@ -334,7 +408,7 @@ fn project_list(tracker: &Tracker, all: bool) -> Result<(), Error> {
     Ok(())
 }
 
-fn agreement_list(tracker: &Tracker, client_ref: Option<&str>, all: bool) -> Result<(), Error> {
+fn agreement_list(tracker: &Backend, client_ref: Option<&str>, all: bool) -> Result<(), Error> {
     let selected_client = client_ref
         .map(|reference| resolve_client(tracker, reference).map(|client| client.id()))
         .transpose()?;
@@ -395,7 +469,7 @@ struct ResolvedTarget {
     label: String,
 }
 
-fn resolve_target(tracker: &Tracker, target: TrackingTarget) -> Result<ResolvedTarget, Error> {
+fn resolve_target(tracker: &Backend, target: TrackingTarget) -> Result<ResolvedTarget, Error> {
     match target {
         TrackingTarget::Project(reference) => {
             let project = resolve_project(tracker, &reference)?;
@@ -418,7 +492,7 @@ fn resolve_target(tracker: &Tracker, target: TrackingTarget) -> Result<ResolvedT
     }
 }
 
-fn resolve_client(tracker: &Tracker, reference: &str) -> Result<model::Client, Error> {
+fn resolve_client(tracker: &Backend, reference: &str) -> Result<model::Client, Error> {
     let Some(id) = reference.strip_prefix("id:") else {
         return tracker.client_by_name(reference).map_err(core_error);
     };
@@ -428,7 +502,7 @@ fn resolve_client(tracker: &Tracker, reference: &str) -> Result<model::Client, E
     tracker.client(id).map_err(core_error)
 }
 
-fn resolve_project(tracker: &Tracker, reference: &str) -> Result<model::Project, Error> {
+fn resolve_project(tracker: &Backend, reference: &str) -> Result<model::Project, Error> {
     let Some(id) = reference.strip_prefix("id:") else {
         return tracker.project_by_name(reference).map_err(core_error);
     };
@@ -438,7 +512,7 @@ fn resolve_project(tracker: &Tracker, reference: &str) -> Result<model::Project,
     tracker.project(id).map_err(core_error)
 }
 
-fn resolve_agreement(tracker: &Tracker, reference: &str) -> Result<model::ServiceAgreement, Error> {
+fn resolve_agreement(tracker: &Backend, reference: &str) -> Result<model::ServiceAgreement, Error> {
     let id = reference
         .strip_prefix("id:")
         .ok_or_else(|| Error::usage("agreement references must use id:<number>"))?
@@ -448,7 +522,7 @@ fn resolve_agreement(tracker: &Tracker, reference: &str) -> Result<model::Servic
 }
 
 fn print_limit(
-    tracker: &Tracker,
+    tracker: &Backend,
     timer: &model::RunningTimer,
     now: Timestamp,
     timezone: &TimeZone,
@@ -490,6 +564,13 @@ fn format_us(microseconds: i64) -> String {
 
 fn duration(start: Timestamp, end: Timestamp) -> String {
     format_us(end.as_microsecond().saturating_sub(start.as_microsecond()))
+}
+
+fn work_time(value: Option<&str>, parsed: Timestamp) -> WorkTime {
+    if value.is_none_or(|v| v == "now") {
+        return WorkTime::Now;
+    }
+    WorkTime::At(parsed)
 }
 
 pub(super) fn parse_date(value: &str) -> Result<civil::Date, Error> {
@@ -566,7 +647,7 @@ pub(super) fn now() -> Result<Timestamp, Error> {
     }
 }
 
-fn timezone() -> Result<TimeZone, Error> {
+pub(super) fn timezone() -> Result<TimeZone, Error> {
     let path = config_path()?;
     match fs::read_to_string(path) {
         Ok(name) => {
@@ -627,7 +708,10 @@ fn timezone_name(zone: &TimeZone) -> Result<&str, Error> {
     })
 }
 
-fn database_path() -> Result<PathBuf, Error> {
+pub(super) fn database_path() -> Result<PathBuf, Error> {
+    if let Some(path) = env::var_os("TT_DB") {
+        return Ok(PathBuf::from(path));
+    }
     data_home().map(|path| path.join("tt.sqlite3"))
 }
 
@@ -649,7 +733,7 @@ fn data_home() -> Result<PathBuf, Error> {
     home().map(|path| path.join(".local/share/tt"))
 }
 
-fn config_home() -> Result<PathBuf, Error> {
+pub(super) fn config_home() -> Result<PathBuf, Error> {
     if let Some(path) = env::var_os("TT_CONFIG_DIR") {
         return Ok(PathBuf::from(path));
     }
@@ -674,11 +758,11 @@ fn home() -> Result<PathBuf, Error> {
     Err(Error::runtime("home directory could not be determined"))
 }
 
-fn line(arguments: fmt::Arguments<'_>) -> Result<(), Error> {
+pub(super) fn line(arguments: fmt::Arguments<'_>) -> Result<(), Error> {
     writeln!(io::stdout().lock(), "{arguments}").map_err(io_error)
 }
 
-fn core_error(error: tt::Error) -> Error {
+pub(super) fn core_error(error: impl fmt::Display) -> Error {
     Error::runtime(error.to_string())
 }
 

@@ -1,7 +1,8 @@
+use crate::cli::backend::{Backend, command};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use jiff::{Timestamp, tz::TimeZone};
 use ratatui::{Terminal, backend::TestBackend};
-use tt::{Tracker, command, model};
+use tt::model;
 
 use super::{
     input::Input,
@@ -10,8 +11,8 @@ use super::{
     view,
 };
 
-pub(super) fn setup() -> (Tracker, App, Timestamp) {
-    let mut tracker = Tracker::memory().unwrap();
+pub(super) fn setup() -> (Backend, App, Timestamp) {
+    let mut tracker = Backend::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let client = tracker.add_client("Acme".into()).unwrap();
     tracker
@@ -29,7 +30,8 @@ pub(super) fn setup() -> (Tracker, App, Timestamp) {
             now,
         )
         .unwrap();
-    let app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
+    let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     (tracker, app, now)
 }
 
@@ -37,7 +39,7 @@ pub(super) fn setup() -> (Tracker, App, Timestamp) {
 fn form_errors_and_cancel_do_not_mutate_work_and_shortcuts_are_text_in_fields() {
     let (mut tracker, mut app, now) = setup();
     for code in [KeyCode::Char('s'), KeyCode::Enter] {
-        app.key(
+        app.key_sync(
             KeyEvent::new(code, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -46,7 +48,7 @@ fn form_errors_and_cancel_do_not_mutate_work_and_shortcuts_are_text_in_fields() 
         .unwrap();
     }
     assert!(
-        app.key(
+        app.key_sync(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -56,7 +58,7 @@ fn form_errors_and_cancel_do_not_mutate_work_and_shortcuts_are_text_in_fields() 
     );
     for c in "qxsjk".chars() {
         assert!(
-            !app.key(
+            !app.key_sync(
                 KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE),
                 &mut tracker,
                 now,
@@ -67,7 +69,7 @@ fn form_errors_and_cancel_do_not_mutate_work_and_shortcuts_are_text_in_fields() 
     }
     assert!(matches!(&app.picker, Some(Picker::Scope { input, .. }) if input.as_str() == "qxsjk"));
     assert!(tracker.running().unwrap().is_empty());
-    app.key(
+    app.key_sync(
         KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
         &mut tracker,
         now,
@@ -94,7 +96,7 @@ fn enter_starts_a_recent_scope_and_x_stops_immediately() {
         )
         .unwrap();
     for code in [KeyCode::Char('s'), KeyCode::Enter, KeyCode::Enter] {
-        app.key(
+        app.key_sync(
             KeyEvent::new(code, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -105,7 +107,7 @@ fn enter_starts_a_recent_scope_and_x_stops_immediately() {
     assert!(app.picker.is_none());
     assert_eq!(tracker.running().unwrap()[0].scope(), "Recent");
     let stopped_at = now.checked_add(jiff::SignedDuration::from_secs(1)).unwrap();
-    app.key(
+    app.key_sync(
         KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
         &mut tracker,
         stopped_at,
@@ -136,10 +138,10 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
             .unwrap(),
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     for code in [KeyCode::Char('s'), KeyCode::Enter] {
-        app.key(
+        app.key_sync(
             KeyEvent::new(code, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -152,11 +154,11 @@ fn external_timer_changes_do_not_retarget_selection_or_an_open_switch() {
         .start(command::Start::new(agreement, "External".into(), now).unwrap())
         .unwrap();
     assert_ne!(replacement.id(), timer.id());
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     assert_eq!(app.selection.selected(), None);
     let later = now.checked_add(jiff::SignedDuration::from_secs(1)).unwrap();
     assert!(
-        app.key(
+        app.key_sync(
             KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
             &mut tracker,
             later,
@@ -173,7 +175,7 @@ fn open_start_picker_rejects_replaced_terms_and_preserves_the_draft() {
     let (mut tracker, mut app, now) = setup();
     let selected = app.snapshot.projects[0].agreement.clone();
     for code in [KeyCode::Char('s'), KeyCode::Enter] {
-        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(code.into(), &mut tracker, now, &TimeZone::UTC)
             .unwrap();
     }
     app.paste("Planning");
@@ -190,9 +192,9 @@ fn open_start_picker_rejects_replaced_terms_and_preserves_the_draft() {
             now,
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert!(tracker.running().unwrap().is_empty());
@@ -201,14 +203,14 @@ fn open_start_picker_rejects_replaced_terms_and_preserves_the_draft() {
             if project.agreement.id() == selected.id() && input.as_str() == "Planning")
     );
     assert!(app.error.as_ref().unwrap().text.contains("select it again"));
-    app.key(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     for code in [KeyCode::Char('s'), KeyCode::Enter] {
-        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(code.into(), &mut tracker, now, &TimeZone::UTC)
             .unwrap();
     }
     app.paste("Planning");
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert_eq!(tracker.running().unwrap()[0].agreement(), current.id());
 }
@@ -252,7 +254,7 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
             )
             .unwrap();
     }
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     let mut search = search::Projects::new(app.snapshot.projects.clone());
     for (query, expected) in [
         ("API", vec!["api-one", "api-two", "axpxi"]),
@@ -291,7 +293,7 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
         KeyCode::Down,
         KeyCode::Home, // Moving the cursor must not reset the selected fuzzy result.
     ] {
-        app.key(
+        app.key_sync(
             KeyEvent::new(code, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -304,7 +306,7 @@ fn fuzzy_project_ranking_drives_selection_and_handles_unicode_and_literal_punctu
         .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
         .unwrap();
     insta::assert_snapshot!("fuzzy_project_picker", terminal.backend());
-    app.key(
+    app.key_sync(
         KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
         &mut tracker,
         now,
@@ -330,7 +332,7 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
             .unwrap(),
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     for (width, height) in [(100, 24), (50, 16), (32, 10), (20, 5)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
@@ -345,7 +347,7 @@ fn dashboard_and_pickers_render_at_supported_sizes_and_handle_tiny_terminals() {
         ("scope_unicode", KeyCode::Char('界')),
         ("time_input", KeyCode::Tab),
     ] {
-        app.key(
+        app.key_sync(
             KeyEvent::new(code, KeyModifiers::NONE),
             &mut tracker,
             now,
@@ -373,7 +375,7 @@ fn currency_totals_leave_room_for_timers_and_feedback_at_small_sizes() {
             .unwrap(),
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.message = Some(Message::Warning("Check the cap".into()));
     let currencies = ["EUR", "GBP", "USD"];
     for (daily, monthly) in [(0, 0), (0, 3), (3, 0), (1, 3), (3, 1), (3, 3)] {
@@ -439,23 +441,23 @@ fn paste_is_literal_updates_fuzzy_search_and_never_submits() {
     let (mut tracker, mut app, now) = setup();
     app.paste("sqx\n");
     assert!(app.picker.is_none());
-    app.key(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("wbst");
     assert!(
         matches!(&app.picker, Some(Picker::Project { projects, .. }) if projects.matches().len() == 1)
     );
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("ISSUE-123\nqxs\t界\u{1b}\u{7}");
     assert!(
         matches!(&app.picker, Some(Picker::Scope { input, .. }) if input.as_str() == "ISSUE-123 qxs 界")
     );
     assert!(tracker.running().unwrap().is_empty());
-    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("0900");
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert_eq!(tracker.running().unwrap()[0].scope(), "ISSUE-123 qxs 界");
     assert!(app.picker.is_none());
@@ -465,17 +467,17 @@ fn paste_is_literal_updates_fuzzy_search_and_never_submits() {
 fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
     let (mut tracker, mut app, now) = setup();
     for code in [KeyCode::Char('s'), KeyCode::Enter] {
-        app.key(code.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(code.into(), &mut tracker, now, &TimeZone::UTC)
             .unwrap();
     }
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
-    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert!(matches!(&app.error, Some(error) if error.field == Some(Field::Scope)));
-    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     for (width, height) in [(32, 10), (50, 16), (100, 24)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -490,11 +492,11 @@ fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
         assert!(!screen.contains("x stop"));
     }
     app.paste("Planning");
-    app.key(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Tab.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("bad time");
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert!(matches!(
@@ -512,7 +514,7 @@ fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
     assert!(terminal.backend().to_string().contains("bad time"));
     assert!(tracker.running().unwrap().is_empty());
     app.refresh_error = Some("Refresh failed; actions disabled".into());
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     terminal
         .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
@@ -556,14 +558,14 @@ fn cap_warnings_persist_until_dismissed_but_successes_expire() {
             .unwrap(),
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     let mut terminal = Terminal::new(TestBackend::new(32, 10)).unwrap();
     terminal
         .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
         .unwrap();
     insta::assert_snapshot!("capped_timer_compact", terminal.backend());
-    app.key(KeyCode::Char('x').into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Char('x').into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert!(matches!(app.message, Some(Message::Warning(_))));
     assert!(
@@ -574,24 +576,24 @@ fn cap_warnings_persist_until_dismissed_but_successes_expire() {
             .starts_with("Maximum reached; 01:00:00 not recorded")
     );
     app.expire(std::time::Instant::now() + std::time::Duration::from_secs(60));
-    app.key(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Char('s').into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("website");
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     app.paste("New task");
-    app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert!(matches!(app.message, Some(Message::Warning(_)))); // Success does not erase discarded work.
     terminal
         .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
         .unwrap();
     insta::assert_snapshot!("cap_warning_compact", terminal.backend());
-    app.key(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
+    app.key_sync(KeyCode::Esc.into(), &mut tracker, now, &TimeZone::UTC)
         .unwrap();
     assert!(app.message.is_none());
     let later = now.checked_add(jiff::SignedDuration::from_secs(1)).unwrap();
-    app.key(
+    app.key_sync(
         KeyCode::Char('x').into(),
         &mut tracker,
         later,
@@ -615,7 +617,7 @@ fn selection_has_explicit_contrast_on_light_and_dark_backgrounds() {
     tracker
         .start(command::Start::new(agreement, "Planning".into(), now).unwrap())
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     for (foreground, background) in [
         (style::Color::White, style::Color::Black),
@@ -702,7 +704,7 @@ fn retainer_estimates_render_separately_from_daily_earnings() {
 
 #[test]
 fn empty_dashboard_offers_in_app_setup() {
-    let tracker = Tracker::memory().unwrap();
+    let tracker = Backend::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
     let mut terminal = Terminal::new(TestBackend::new(50, 16)).unwrap();

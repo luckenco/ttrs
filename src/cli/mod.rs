@@ -1,7 +1,9 @@
 use std::{fmt, io, io::Write, process::ExitCode};
 
 mod app;
+mod backend;
 pub mod clap;
+mod maintenance;
 mod terms;
 mod tui;
 
@@ -14,6 +16,66 @@ pub enum TrackingTarget {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Command {
     Bare,
+    WithBackend {
+        backend: backend::Selection,
+        command: Box<Command>,
+    },
+    ConfigBackend {
+        backend: backend::Selection,
+        url: Option<String>,
+        workspace: Option<String>,
+        credential_env: Option<String>,
+        credential_file: Option<std::path::PathBuf>,
+    },
+    RequestList,
+    WorkspaceCreate,
+    BackupDownload {
+        manifest: String,
+        output: std::path::PathBuf,
+    },
+    RestoreStage {
+        file: std::path::PathBuf,
+    },
+    RestoreFreeze {
+        job: String,
+    },
+    RestoreReport {
+        job: String,
+        output: std::path::PathBuf,
+    },
+    RestoreActivate {
+        job: String,
+        report: std::path::PathBuf,
+        yes: bool,
+    },
+    RestoreStatus {
+        job: Option<String>,
+    },
+    RestoreAbort {
+        job: String,
+    },
+    RequestStatus {
+        request: String,
+    },
+    RequestRetry {
+        request: String,
+    },
+    BackupCreate {
+        output: Option<std::path::PathBuf>,
+    },
+    BackupExport {
+        output: std::path::PathBuf,
+    },
+    BackupVerify {
+        file: std::path::PathBuf,
+    },
+    RestoreImport {
+        file: std::path::PathBuf,
+    },
+    RestoreReplace {
+        file: std::path::PathBuf,
+        yes: bool,
+    },
     Start {
         project: String,
         scope: String,

@@ -1,3 +1,5 @@
+use std::path::PathBuf;
+
 use clap::{ArgGroup, Args, Parser, Subcommand, error::ErrorKind};
 
 use super::{Command, Error, Parse, TrackingTarget};
@@ -5,6 +7,9 @@ use super::{Command, Error, Parse, TrackingTarget};
 #[derive(Parser)]
 #[command(name = "tt", version, about = "Terminal time tracker")]
 struct Cli {
+    /// Select a backend without changing saved preferences.
+    #[arg(long, global = true, value_enum)]
+    backend: Option<super::backend::Selection>,
     #[command(subcommand)]
     command: Option<TopCommand>,
 }
@@ -59,6 +64,26 @@ struct AgreementTermsArgs {
 
 #[derive(Subcommand)]
 enum TopCommand {
+    /// Explicit remote workspace administration.
+    Workspace {
+        #[command(subcommand)]
+        command: WorkspaceCommand,
+    },
+    /// Resolve or retry an immutable journaled request.
+    Request {
+        #[command(subcommand)]
+        command: RequestCommand,
+    },
+    /// Create or verify native and portable backups.
+    Backup {
+        #[command(subcommand)]
+        command: BackupCommand,
+    },
+    /// Import or explicitly replace a native workspace (low-level maintenance).
+    Restore {
+        #[command(subcommand)]
+        command: RestoreCommand,
+    },
     /// Start a timer.
     Start {
         /// Project name or id:<number>.
@@ -121,6 +146,63 @@ enum TopCommand {
     Config {
         #[command(subcommand)]
         command: ConfigCommand,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackupCommand {
+    /// Native SQLite backup (--output required), or remote manifest publication (no output).
+    Create {
+        #[arg(long)]
+        output: Option<PathBuf>,
+    },
+    /// Export a portable JSON snapshot; source must exist, output must not.
+    Export {
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Download a published manifest through the selected remote Worker.
+    Download {
+        manifest: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify a portable JSON file without opening a database.
+    Verify { file: PathBuf },
+}
+
+#[derive(Subcommand)]
+enum RestoreCommand {
+    /// Stage a portable snapshot into an inactive remote target.
+    Stage { file: PathBuf },
+    /// Prepare and freeze a remote job up to report confirmation, without activation.
+    Freeze { job: String },
+    /// Download the whole immutable reviewed-loss report without replacing outputs.
+    Report {
+        job: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Activate only the exact reviewed remote report, with explicit confirmation.
+    Activate {
+        job: String,
+        #[arg(long)]
+        report: PathBuf,
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Inspect a named remote restore job, or discover the current durable job.
+    Status { job: Option<String> },
+    /// Explicitly abort a remote job before its route flip (server guards concurrency).
+    Abort { job: String },
+    /// Import portable JSON into a nonexistent native database.
+    Import { file: PathBuf },
+    /// Destructively replace a closed native workspace from portable JSON.
+    Replace {
+        file: PathBuf,
+        /// Confirm discarding work absent from the file; saves a final safety copy.
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -219,6 +301,11 @@ enum ProjectCommand {
 
 #[derive(Subcommand)]
 enum ConfigCommand {
+    /// Select the saved backend; credentials are stored only as references.
+    Backend {
+        #[command(subcommand)]
+        backend: BackendCommand,
+    },
     /// Set a configuration value.
     Set {
         #[command(subcommand)]
@@ -228,6 +315,46 @@ enum ConfigCommand {
     Get {
         #[command(subcommand)]
         key: GetConfig,
+    },
+}
+
+#[derive(Subcommand)]
+enum WorkspaceCommand {
+    Create,
+}
+
+#[derive(Subcommand)]
+enum RequestCommand {
+    /// List original unresolved journal keys without network or database access.
+    List,
+    Status {
+        request: String,
+    },
+    Retry {
+        request: String,
+    },
+}
+
+#[derive(Subcommand)]
+enum BackendCommand {
+    Local,
+    Remote {
+        #[arg(long)]
+        url: String,
+        #[arg(long)]
+        workspace: String,
+        #[arg(
+            long,
+            required_unless_present = "credential_file",
+            conflicts_with = "credential_file"
+        )]
+        credential_env: Option<String>,
+        #[arg(
+            long,
+            required_unless_present = "credential_env",
+            conflicts_with = "credential_env"
+        )]
+        credential_file: Option<PathBuf>,
     },
 }
 
@@ -264,8 +391,76 @@ fn parse(result: Result<Cli, clap::Error>) -> Result<Parse, Error> {
 
 impl From<Cli> for Command {
     fn from(cli: Cli) -> Self {
-        match cli.command {
+        let command = Self::from_command(cli.command);
+        if let Some(backend) = cli.backend {
+            return Self::WithBackend {
+                backend,
+                command: Box::new(command),
+            };
+        }
+        command
+    }
+}
+
+impl Command {
+    fn from_command(command: Option<TopCommand>) -> Self {
+        match command {
+            Some(TopCommand::Workspace {
+                command: WorkspaceCommand::Create,
+            }) => Self::WorkspaceCreate,
+            Some(TopCommand::Request {
+                command: RequestCommand::List,
+            }) => Self::RequestList,
+            Some(TopCommand::Request {
+                command: RequestCommand::Status { request },
+            }) => Self::RequestStatus { request },
+            Some(TopCommand::Request {
+                command: RequestCommand::Retry { request },
+            }) => Self::RequestRetry { request },
+            Some(TopCommand::Config {
+                command: ConfigCommand::Backend { backend },
+            }) => match backend {
+                BackendCommand::Local => Self::ConfigBackend {
+                    backend: super::backend::Selection::Local,
+                    url: None,
+                    workspace: None,
+                    credential_env: None,
+                    credential_file: None,
+                },
+                BackendCommand::Remote {
+                    url,
+                    workspace,
+                    credential_env,
+                    credential_file,
+                } => Self::ConfigBackend {
+                    backend: super::backend::Selection::Remote,
+                    url: Some(url),
+                    workspace: Some(workspace),
+                    credential_env,
+                    credential_file,
+                },
+            },
             None => Self::Bare,
+            Some(TopCommand::Backup { command }) => match command {
+                BackupCommand::Create { output } => Self::BackupCreate { output },
+                BackupCommand::Export { output } => Self::BackupExport { output },
+                BackupCommand::Verify { file } => Self::BackupVerify { file },
+                BackupCommand::Download { manifest, output } => {
+                    Self::BackupDownload { manifest, output }
+                }
+            },
+            Some(TopCommand::Restore { command }) => match command {
+                RestoreCommand::Stage { file } => Self::RestoreStage { file },
+                RestoreCommand::Freeze { job } => Self::RestoreFreeze { job },
+                RestoreCommand::Report { job, output } => Self::RestoreReport { job, output },
+                RestoreCommand::Activate { job, report, yes } => {
+                    Self::RestoreActivate { job, report, yes }
+                }
+                RestoreCommand::Status { job } => Self::RestoreStatus { job },
+                RestoreCommand::Abort { job } => Self::RestoreAbort { job },
+                RestoreCommand::Import { file } => Self::RestoreImport { file },
+                RestoreCommand::Replace { file, yes } => Self::RestoreReplace { file, yes },
+            },
             Some(TopCommand::Start { project, scope, at }) => Self::Start { project, scope, at },
             Some(TopCommand::Stop { id, at }) => Self::Stop { id, at },
             Some(TopCommand::Status) => Self::Status,

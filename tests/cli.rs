@@ -55,6 +55,28 @@ fn test_binary() -> PathBuf {
 }
 
 #[test]
+fn global_backend_override_is_available_after_the_subcommand() {
+    let case = Case::new();
+    case.ok(&[
+        "config",
+        "backend",
+        "remote",
+        "--url",
+        "https://example.invalid",
+        "--workspace",
+        "test",
+        "--credential-env",
+        "TT_MISSING_TEST_CREDENTIAL",
+    ]);
+    assert!(
+        case.ok(&["client", "add", "--name", "Local", "--backend", "local"])
+            .contains("id:1")
+    );
+    let saved = fs::read_to_string(case.root.path().join("config/backend.json")).unwrap();
+    assert!(saved.contains("Remote"));
+}
+
+#[test]
 fn explicit_commands_route_through_the_shared_application() {
     let case = Case::new();
     assert!(
@@ -728,7 +750,10 @@ send "\r"
 await "Switch"
 send "Review\t1130\r"
 await "Switched"
-send "xq"
+after 100
+send "x"
+await "topped"
+send "q"
 "#,
     );
     assert!(case.ok(&["status"]).contains("No running timers"));
@@ -754,12 +779,30 @@ fn workspace_setup_and_timezone_changes_work_without_leaving_the_terminal() {
             size,
             r#"
 await "projects."
-send "nAcme\r\r\r"
+send "nAcme\r\r"
+await "Create client"
+send "\r"
+await "Use n in"
+after 100
 send "3n\twebsite\t\t\r"
-send "Support\t\tEUR\t125.50\t\t\t\t\r\r"
-send "5\r\025Europe/Berlin\t\r\r"
-send "2jlBackfill\t1000\t1100\t\r\r"
-send "1s\rLocal\t1200\rq"
+send "Support\t\tEUR\t125.50\t\t\t\t\r"
+await "Create project"
+send "\r"
+await "agreement."
+after 100
+send "5\r\025Europe/Berlin\t\r"
+await "Save timezone"
+send "\r"
+await "Berlin."
+after 100
+send "2jlBackfill\t1000\t1100\t\r"
+await "Log time"
+send "\r"
+await "Logged Backfill"
+after 100
+send "1s\rLocal\t1200\r"
+await "Started Local"
+send "q"
 "#,
         );
         assert_eq!(case.ok(&["config", "get", "timezone"]), "Europe/Berlin\n");

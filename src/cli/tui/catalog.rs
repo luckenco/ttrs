@@ -1,8 +1,10 @@
 use std::collections::HashMap;
 
+#[cfg(test)]
+use crate::cli::backend::Backend;
 use jiff::civil::Date;
 use ratatui::widgets::ListState;
-use tt::{Tracker, model};
+use tt::model;
 
 use super::{input::Input, search};
 use crate::cli::{Error, terms};
@@ -14,7 +16,7 @@ pub(super) enum Reference {
     Agreement(model::ServiceAgreementId),
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub(super) struct Catalogs {
     pub clients: Vec<model::Client>,
     pub projects: Vec<model::Project>,
@@ -23,7 +25,8 @@ pub(super) struct Catalogs {
 }
 
 impl Catalogs {
-    pub fn load(tracker: &Tracker) -> tt::Result<Self> {
+    #[cfg(test)]
+    pub fn load(tracker: &Backend) -> Result<Self, tt::client::Error> {
         // The query orders agreements by project, effective date, then ID.
         let agreements = tracker.agreement_list(None, true)?;
         let successors = agreements
@@ -37,6 +40,42 @@ impl Catalogs {
             agreements,
             successors,
         })
+    }
+
+    pub fn from_overview(view: &tt::workspace::Overview) -> Self {
+        let agreements: Vec<_> = view
+            .agreements
+            .iter()
+            .map(|agreement| {
+                let project = view
+                    .projects
+                    .iter()
+                    .find(|p| p.id() == agreement.project())
+                    .expect("overview contains agreement project");
+                let client = view
+                    .clients
+                    .iter()
+                    .find(|c| c.id() == project.client())
+                    .expect("overview contains project client");
+                model::AgreementListing {
+                    agreement: agreement.clone(),
+                    client_name: client.name().into(),
+                    project_name: project.name().into(),
+                    project_active: project.is_active(),
+                }
+            })
+            .collect();
+        let successors = agreements
+            .windows(2)
+            .filter(|pair| pair[0].agreement.project() == pair[1].agreement.project())
+            .map(|pair| (pair[0].agreement.id(), pair[1].agreement.effective_on()))
+            .collect();
+        Self {
+            clients: view.clients.clone(),
+            projects: view.projects.clone(),
+            agreements,
+            successors,
+        }
     }
 
     pub fn project(&self, id: model::ProjectId) -> Result<&model::Project, Error> {
@@ -303,7 +342,7 @@ mod tests {
 
     #[test]
     fn coverage_labels_follow_successors_without_crossing_projects() {
-        let mut tracker = Tracker::memory().unwrap();
+        let mut tracker = Backend::memory().unwrap();
         let now = "2026-01-03T12:00:00Z".parse().unwrap();
         let client = tracker.add_client("Acme".into()).unwrap();
         let terms = |name: &str, date: &str| {

@@ -1,7 +1,8 @@
+use crate::cli::backend::{Backend, command};
 use crossterm::event::KeyCode;
 use jiff::{Timestamp, tz::TimeZone};
 use ratatui::{Terminal, backend::TestBackend};
-use tt::{Tracker, command, model};
+use tt::model;
 
 use super::{
     catalog::{Catalogs, Reference},
@@ -12,13 +13,16 @@ use super::{
     workspace::{Overlay, Section},
 };
 
-fn press(app: &mut App, tracker: &mut Tracker, now: Timestamp, keys: &[KeyCode]) {
+fn press(app: &mut App, tracker: &mut Backend, now: Timestamp, keys: &[KeyCode]) {
     for &key in keys {
-        assert!(!app.key(key.into(), tracker, now, &TimeZone::UTC).unwrap());
+        assert!(
+            !app.key_sync(key.into(), tracker, now, &TimeZone::UTC)
+                .unwrap()
+        );
     }
 }
 
-fn action(app: &mut App, tracker: &mut Tracker, now: Timestamp, name: &str) {
+fn action(app: &mut App, tracker: &mut Backend, now: Timestamp, name: &str) {
     press(app, tracker, now, &[KeyCode::Char(':')]);
     app.paste(name);
     press(app, tracker, now, &[KeyCode::Enter]);
@@ -108,7 +112,7 @@ fn agreement_first_navigation_and_logging_skip_redundant_target_selection() {
 
 #[test]
 fn empty_agreements_offer_setup_instead_of_replacing_nonexistent_terms() {
-    let mut tracker = Tracker::memory().unwrap();
+    let mut tracker = Backend::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
     press(
@@ -120,14 +124,14 @@ fn empty_agreements_offer_setup_instead_of_replacing_nonexistent_terms() {
     assert!(matches!(form(&mut app).kind, Kind::Client));
     press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
     tracker.add_client("Acme".into()).unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Char('n')]);
     assert!(matches!(form(&mut app).kind, Kind::Project));
 }
 
 #[test]
 fn empty_database_to_client_and_project_is_entirely_keyboard_driven() {
-    let mut tracker = Tracker::memory().unwrap();
+    let mut tracker = Backend::memory().unwrap();
     let now = "2026-01-02T10:00:00Z".parse().unwrap();
     let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
     press(&mut app, &mut tracker, now, &[KeyCode::Char('n')]);
@@ -267,7 +271,7 @@ fn logging_and_stopping_reject_invalid_times_keep_input_and_block_stale_timers()
     form(&mut app).set(F::To, "0800");
     form(&mut app).focus = form(&mut app).visible().len();
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     let f = form(&mut app);
@@ -305,7 +309,7 @@ fn logging_and_stopping_reject_invalid_times_keep_input_and_block_stale_timers()
         )
         .unwrap();
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, later, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, later, &TimeZone::UTC)
             .is_err()
     );
     assert_eq!(tracker.running().unwrap(), [replacement]);
@@ -325,7 +329,7 @@ fn drafts_survive_refresh_help_paste_resize_and_discard_requires_a_choice() {
         press(&mut app, &mut tracker, now, &[KeyCode::Char(c)]);
     }
     let draft = form(&mut app).text(F::Name).to_owned();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::F(1)]);
     app.paste("must not edit hidden input");
     press(&mut app, &mut tracker, now, &[KeyCode::Esc, KeyCode::Esc]);
@@ -349,7 +353,7 @@ fn drafts_survive_refresh_help_paste_resize_and_discard_requires_a_choice() {
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert_eq!(tracker.clients().unwrap().len(), 1);
     assert!(form(&mut app).review.is_some());
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(
         &mut app,
         &mut tracker,
@@ -372,7 +376,7 @@ fn catalogs_preserve_selection_filters_and_do_not_retarget_removed_rows() {
     );
     let selected = app.workspace.reference();
     tracker.add_client("AAA".into()).unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     assert_eq!(app.workspace.reference(), selected);
     press(
         &mut app,
@@ -392,7 +396,7 @@ fn catalogs_preserve_selection_filters_and_do_not_retarget_removed_rows() {
     press(&mut app, &mut tracker, now, &[KeyCode::Char('3')]);
     let project = app.snapshot.projects[0].project.id();
     tracker.archive_project(project, None, now).unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     assert!(app.workspace.reference().is_none());
     press(&mut app, &mut tracker, now, &[KeyCode::Char('a')]);
     assert_eq!(app.workspace.reference(), Some(Reference::Project(project)));
@@ -606,6 +610,39 @@ fn reviewed_administration_rejects_external_changes_without_overwriting_them() {
 }
 
 #[test]
+fn reviewed_archive_rejects_replaced_agreement_even_when_project_is_unchanged() {
+    let (mut tracker, app, now) = setup();
+    let project = app.snapshot.projects[0].project.clone();
+    let agreement = app.snapshot.projects[0].agreement.clone();
+    let catalogs = Catalogs::load(&tracker).unwrap();
+    let mut draft = Form::new(
+        Kind::Archive(project.clone()),
+        &catalogs,
+        None,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    let reviewed = draft.prepare(&catalogs, now, &TimeZone::UTC).unwrap();
+    tracker
+        .add_service_agreement(
+            agreement.id(),
+            model::NewAgreement::new(
+                "External".into(),
+                agreement.pricing().clone(),
+                model::MonthlyHours::default(),
+                "2026-01-02".parse().unwrap(),
+            )
+            .unwrap(),
+            now,
+        )
+        .unwrap();
+    assert!(reviewed.apply(&mut tracker, now).is_err());
+    assert_eq!(tracker.project(project.id()).unwrap(), project);
+    assert!(project.is_active());
+}
+
+#[test]
 fn reviewed_start_rejects_replaced_terms_without_losing_the_review() {
     let (mut tracker, mut app, now) = setup();
     let selected = app.snapshot.projects[0].agreement.clone();
@@ -629,9 +666,9 @@ fn reviewed_start_rejects_replaced_terms_without_losing_the_review() {
             now,
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert!(tracker.running().unwrap().is_empty());
@@ -675,7 +712,7 @@ fn reviewed_future_starts_match_cli_without_silently_switching_clients() {
     f.focus = f.visible().len();
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert_eq!(tracker.running().unwrap(), [timer]);
@@ -710,7 +747,7 @@ fn stop_at_reports_cap_loss_and_a_saved_zone_controls_refresh_and_input() {
             .unwrap(),
         )
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     press(&mut app, &mut tracker, now, &[KeyCode::Char('X')]);
     form(&mut app).focus = 1;
@@ -730,7 +767,7 @@ fn stop_at_reports_cap_loss_and_a_saved_zone_controls_refresh_and_input() {
     );
     // Saving configuration sets this same override. It must govern both refresh and parsing.
     app.workspace.zone = Some(TimeZone::get("America/New_York").unwrap());
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Char('s')]);
     app.paste("website");
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
@@ -796,7 +833,7 @@ fn cancelling_future_timer_requires_review_and_escape_never_records_work() {
     let timer = tracker
         .start(command::Start::new(agreement, "Future".into(), future).unwrap())
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     action(&mut app, &mut tracker, now, "Cancel selected timer");
     let summary = &form(&mut app).review.as_ref().unwrap().summary;
@@ -816,7 +853,7 @@ fn cancelling_future_timer_requires_review_and_escape_never_records_work() {
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert_eq!(tracker.running().unwrap().len(), 1);
     assert!(form(&mut app).review.is_some());
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert!(tracker.running().unwrap().is_empty());
     assert!(tracker.entries(agreement).unwrap().is_empty());
@@ -829,7 +866,7 @@ fn stale_cancellation_preserves_review_and_does_not_cancel_replacement() {
     let timer = tracker
         .start(command::Start::new(agreement, "Original".into(), now).unwrap())
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     action(&mut app, &mut tracker, now, "Cancel selected timer");
     tracker.cancel_if_current(&timer).unwrap();
@@ -837,7 +874,7 @@ fn stale_cancellation_preserves_review_and_does_not_cancel_replacement() {
         .start(command::Start::new(agreement, "Replacement".into(), now).unwrap())
         .unwrap();
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert_eq!(tracker.running().unwrap(), [replacement]);
@@ -859,7 +896,7 @@ fn recovery_actions_are_disabled_when_refresh_failed() {
     tracker
         .start(command::Start::new(agreement, "Running".into(), now).unwrap())
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     app.selection.select(Some(0));
     for (section, name) in [
         (Section::Dashboard, "Cancel selected timer"),
@@ -873,7 +910,7 @@ fn recovery_actions_are_disabled_when_refresh_failed() {
             matches!(&app.workspace.overlay, Some(Overlay::Actions(p)) if p.selected().unwrap().disabled.as_ref().unwrap().contains("Database unavailable"))
         );
         assert!(
-            app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
                 .is_err()
         );
         assert!(matches!(app.workspace.overlay, Some(Overlay::Actions(_))));
@@ -891,7 +928,7 @@ fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
     let entry = tracker
         .log(command::LogEntry::new(agreement, "Future entry".into(), from, to).unwrap())
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
     action(&mut app, &mut tracker, now, "Browse completed entries");
     app.paste("Future");
@@ -942,7 +979,7 @@ fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
     app.refresh_error = Some("offline".into());
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert_eq!(tracker.entries(agreement).unwrap(), [entry]);
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert!(tracker.entries(agreement).unwrap().is_empty());
     assert!(
@@ -973,7 +1010,7 @@ fn stale_entry_deletion_preserves_review_and_does_not_delete_replacement() {
         .log(command::LogEntry::new(agreement, "Replacement".into(), from, now).unwrap())
         .unwrap();
     assert!(
-        app.key(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
             .is_err()
     );
     assert_eq!(tracker.entries(agreement).unwrap(), [replacement]);
@@ -1013,7 +1050,7 @@ fn historical_entries_in_archived_projects_can_be_deleted() {
     tracker
         .archive_project(previous.project(), Some("2026-01-02".parse().unwrap()), now)
         .unwrap();
-    app.refresh(&tracker, now, &TimeZone::UTC);
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(
         &mut app,
         &mut tracker,

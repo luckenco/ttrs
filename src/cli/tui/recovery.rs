@@ -1,11 +1,11 @@
 use jiff::{Timestamp, tz::TimeZone};
-use tt::{Tracker, model};
+use tt::model;
 
 use super::{
     catalog::Reference,
-    choose::Choose,
+    effects::Read,
     form::{Form, Kind},
-    state::{App, core_error},
+    state::App,
     workspace::Overlay,
 };
 use crate::cli::Error;
@@ -59,24 +59,18 @@ impl App {
         self.recovery_form(Kind::Cancel(timer), now, zone)
     }
 
-    pub(super) fn browse_entries(
-        &mut self,
-        tracker: &Tracker,
-        zone: &TimeZone,
-    ) -> Result<(), Error> {
+    pub(super) fn browse_entries(&mut self, zone: &TimeZone) -> Result<(), Error> {
         let agreement = match self.workspace.reference() {
             Some(Reference::Agreement(id)) => id,
             Some(Reference::Project(id)) => self.workspace.catalogs.current(id)?.id(),
             _ => return Err(Error::usage("Select a project or agreement first.")),
         };
-        let entries = tracker.entries(agreement).map_err(core_error)?;
-        self.workspace.overlay = Some(Overlay::Entries(Choose::new(
-            "Completed entries",
-            entries.into_iter().map(|entry| {
-                let label = entry_label(&entry, zone);
-                (entry, label)
-            }),
-        )));
+        self.workspace.overlay = Some(Overlay::Detail {
+            title: "Completed entries".into(),
+            text: "Loading…".into(),
+            scroll: 0,
+        });
+        self.request_read(Read::Entries(agreement), zone)?;
         Ok(())
     }
 
@@ -92,7 +86,8 @@ impl App {
             ));
         }
         let mut form = Form::new(kind, &self.workspace.catalogs, None, now, zone)?;
-        form.review = Some(form.prepare(&self.workspace.catalogs, now, zone)?);
+        form.admission = self.pending.context.clone();
+        self.prepare_form(&form, zone)?;
         self.error = None;
         self.workspace.overlay = Some(Overlay::Form(Box::new(form)));
         Ok(())
