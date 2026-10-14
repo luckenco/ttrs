@@ -1,8 +1,8 @@
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior};
+use crate::sql::{self, ReadSql, WriteSql, params};
 
 use crate::{Error, Result, model};
 
-impl super::Store {
+impl<S: ReadSql> super::Store<S> {
     pub(crate) fn timer(&self, id: model::TimerId) -> Result<model::RunningTimer> {
         super::find_timer(&self.connection, id)?.ok_or(Error::TimerNotFound(id))
     }
@@ -15,66 +15,63 @@ impl super::Store {
         &self,
         agreement: model::ServiceAgreementId,
     ) -> Result<Vec<model::TimeEntry>> {
-        let transaction = self.connection.unchecked_transaction()?;
-        if super::find_agreement(&transaction, agreement)?.is_none() {
+        if super::find_agreement(&self.connection, agreement)?.is_none() {
             return Err(Error::AgreementNotFound(agreement));
         }
-        let entries = {
-            let mut statement = transaction.prepare_cached(
-                "SELECT id, agreement_id, scope, started_at_us, ended_at_us
-                 FROM time_entries WHERE agreement_id = ?1 ORDER BY started_at_us DESC, id DESC",
-            )?;
-            statement
-                .query_map([agreement.get()], entry_from_row)?
-                .collect::<rusqlite::Result<Vec<_>>>()?
-        };
-        transaction.commit()?;
-        Ok(entries)
+        sql::query(
+            &self.connection,
+            "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
+                    CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
+             FROM time_entries WHERE agreement_id = CAST(?1 AS INTEGER) ORDER BY started_at_us DESC, id DESC",
+        params![agreement.get()],
+            entry_from_row,
+        )
     }
 
-    pub(crate) fn cancel_if_current(&mut self, expected: &model::RunningTimer) -> Result<()> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        super::timers::check(&transaction, expected)?;
-        let changed = transaction.execute(
-            "DELETE FROM running_timers WHERE id = ?1",
-            [expected.id().get()],
+    pub(crate) fn cancel_if_current(&mut self, expected: &model::RunningTimer) -> Result<()>
+    where
+        S: WriteSql,
+    {
+        super::timers::check(&self.connection, expected)?;
+        let changed = self.connection.write(
+            "DELETE FROM running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+            params![expected.id().get()],
         )?;
-        assert_eq!(changed, 1, "the checked timer must still exist");
-        transaction.commit()?;
+        assert_eq!(changed.len(), 1, "the checked timer must still exist");
         Ok(())
     }
 
-    pub(crate) fn delete_entry_if_current(&mut self, expected: &model::TimeEntry) -> Result<()> {
-        let transaction = self
-            .connection
-            .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        if find_entry(&transaction, expected.id())?.as_ref() != Some(expected) {
+    pub(crate) fn delete_entry_if_current(&mut self, expected: &model::TimeEntry) -> Result<()>
+    where
+        S: WriteSql,
+    {
+        if find_entry(&self.connection, expected.id())?.as_ref() != Some(expected) {
             return Err(Error::EntryChanged(expected.id()));
         }
-        let changed = transaction.execute(
-            "DELETE FROM time_entries WHERE id = ?1",
-            [expected.id().get()],
+        let changed = self.connection.write(
+            "DELETE FROM time_entries WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+            params![expected.id().get()],
         )?;
-        assert_eq!(changed, 1, "the checked entry must still exist");
-        transaction.commit()?;
+        assert_eq!(changed.len(), 1, "the checked entry must still exist");
         Ok(())
     }
 }
 
-fn find_entry(connection: &Connection, id: model::EntryId) -> Result<Option<model::TimeEntry>> {
-    connection
-        .prepare_cached(
-            "SELECT id, agreement_id, scope, started_at_us, ended_at_us
-             FROM time_entries WHERE id = ?1",
-        )?
-        .query_row([id.get()], entry_from_row)
-        .optional()
-        .map_err(Into::into)
+fn find_entry(
+    connection: &(impl ReadSql + ?Sized),
+    id: model::EntryId,
+) -> Result<Option<model::TimeEntry>> {
+    sql::optional(
+        connection,
+        "SELECT CAST(id AS TEXT), CAST(agreement_id AS TEXT), scope,
+                    CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
+             FROM time_entries WHERE id = CAST(?1 AS INTEGER)",
+        params![id.get()],
+        entry_from_row,
+    )
 }
 
-fn entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::TimeEntry> {
+fn entry_from_row(row: &sql::Row) -> Result<model::TimeEntry> {
     Ok(model::TimeEntry::new(
         model::EntryId::from_raw(row.get(0)?),
         model::ServiceAgreementId::from_raw(row.get(1)?),

@@ -8,9 +8,16 @@
 //! and reject agreements replaced before the write transaction. During early
 //! development, schema changes require a fresh database; no migrations are provided.
 //!
+//! The default `native` feature provides `Tracker` and the CLI, backed by
+//! SQLite. Disabling default features builds the same private SQL rules and
+//! public domain types without SQLite, filesystem/terminal adapters, or system
+//! timezone discovery. All builds retain the bundled timezone database.
+//!
 //! # Example
 //!
 //! ```
+//! # #[cfg(feature = "native")]
+//! # fn main() -> Result<(), Box<dyn std::error::Error>> {
 //! use jiff::civil::Date;
 //! use tt::{Timestamp, Tracker, command, model};
 //!
@@ -60,15 +67,26 @@
 //! )?;
 //! assert_eq!(revised.project(), project.id());
 //! assert!(!tracker.service_agreement(agreement.id())?.is_current());
-//! # Ok::<(), Box<dyn std::error::Error>>(())
+//! # Ok(())
+//! # }
+//! # #[cfg(not(feature = "native"))]
+//! # fn main() {}
 //! ```
 
 pub mod command;
 pub mod error;
 pub mod model;
+// Compile shared rules on core-only targets even before a host is attached.
+#[cfg(feature = "native")]
+mod native;
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
+mod sql;
+#[cfg_attr(not(feature = "native"), allow(dead_code))]
 mod store;
+#[cfg(feature = "native")]
 mod tracker;
 
 pub use error::{Error, Result};
 pub use jiff::Timestamp;
+#[cfg(feature = "native")]
 pub use tracker::Tracker;

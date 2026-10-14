@@ -1,26 +1,31 @@
-use rusqlite::params;
+use crate::sql::{self, ReadSql, params};
 
 use crate::{Result, model};
 
 const SELECT: &str = "
-    SELECT agreement.id, agreement.project_id, agreement.name,
-           agreement.hourly_rate_micros, agreement.currency,
-           agreement.minimum_hours, agreement.maximum_hours,
-           agreement.effective_on, agreement.current, agreement.fee_micros, agreement.included_hours,
-           project.name, client.name, project.archived_on IS NULL
+    SELECT CAST(agreement.id AS TEXT), CAST(agreement.project_id AS TEXT), agreement.name,
+           CAST(agreement.hourly_rate_micros AS TEXT), agreement.currency,
+           CAST(agreement.minimum_hours AS TEXT), CAST(agreement.maximum_hours AS TEXT),
+           agreement.effective_on, CAST(agreement.current AS TEXT),
+           CAST(agreement.fee_micros AS TEXT), CAST(agreement.included_hours AS TEXT),
+           project.name, client.name, CAST(project.archived_on IS NULL AS TEXT)
     FROM service_agreements agreement
     JOIN projects project ON project.id = agreement.project_id
     JOIN clients client ON client.id = project.client_id
 ";
 
-impl super::Store {
+impl<S: ReadSql> super::Store<S> {
     pub(crate) fn project_list(&self, all: bool) -> Result<Vec<model::AgreementListing>> {
-        let mut statement = self.connection.prepare_cached(&format!(
-            "{SELECT} WHERE agreement.current = 1 AND (?1 OR project.archived_on IS NULL)
-             ORDER BY project.name, project.id"
-        ))?;
-        let rows = statement.query_map([all], listing_from_row)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+        sql::query(
+            &self.connection,
+            &format!(
+                "{SELECT} WHERE agreement.current = 1
+                 AND (CAST(?1 AS INTEGER) OR project.archived_on IS NULL)
+                 ORDER BY project.name, project.id"
+            ),
+            params![all],
+            listing_from_row,
+        )
     }
 
     pub(crate) fn agreement_list(
@@ -28,23 +33,26 @@ impl super::Store {
         client: Option<model::ClientId>,
         all: bool,
     ) -> Result<Vec<model::AgreementListing>> {
-        let mut filter = "?1 IS NULL";
+        let mut filter = "CAST(?1 AS INTEGER) IS NULL";
         if client.is_some() {
-            filter = "project.client_id = ?1";
+            filter = "project.client_id = CAST(?1 AS INTEGER)";
         }
         let mut sql = format!("{SELECT} WHERE {filter}");
         if !all {
             sql.push_str(" AND agreement.current = 1 AND project.archived_on IS NULL");
         }
         sql.push_str(" ORDER BY agreement.project_id, agreement.effective_on, agreement.id");
-        let mut statement = self.connection.prepare_cached(&sql)?;
-        let rows =
-            statement.query_map(params![client.map(model::ClientId::get)], listing_from_row)?;
-        rows.collect::<rusqlite::Result<_>>().map_err(Into::into)
+
+        sql::query(
+            &self.connection,
+            &sql,
+            params![client.map(model::ClientId::get)],
+            listing_from_row,
+        )
     }
 }
 
-fn listing_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<model::AgreementListing> {
+fn listing_from_row(row: &sql::Row) -> Result<model::AgreementListing> {
     Ok(model::AgreementListing {
         agreement: super::agreement_from_row(row)?,
         project_name: row.get(11)?,

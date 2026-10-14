@@ -1,20 +1,18 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::sql::{self, ReadSql, params};
 use jiff::{Timestamp, tz::TimeZone};
-use rusqlite::params;
 
 use crate::{Result, model};
 
-impl super::Store {
+impl<S: ReadSql> super::Store<S> {
     pub(crate) fn status(&self, now: Timestamp) -> Result<Vec<model::RunningStatus>> {
-        let transaction = self.connection.unchecked_transaction()?;
-        let statuses = self
-            .running()?
+        self.running()?
             .into_iter()
             .map(|timer| {
-                let agreement = super::find_agreement(&transaction, timer.agreement())?
+                let agreement = super::find_agreement(&self.connection, timer.agreement())?
                     .expect("running timers always reference an agreement");
-                let project = super::find_project(&transaction, agreement.project())?
+                let project = super::find_project(&self.connection, agreement.project())?
                     .expect("agreements always reference a project");
                 let limit = self.limit(&timer, now)?;
                 Ok(model::RunningStatus {
@@ -24,14 +22,11 @@ impl super::Store {
                     limit,
                 })
             })
-            .collect::<Result<Vec<_>>>()?;
-        transaction.commit()?;
-        Ok(statuses)
+            .collect()
     }
 
     pub(crate) fn dashboard(&self, now: Timestamp, zone: &TimeZone) -> Result<model::Dashboard> {
         // All reads share one SQLite snapshot, including CLI writes between refreshes.
-        let transaction = self.connection.unchecked_transaction()?;
         let clients: HashMap<_, _> = self.clients()?.into_iter().map(|c| (c.id(), c)).collect();
         let agreements = self.agreements()?;
         let current: HashMap<_, _> = agreements
@@ -63,7 +58,6 @@ impl super::Store {
         let today = self.daily_total(start, now, &projects, &timers, earnings)?;
         let month_earnings_micros =
             self.monthly_earnings(now, &all_projects, &agreements, &timers, &retainers)?;
-        transaction.commit()?;
         Ok(model::Dashboard {
             projects,
             timers,
@@ -103,28 +97,28 @@ impl super::Store {
         };
         // One indexed range query, then clip to each project's local month.
         // Retainer charges are already calculated, so never price their hours here.
-        let mut statement = self.connection.prepare_cached(
-            "SELECT agreement.project_id, entry.started_at_us, entry.ended_at_us,
-                    agreement.hourly_rate_micros, agreement.currency
+
+        let rows = sql::query(
+            &self.connection,
+            "SELECT CAST(agreement.project_id AS TEXT), CAST(entry.started_at_us AS TEXT),
+                    CAST(entry.ended_at_us AS TEXT),
+                    CAST(agreement.hourly_rate_micros AS TEXT), agreement.currency
              FROM time_entries entry
              JOIN service_agreements agreement ON agreement.id = entry.agreement_id
-             WHERE entry.ended_at_us > ?1 AND entry.started_at_us < ?2
+             WHERE entry.ended_at_us > CAST(?1 AS INTEGER) AND entry.started_at_us < CAST(?2 AS INTEGER)
                AND agreement.fee_micros IS NULL",
-        )?;
-        let rows = statement.query_map(
-            params![first.as_microsecond(), now.as_microsecond()],
+        params![first.as_microsecond(), now.as_microsecond()],
             |row| {
                 Ok((
                     model::ProjectId::from_raw(row.get(0)?),
                     row.get(1)?,
                     row.get(2)?,
                     row.get(3)?,
-                    row.get::<_, String>(4)?,
+                    row.get::<String>(4)?,
                 ))
             },
         )?;
-        for row in rows {
-            let (project, from, to, rate, currency) = row?;
+        for (project, from, to, rate, currency) in rows {
             add(project, from, to, rate, &currency);
         }
         for status in timers {
@@ -177,27 +171,26 @@ impl super::Store {
             }
         };
         // The ended-at index excludes historical entries on each live refresh.
-        let mut statement = self.connection.prepare_cached(
-            "SELECT entry.started_at_us, entry.ended_at_us,
-                    CASE WHEN agreement.fee_micros IS NULL THEN agreement.hourly_rate_micros END,
+
+        let rows = sql::query(
+            &self.connection,
+            "SELECT CAST(entry.started_at_us AS TEXT), CAST(entry.ended_at_us AS TEXT),
+                    CAST(CASE WHEN agreement.fee_micros IS NULL THEN agreement.hourly_rate_micros END AS TEXT),
                     agreement.currency
              FROM time_entries entry
              JOIN service_agreements agreement ON agreement.id = entry.agreement_id
-             WHERE entry.ended_at_us > ?1 AND entry.started_at_us < ?2",
-        )?;
-        let rows = statement.query_map(
-            params![start.as_microsecond(), now.as_microsecond()],
+             WHERE entry.ended_at_us > CAST(?1 AS INTEGER) AND entry.started_at_us < CAST(?2 AS INTEGER)",
+        params![start.as_microsecond(), now.as_microsecond()],
             |row| {
                 Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, Option<i64>>(2)?,
-                    row.get::<_, String>(3)?,
+                    row.get::<i64>(0)?,
+                    row.get::<i64>(1)?,
+                    row.get::<Option<i64>>(2)?,
+                    row.get::<String>(3)?,
                 ))
             },
         )?;
-        for row in rows {
-            let (from, to, rate, currency) = row?;
+        for (from, to, rate, currency) in rows {
             add(
                 to.min(now.as_microsecond()) - from.max(start.as_microsecond()),
                 rate,

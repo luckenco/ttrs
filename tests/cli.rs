@@ -1,3 +1,5 @@
+#![cfg(feature = "native")]
+
 use std::{
     fs,
     io::{BufRead, BufReader},

@@ -9,9 +9,12 @@ use crate::model;
 /// ```
 /// use std::error::Error as _;
 ///
+/// # #[cfg(feature = "native")]
+/// # {
 /// let error = tt::Error::from(rusqlite::Error::InvalidQuery);
 /// assert!(error.to_string().starts_with("storage failed: "));
 /// assert!(error.source().unwrap().is::<rusqlite::Error>());
+/// # }
 /// assert!(tt::Error::EmptyScope.source().is_none());
 /// ```
 #[derive(Debug, thiserror::Error)]
@@ -142,6 +145,7 @@ pub enum Error {
     Storage(#[source] Box<dyn error::Error + Send + Sync>),
 }
 
+#[cfg(feature = "native")]
 impl From<rusqlite::Error> for Error {
     fn from(error: rusqlite::Error) -> Self {
         Self::Storage(Box::new(error))

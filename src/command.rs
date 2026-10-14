@@ -31,6 +31,7 @@ impl Start {
         })
     }
 
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn into_parts(self) -> (model::ServiceAgreementId, String, Timestamp) {
         (self.agreement, self.scope, self.started_at)
     }
@@ -52,6 +53,7 @@ impl End {
         }
     }
 
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) const fn into_parts(self) -> (model::TimerId, Timestamp) {
         (self.timer, self.ended_at)
     }
@@ -94,6 +96,7 @@ impl LogEntry {
         })
     }
 
+    #[cfg_attr(not(feature = "native"), allow(dead_code))]
     pub(crate) fn into_parts(self) -> (model::ServiceAgreementId, String, Timestamp, Timestamp) {
         (self.agreement, self.scope, self.started_at, self.ended_at)
     }

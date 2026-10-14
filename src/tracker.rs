@@ -6,7 +6,7 @@ use crate::{Error, Result, command, model, store};
 
 /// The application service for projects, clients, agreements, and tracked work.
 pub struct Tracker {
-    store: store::Store,
+    store: crate::native::Store,
 }
 
 impl Tracker {
@@ -15,33 +15,38 @@ impl Tracker {
     /// Existing databases must use the current schema. Schema changes during
     /// development require recreating the database; no migrations are provided.
     pub fn open(path: impl AsRef<Path>) -> Result<Self> {
-        store::Store::open(path.as_ref()).map(|store| Self { store })
+        crate::native::Store::open(path.as_ref()).map(|store| Self { store })
     }
 
     /// Creates an ephemeral tracker backed by an in-memory database.
     pub fn memory() -> Result<Self> {
-        store::Store::memory().map(|store| Self { store })
+        crate::native::Store::memory().map(|store| Self { store })
     }
 
     /// Creates a client.
     pub fn add_client(&mut self, name: String) -> Result<model::Client> {
-        self.store.add_client(client_name(name)?)
+        let name = client_name(name)?;
+        self.store
+            .write(|connection| store::Store { connection }.add_client(name))
     }
 
     /// Returns all clients ordered by name.
     pub fn clients(&self) -> Result<Vec<model::Client>> {
-        self.store.clients()
+        self.store
+            .read(|connection| store::Store { connection }.clients())
     }
 
     /// Finds a client by identifier.
     pub fn client(&self, id: model::ClientId) -> Result<model::Client> {
-        self.store.client(id)?.ok_or(Error::ClientNotFound(id))
+        self.store
+            .read(|connection| store::Store { connection }.client(id))?
+            .ok_or(Error::ClientNotFound(id))
     }
 
     /// Finds a client by its exact name.
     pub fn client_by_name(&self, name: &str) -> Result<model::Client> {
         self.store
-            .client_by_name(name)?
+            .read(|connection| store::Store { connection }.client_by_name(name))?
             .ok_or_else(|| Error::ClientNameNotFound(name.to_owned()))
     }
 
@@ -56,8 +61,10 @@ impl Tracker {
     ) -> Result<(model::Project, model::ServiceAgreement)> {
         let timezone = validate_billing_timezone(billing_timezone)?;
         reject_future(agreement.effective_on(), &timezone, now)?;
-        self.store
-            .add_project(client, project_name(name)?, timezone, agreement)
+        let name = project_name(name)?;
+        self.store.write(|connection| {
+            store::Store { connection }.add_project(client, name, timezone, agreement)
+        })
     }
 
     /// Replaces the selected current agreement with immutable terms.
@@ -77,12 +84,14 @@ impl Tracker {
             project_value.billing_timezone(),
             now,
         )?;
-        self.store.add_agreement(previous, agreement)
+        self.store
+            .write(|connection| store::Store { connection }.add_agreement(previous, agreement))
     }
 
     /// Returns all service agreements ordered by project and effective date.
     pub fn service_agreements(&self) -> Result<Vec<model::ServiceAgreement>> {
-        self.store.agreements()
+        self.store
+            .read(|connection| store::Store { connection }.agreements())
     }
 
     /// Lists agreements with project and client labels, ordered by project,
@@ -94,7 +103,8 @@ impl Tracker {
         client: Option<model::ClientId>,
         all: bool,
     ) -> Result<Vec<model::AgreementListing>> {
-        self.store.agreement_list(client, all)
+        self.store
+            .read(|connection| store::Store { connection }.agreement_list(client, all))
     }
 
     /// Finds a service agreement by identifier.
@@ -103,7 +113,7 @@ impl Tracker {
         id: model::ServiceAgreementId,
     ) -> Result<model::ServiceAgreement> {
         self.store
-            .agreement(id)?
+            .read(|connection| store::Store { connection }.agreement(id))?
             .ok_or(Error::AgreementNotFound(id))
     }
 
@@ -114,7 +124,7 @@ impl Tracker {
         name: &str,
     ) -> Result<model::ServiceAgreement> {
         self.store
-            .agreement_by_name(project, name)?
+            .read(|connection| store::Store { connection }.agreement_by_name(project, name))?
             .ok_or_else(|| Error::AgreementNameNotFound(name.to_owned()))
     }
 
@@ -123,17 +133,22 @@ impl Tracker {
         &self,
         project: model::ProjectId,
     ) -> Result<model::ServiceAgreement> {
-        if self.store.project(project)?.is_none() {
+        if self
+            .store
+            .read(|connection| store::Store { connection }.project(project))?
+            .is_none()
+        {
             return Err(Error::ProjectNotFound(project));
         }
         self.store
-            .current_agreement(project)?
+            .read(|connection| store::Store { connection }.current_agreement(project))?
             .ok_or(Error::ProjectAgreementMissing(project))
     }
 
     /// Returns all projects ordered by name.
     pub fn projects(&self) -> Result<Vec<model::Project>> {
-        self.store.projects()
+        self.store
+            .read(|connection| store::Store { connection }.projects())
     }
 
     /// Lists each project's current agreement with project and client labels,
@@ -146,17 +161,22 @@ impl Tracker {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn project_list(&self, all: bool) -> Result<Vec<model::AgreementListing>> {
-        self.store.project_list(all)
+        self.store
+            .read(|connection| store::Store { connection }.project_list(all))
     }
 
     /// Finds a project by identifier.
     pub fn project(&self, id: model::ProjectId) -> Result<model::Project> {
-        self.store.project(id)?.ok_or(Error::ProjectNotFound(id))
+        self.store
+            .read(|connection| store::Store { connection }.project(id))?
+            .ok_or(Error::ProjectNotFound(id))
     }
 
     /// Finds an unambiguous project by its exact name.
     pub fn project_by_name(&self, name: &str) -> Result<model::Project> {
-        let mut projects = self.store.projects_by_name(name)?;
+        let mut projects = self
+            .store
+            .read(|connection| store::Store { connection }.projects_by_name(name))?;
         match projects.len() {
             0 => Err(Error::ProjectNameNotFound(name.to_owned())),
             1 => Ok(projects.pop().expect("one project exists")),
@@ -179,12 +199,14 @@ impl Tracker {
         if archived_on > today {
             return Err(Error::EffectiveDateFuture);
         }
-        self.store.archive_project(project, archived_on)
+        self.store
+            .write(|connection| store::Store { connection }.archive_project(project, archived_on))
     }
 
     /// Unarchives a project and restores continuous commercial coverage.
     pub fn unarchive_project(&mut self, project: model::ProjectId) -> Result<model::Project> {
-        self.store.unarchive_project(project)
+        self.store
+            .write(|connection| store::Store { connection }.unarchive_project(project))
     }
 
     /// Starts a timer on the selected current agreement without affecting other clients.
@@ -192,13 +214,15 @@ impl Tracker {
     /// Returns [`Error::AgreementChanged`] if the agreement was replaced.
     pub fn start(&mut self, command: command::Start) -> Result<model::RunningTimer> {
         let (agreement, scope, started_at) = command.into_parts();
-        self.store.start(agreement, scope, started_at)
+        self.store
+            .write(|connection| store::Store { connection }.start(agreement, scope, started_at))
     }
 
     /// Ends a running timer and returns the resulting, possibly capped entry.
     pub fn end(&mut self, command: command::End) -> Result<model::TimeEntry> {
         let (timer, ended_at) = command.into_parts();
-        self.store.end(timer, ended_at)
+        self.store
+            .write(|connection| store::Store { connection }.end(timer, ended_at))
     }
 
     /// Ends exactly the displayed timer, rejecting a stopped or replaced value.
@@ -211,7 +235,8 @@ impl Tracker {
         ended_at: Timestamp,
     ) -> Result<model::TimeEntry> {
         let (_, ended_at) = command::End::new(timer.id(), ended_at).into_parts();
-        self.store.end_if_current(timer, ended_at)
+        self.store
+            .write(|connection| store::Store { connection }.end_if_current(timer, ended_at))
     }
 
     /// Atomically ends the displayed timer and starts work for the same client.
@@ -227,7 +252,8 @@ impl Tracker {
         command: command::Start,
     ) -> Result<(model::TimeEntry, model::RunningTimer)> {
         let (agreement, scope, at) = command.into_parts();
-        self.store.switch(timer, agreement, scope, at)
+        self.store
+            .write(|connection| store::Store { connection }.switch(timer, agreement, scope, at))
     }
 
     /// Returns a consistent snapshot of projects, timers, daily work and retainers.
@@ -255,30 +281,36 @@ impl Tracker {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn dashboard(&self, now: Timestamp, zone: &jiff::tz::TimeZone) -> Result<model::Dashboard> {
-        self.store.dashboard(now, zone)
+        self.store
+            .read(|connection| store::Store { connection }.dashboard(now, zone))
     }
 
     /// Creates a completed time entry without starting a timer.
     pub fn log(&mut self, command: command::LogEntry) -> Result<model::TimeEntry> {
         let (agreement, scope, started_at, ended_at) = command.into_parts();
-        self.store.log(agreement, scope, started_at, ended_at)
+        self.store.write(|connection| {
+            store::Store { connection }.log(agreement, scope, started_at, ended_at)
+        })
     }
 
     /// Finds a running timer by identifier, including future-dated timers.
     pub fn timer(&self, id: model::TimerId) -> Result<model::RunningTimer> {
-        self.store.timer(id)
+        self.store
+            .read(|connection| store::Store { connection }.timer(id))
     }
 
     /// Finds a completed entry, including historical, archived and future work.
     pub fn entry(&self, id: model::EntryId) -> Result<model::TimeEntry> {
-        self.store.entry(id)
+        self.store
+            .read(|connection| store::Store { connection }.entry(id))
     }
 
     /// Returns all completed entries for an agreement, newest start first,
     /// then highest ID first. Historical, archived and future work is included.
     /// Returns [`Error::AgreementNotFound`] for an unknown agreement.
     pub fn entries(&self, agreement: model::ServiceAgreementId) -> Result<Vec<model::TimeEntry>> {
-        self.store.entries(agreement)
+        self.store
+            .read(|connection| store::Store { connection }.entries(agreement))
     }
 
     /// Atomically removes only the unchanged displayed timer without logging work.
@@ -306,7 +338,8 @@ impl Tracker {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn cancel_if_current(&mut self, expected: &model::RunningTimer) -> Result<()> {
-        self.store.cancel_if_current(expected)
+        self.store
+            .write(|connection| store::Store { connection }.cancel_if_current(expected))
     }
 
     /// Atomically removes only the unchanged displayed completed entry.
@@ -314,7 +347,8 @@ impl Tracker {
     /// Returns [`Error::EntryChanged`] for a missing or changed entry. Historical,
     /// archived and future work can be deleted; callers own confirmation.
     pub fn delete_entry_if_current(&mut self, expected: &model::TimeEntry) -> Result<()> {
-        self.store.delete_entry_if_current(expected)
+        self.store
+            .write(|connection| store::Store { connection }.delete_entry_if_current(expected))
     }
 
     /// Returns timers and their cap information from one consistent read snapshot.
@@ -327,12 +361,14 @@ impl Tracker {
     /// # Ok::<(), Box<dyn std::error::Error>>(())
     /// ```
     pub fn status(&self, now: Timestamp) -> Result<Vec<model::RunningStatus>> {
-        self.store.status(now)
+        self.store
+            .read(|connection| store::Store { connection }.status(now))
     }
 
     /// Returns all running timers, oldest first.
     pub fn running(&self) -> Result<Vec<model::RunningTimer>> {
-        self.store.running()
+        self.store
+            .read(|connection| store::Store { connection }.running())
     }
 
     /// Returns cap information for a running timer, if it has a maximum.
@@ -342,12 +378,14 @@ impl Tracker {
         timer: model::TimerId,
         now: Timestamp,
     ) -> Result<Option<model::TimerLimit>> {
-        self.store.timer_limit(timer, now)
+        self.store
+            .read(|connection| store::Store { connection }.timer_limit(timer, now))
     }
 
     /// Returns the most recently used distinct scopes for a project.
     pub fn recent_scopes(&self, project: model::ProjectId, limit: usize) -> Result<Vec<String>> {
-        self.store.recent_scopes(project, limit)
+        self.store
+            .read(|connection| store::Store { connection }.recent_scopes(project, limit))
     }
 }
 

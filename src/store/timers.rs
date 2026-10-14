@@ -1,11 +1,14 @@
+use crate::sql::{ReadSql, WriteSql, params};
 use jiff::Timestamp;
-use rusqlite::{Transaction, params};
 
 use crate::{Error, Result, model};
 
 use super::billing;
 
-pub(super) fn check(transaction: &Transaction<'_>, expected: &model::RunningTimer) -> Result<()> {
+pub(super) fn check(
+    transaction: &(impl ReadSql + ?Sized),
+    expected: &model::RunningTimer,
+) -> Result<()> {
     if super::find_timer(transaction, expected.id())?.as_ref() != Some(expected) {
         return Err(Error::TimerChanged(expected.id()));
     }
@@ -13,7 +16,7 @@ pub(super) fn check(transaction: &Transaction<'_>, expected: &model::RunningTime
 }
 
 pub(super) fn start(
-    transaction: &Transaction<'_>,
+    transaction: &mut (impl WriteSql + ?Sized),
     expected: model::ServiceAgreementId,
     scope: String,
     started_at: Timestamp,
@@ -37,13 +40,15 @@ pub(super) fn start(
         started_at,
         started_at,
     )?;
-    transaction.execute(
+    let inserted = transaction.write(
         "INSERT INTO running_timers (agreement_id, scope, started_at_us)
-         VALUES (?1, ?2, ?3)",
+         VALUES (
+                 CAST(?1 AS INTEGER), ?2, CAST(?3 AS INTEGER)
+             ) RETURNING CAST(id AS TEXT)",
         params![agreement.id().get(), scope, started_at.as_microsecond()],
     )?;
     Ok(model::RunningTimer::new(
-        model::TimerId::from_raw(transaction.last_insert_rowid()),
+        model::TimerId::from_raw(inserted[0].get(0)?),
         agreement.id(),
         scope,
         started_at,
@@ -51,7 +56,7 @@ pub(super) fn start(
 }
 
 pub(super) fn end(
-    transaction: &Transaction<'_>,
+    transaction: &mut (impl WriteSql + ?Sized),
     timer: model::TimerId,
     requested_end: Timestamp,
 ) -> Result<model::TimeEntry> {
@@ -76,10 +81,13 @@ pub(super) fn end(
     if ended_at <= running.started_at() {
         return Err(Error::MonthlyMaximumReached(agreement.project()));
     }
-    transaction.execute(
+    let inserted = transaction.write(
         "INSERT INTO time_entries (
              agreement_id, scope, started_at_us, ended_at_us
-         ) VALUES (?1, ?2, ?3, ?4)",
+         ) VALUES (
+                 CAST(?1 AS INTEGER), ?2, CAST(?3 AS INTEGER), CAST(?4 AS INTEGER)
+             ) RETURNING
+             CAST(id AS TEXT)",
         params![
             agreement.id().get(),
             running.scope(),
@@ -87,10 +95,14 @@ pub(super) fn end(
             ended_at.as_microsecond()
         ],
     )?;
-    let entry = model::EntryId::from_raw(transaction.last_insert_rowid());
-    let removed = transaction.execute("DELETE FROM running_timers WHERE id = ?1", [timer.get()])?;
+    let entry = model::EntryId::from_raw(inserted[0].get(0)?);
+    let removed = transaction.write(
+        "DELETE FROM running_timers WHERE id = CAST(?1 AS INTEGER) RETURNING CAST(id AS TEXT)",
+        params![timer.get()],
+    )?;
     assert_eq!(
-        removed, 1,
+        removed.len(),
+        1,
         "the selected timer must be removed exactly once"
     );
     Ok(model::TimeEntry::new(

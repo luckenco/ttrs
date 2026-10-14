@@ -1,3 +1,5 @@
+#![cfg(feature = "native")]
+
 use jiff::{Timestamp, tz::TimeZone};
 use tt::{Error, Tracker, command, model};
 

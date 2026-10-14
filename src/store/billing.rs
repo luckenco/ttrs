@@ -1,29 +1,27 @@
+use crate::sql::{self, ReadSql, params};
 use jiff::{Timestamp, civil::Date};
-use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::{Error, Result, model};
 
 use super::calendar::{self, HOUR_US};
 
 pub(super) fn validate_agreement_period(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     started_at: Timestamp,
     ended_at: Timestamp,
 ) -> Result<()> {
     let start = super::day_start(agreement.effective_on(), project.billing_timezone())?;
-    let next = connection
-        .prepare_cached(
-            "SELECT effective_on FROM service_agreements
-             WHERE project_id = ?1 AND effective_on > ?2
+    let next = sql::optional(
+        connection,
+        "SELECT effective_on
+             FROM service_agreements
+             WHERE project_id = CAST(?1 AS INTEGER) AND effective_on > ?2
              ORDER BY effective_on LIMIT 1",
-        )?
-        .query_row(
-            params![project.id().get(), agreement.effective_on().to_string()],
-            |row| super::date_from_row(row, 0),
-        )
-        .optional()?;
+        params![project.id().get(), agreement.effective_on().to_string()],
+        |row| super::date_from_row(row, 0),
+    )?;
     let end = next
         .map(|date| super::day_start(date, project.billing_timezone()))
         .transpose()?;
@@ -34,7 +32,7 @@ pub(super) fn validate_agreement_period(
 }
 
 pub(super) fn validate_month_capacity(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     timestamp: Timestamp,
@@ -54,7 +52,7 @@ pub(super) fn validate_month_capacity(
 }
 
 pub(super) fn ensure_capacity(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     started_at: Timestamp,
@@ -89,7 +87,7 @@ pub(super) fn ensure_capacity(
 }
 
 pub(super) fn capped_end(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     started_at: Timestamp,
@@ -109,8 +107,7 @@ pub(super) fn capped_end(
             let segment_us = i128::from(segment_end.as_microsecond() - cursor.as_microsecond());
             if available < segment_us {
                 let available = i64::try_from(available).unwrap_or(i64::MAX);
-                return super::timestamp(cursor.as_microsecond().saturating_add(available))
-                    .map_err(Into::into);
+                return super::timestamp(cursor.as_microsecond().saturating_add(available));
             }
         }
         cursor = segment_end;
@@ -119,7 +116,7 @@ pub(super) fn capped_end(
 }
 
 pub(super) fn timer_limit(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     timer: &model::RunningTimer,
@@ -183,7 +180,7 @@ pub(super) fn timer_limit(
 }
 
 fn month_maximum_us(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: &model::Project,
     agreement: &model::ServiceAgreement,
     month: Date,
@@ -205,22 +202,21 @@ fn month_maximum_us(
 
     // Only the agreement in force at month start and replacements within the
     // month can contribute. Later agreements cannot shorten this month's end.
-    let mut statement = connection.prepare_cached(
-        "SELECT effective_on, maximum_hours FROM service_agreements
-         WHERE project_id = ?1
+
+    let agreements = sql::query(
+        connection,
+        "SELECT effective_on, CAST(maximum_hours AS TEXT)
+             FROM service_agreements
+         WHERE project_id = CAST(?1 AS INTEGER)
            AND effective_on >= coalesce(
                (SELECT effective_on FROM service_agreements
-                WHERE project_id = ?1 AND effective_on <= ?2
+                WHERE project_id = CAST(?1 AS INTEGER) AND effective_on <= ?2
                 ORDER BY effective_on DESC LIMIT 1), ?2)
            AND effective_on < ?3
          ORDER BY effective_on, id",
+        params![project.id().get(), month.to_string(), month_end.to_string()],
+        |row| Ok((super::date_from_row(row, 0)?, row.get::<Option<u32>>(1)?)),
     )?;
-    let agreements = statement
-        .query_map(
-            params![project.id().get(), month.to_string(), month_end.to_string()],
-            |row| Ok((super::date_from_row(row, 0)?, row.get::<_, Option<u32>>(1)?)),
-        )?
-        .collect::<rusqlite::Result<Vec<_>>>()?;
     let mut numerator = 0_i128;
     for (index, &(effective_on, maximum)) in agreements.iter().enumerate() {
         let next = agreements.get(index + 1).map(|&(date, _)| date);
@@ -242,26 +238,24 @@ fn month_maximum_us(
 }
 
 fn used_us(
-    connection: &Connection,
+    connection: &(impl ReadSql + ?Sized),
     project: model::ProjectId,
     start: Timestamp,
     end: Timestamp,
 ) -> Result<i128> {
-    let mut statement = connection.prepare_cached(
-        "SELECT entry.started_at_us, entry.ended_at_us
-         FROM time_entries entry
+    let intervals = sql::query(
+        connection,
+        "SELECT CAST(entry.started_at_us AS TEXT), CAST(entry.ended_at_us AS TEXT)
+             FROM time_entries entry
          JOIN service_agreements agreement ON agreement.id = entry.agreement_id
-         WHERE agreement.project_id = ?1
-           AND entry.ended_at_us > ?2
-           AND entry.started_at_us < ?3",
-    )?;
-    let intervals = statement.query_map(
+         WHERE agreement.project_id = CAST(?1 AS INTEGER)
+           AND entry.ended_at_us > CAST(?2 AS INTEGER)
+           AND entry.started_at_us < CAST(?3 AS INTEGER)",
         params![project.get(), start.as_microsecond(), end.as_microsecond()],
-        |row| Ok((row.get::<_, i64>(0)?, row.get::<_, i64>(1)?)),
+        |row| Ok((row.get::<i64>(0)?, row.get::<i64>(1)?)),
     )?;
     let mut used = 0_i128;
-    for interval in intervals {
-        let (entry_start, entry_end) = interval?;
+    for (entry_start, entry_end) in intervals {
         used += i128::from(
             entry_end.min(end.as_microsecond()) - entry_start.max(start.as_microsecond()),
         );
@@ -280,7 +274,7 @@ fn overlap_us(
     .max(0)
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "native"))]
 mod tests {
     use super::*;
 
@@ -295,15 +289,19 @@ mod tests {
             )
             .unwrap()
         };
-        let mut store = super::super::Store::memory().unwrap();
-        let client = store.add_client("Acme".into()).unwrap();
+        let mut store = crate::native::Store::memory().unwrap();
+        let client = store
+            .write(|connection| crate::store::Store { connection }.add_client("Acme".into()))
+            .unwrap();
         let (project, mut current) = store
-            .add_project(
-                client.id(),
-                "website".into(),
-                jiff::tz::TimeZone::UTC,
-                terms("2025-12-16", Some(31)),
-            )
+            .write(|connection| {
+                crate::store::Store { connection }.add_project(
+                    client.id(),
+                    "website".into(),
+                    jiff::tz::TimeZone::UTC,
+                    terms("2025-12-16", Some(31)),
+                )
+            })
             .unwrap();
         for (date, maximum) in [
             ("2026-01-01", Some(31)),
@@ -315,7 +313,10 @@ mod tests {
             ("2026-05-01", Some(31)),
         ] {
             current = store
-                .add_agreement(current.id(), terms(date, maximum))
+                .write(|connection| {
+                    crate::store::Store { connection }
+                        .add_agreement(current.id(), terms(date, maximum))
+                })
                 .unwrap();
         }
         for (month, hours) in [
@@ -342,7 +343,9 @@ mod tests {
             );
         }
         let historical = store
-            .agreement_by_name(project.id(), "2026-02-01")
+            .read(|connection| {
+                crate::store::Store { connection }.agreement_by_name(project.id(), "2026-02-01")
+            })
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -357,7 +360,10 @@ mod tests {
         );
 
         let archived = store
-            .archive_project(project.id(), "2026-05-16".parse().unwrap())
+            .write(|connection| {
+                crate::store::Store { connection }
+                    .archive_project(project.id(), "2026-05-16".parse().unwrap())
+            })
             .unwrap();
         assert_eq!(
             month_maximum_us(
@@ -379,7 +385,9 @@ mod tests {
             .unwrap(),
             Some(0)
         );
-        let restored = store.unarchive_project(project.id()).unwrap();
+        let restored = store
+            .write(|connection| crate::store::Store { connection }.unarchive_project(project.id()))
+            .unwrap();
         assert_eq!(
             month_maximum_us(
                 &store.connection,
@@ -391,7 +399,10 @@ mod tests {
             Some(31 * HOUR_US)
         );
         let leap = store
-            .archive_project(project.id(), "2028-02-15".parse().unwrap())
+            .write(|connection| {
+                crate::store::Store { connection }
+                    .archive_project(project.id(), "2028-02-15".parse().unwrap())
+            })
             .unwrap();
         assert_eq!(
             month_maximum_us(

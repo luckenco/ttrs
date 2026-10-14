@@ -1,13 +1,13 @@
 use std::collections::{BTreeMap, HashMap};
 
+use crate::sql::{self, ReadSql, params};
 use jiff::Timestamp;
-use rusqlite::params;
 
 use crate::{Result, model};
 
 use super::calendar::{self, HOUR_US};
 
-impl super::Store {
+impl<S: ReadSql> super::Store<S> {
     // Daily earnings remain weighted (microseconds × rate micros/hour) so the
     // dashboard can combine fractions across hourly work and all retainers.
     pub(super) fn retainer_totals(
@@ -106,11 +106,13 @@ impl super::Store {
             worked += i128::from((to - from).max(0));
             before_today += i128::from((to.min(today.as_microsecond()) - from).max(0));
         };
-        let mut statement = self.connection.prepare_cached(
-            "SELECT started_at_us, ended_at_us FROM time_entries
-             WHERE agreement_id = ?1 AND ended_at_us > ?2 AND started_at_us < ?3",
-        )?;
-        let intervals = statement.query_map(
+
+        let intervals = sql::query(
+            &self.connection,
+            "SELECT CAST(started_at_us AS TEXT), CAST(ended_at_us AS TEXT)
+             FROM time_entries
+             WHERE agreement_id = CAST(?1 AS INTEGER) AND ended_at_us > CAST(?2 AS INTEGER) AND
+                 started_at_us < CAST(?3 AS INTEGER)",
             params![
                 agreement.get(),
                 start.as_microsecond(),
@@ -118,8 +120,7 @@ impl super::Store {
             ],
             |row| Ok((row.get(0)?, row.get(1)?)),
         )?;
-        for interval in intervals {
-            let (from, to) = interval?;
+        for (from, to) in intervals {
             add(from, to);
         }
         for status in timers
