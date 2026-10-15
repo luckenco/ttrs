@@ -75,6 +75,11 @@ export class WorkspaceDO extends ProductWorkspace {
       await fault.check(env.CONTROL, "setAlarm", ctx.id.toString(), "after");
     };
   }
+  async fenceState(capability: string) {
+    control(capability, this.env);
+    return { abortFloor: this.ctx.storage.kv.get<string>("abortFloor"),
+      aborted: [...(await this.ctx.storage.list({ prefix: "aborted:" })).keys()] };
+  }
   override async alarm() {
     this.ctx.storage.kv.put("alarmRuns", (this.ctx.storage.kv.get<number>("alarmRuns") ?? 0) + 1);
     await super.alarm();
@@ -95,11 +100,24 @@ export class WorkspaceDO extends ProductWorkspace {
 }
 export class AuthorityDO extends ProductAuthority {
   constructor(ctx: DurableObjectState, env: TestEnv) { super(ctx, wrapped(env)); }
+  legacyJob(capability: string) {
+    control(capability, this.env);
+    const current = super.status(capability);
+    if (!current) throw new Error("MissingTestJob");
+    const job = { ...current };
+    delete job.generation;
+    this.ctx.storage.kv.put("restore", job);
+    return job;
+  }
+  seedGeneration(capability: string, generation: string) {
+    control(capability, this.env);
+    this.ctx.storage.kv.put("restoreGeneration", generation);
+  }
 }
 export default {
   async fetch(request: Request, env: TestEnv) {
     control(request.headers.get("authorization") ?? "", env);
-    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; backupId?: string; safety?: boolean; member: string; property: boolean; target: "authority" | "workspace" };
+    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; backupId?: string; safety?: boolean; member: string; property: boolean; target: "authority" | "workspace"; generation?: string; fenceAction: "freeze" | "abort" | "retire" | "enable" };
     const fault = env.FAULT.getByName("fault");
     try {
       let result: unknown;
@@ -114,6 +132,8 @@ export default {
         else if (body.action === "abort") result = await authority.abort(env.CONTROL, body.job);
         else if (body.action === "accept") result = await authority.accept(env.CONTROL, body.job, body.revision, body.digest, body.confirmed ?? true);
         else if (body.action === "status") result = await authority.status(env.CONTROL, body.job);
+        else if (body.action === "legacyJob") result = await (authority as DurableObjectStub<AuthorityDO>).legacyJob(env.CONTROL);
+        else if (body.action === "seedGeneration") result = await (authority as DurableObjectStub<AuthorityDO>).seedGeneration(env.CONTROL, body.generation!);
         else if (body.action === "oldAttempt") {
           const job = await authority.status(env.CONTROL, body.job);
           if (!job) throw new Error("MissingTestJob");
@@ -137,6 +157,8 @@ export default {
             const pending = state.pending;
             result = await workspace.backup(context, body.backupId ?? pending?.id, body.safety);
           }
+          else if (body.action === "fenceState") result = await (workspace as DurableObjectStub<WorkspaceDO>).fenceState(env.CONTROL);
+          else if (body.action === "fence") result = await workspace.fence(context, body.job, body.fenceAction, body.generation);
           else if (body.action === "backupState") result = await workspace.backupState(context);
           else if (body.action === "session") result = await workspace.request(context, "session");
           else if (body.action === "attempt") result = await workspace.request(context, "attempt", body.payload);

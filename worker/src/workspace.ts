@@ -111,10 +111,16 @@ export class WorkspaceDO extends DurableObject<Env> {
       return result;
     });
   }
-  async fence(c: Context, job: string, action: "freeze" | "retire" | "enable" | "abort") {
+  /**
+   * Canonical non-negative decimal generations compact aborts into a durable floor.
+   * Freeze refuses generations at/below it; UUID-only legacy calls retain tombstones.
+   */
+  async fence(c: Context, job: string, action: "freeze" | "retire" | "enable" | "abort", generation?: string) {
+    this.#check(c, false);
+    if (c.role !== "admin") throw new Failure("Forbidden", 403);
+    if (generation !== undefined && (typeof generation !== "string" || !/^(0|[1-9][0-9]{0,19})$/.test(generation))) throw new Failure("RestoreJobChanged");
+    const gen = generation === undefined ? undefined : BigInt(generation);
     if (action === "enable") {
-      this.#check(c, false);
-      if (c.role !== "admin") throw new Failure("Forbidden", 403);
       if (this.#config().job !== job || !this.ctx.storage.kv.get("import")) throw new Failure("RestoreJobChanged");
       // Persist the wake-up BEFORE admitting writes, even if the RPC ack is lost.
       // The transaction below revalidates the fence after this async boundary.
@@ -124,8 +130,12 @@ export class WorkspaceDO extends DurableObject<Env> {
       this.#check(c, false);
       const config = this.#config();
       if (c.role !== "admin") throw new Failure("Forbidden", 403);
-      if (action === "freeze" && this.ctx.storage.kv.get("aborted:" + job)) throw new Failure("RestoreJobChanged");
-      if (action === "abort") this.ctx.storage.kv.put("aborted:" + job, true);
+      const floor = BigInt(this.ctx.storage.kv.get<string>("abortFloor") ?? "-1");
+      if (action === "freeze" && (this.ctx.storage.kv.get("aborted:" + job) || (gen !== undefined && gen <= floor))) throw new Failure("RestoreJobChanged");
+      if (action === "abort") {
+        if (gen === undefined) this.ctx.storage.kv.put("aborted:" + job, true);
+        else if (gen > floor) this.ctx.storage.kv.put("abortFloor", gen.toString());
+      }
       const old = this.ctx.storage.sql.exec<{ state: string; job: string | null }>("SELECT state,job FROM tt_fence WHERE id=1").one();
       let target: string;
       if (action === "freeze") {

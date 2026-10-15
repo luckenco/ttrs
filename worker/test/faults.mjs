@@ -148,7 +148,7 @@ try {
   evidence.push("lost freeze RPC acknowledgment persists freezing/frozen; restart and retry reaches safety; abort restores active");
 
   // Freeze is held BEFORE the real RPC. Abort finishes first and persists the
-  // old-DO aborted marker. Releasing the stale effect must never refreeze it.
+  // old-DO abort floor. Releasing the stale effect must never refreeze it.
   job = await call("stage", { name, manifest: backup.key });
   for (let i = 0; i < 2; i++) job = await call("advance", { name, job: job.id });
   await call("configure", { rule: { method: "fence:freeze", timing: "before", mode: "block" } });
@@ -160,7 +160,71 @@ try {
   assert.equal((await call("status", { name, job: job.id })).phase, "aborted");
   assert.ok((await call("session", { name })).value);
   await call("backup", { name });
-  evidence.push("controlled concurrent abort/late freeze: persisted marker rejects stale freeze; old remains active and backupable");
+  assert.deepEqual(await call("fenceState", { name }), { abortFloor: job.generation, aborted: [] });
+  evidence.push("controlled concurrent abort/late freeze: durable generation floor rejects stale freeze without per-job tombstones; old remains active and backupable");
+
+  // Exercise decimal ordering beyond Number precision and preserve it on restart.
+  const floorName = "generation-floor";
+  await call("bootstrap", { name: floorName });
+  await call("seedGeneration", { name: floorName, generation: "9007199254740992" });
+  let floorJob = await call("stage", { name: floorName, manifest: backup.key });
+  assert.equal(floorJob.generation, "9007199254740993");
+  await call("abort", { name: floorName, job: floorJob.id });
+  await call("configure", { rule: { method: "fence:abort", timing: "after", mode: "throw" } });
+  await call("advance", { name: floorName, job: floorJob.id }, 503);
+  await mf.dispose(); await start();
+  assert.equal((await call("advance", { name: floorName, job: floorJob.id })).phase, "aborted");
+  for (const generation of ["0", "9007199254740992", floorJob.generation]) {
+    const refused = await call("fence", { name: floorName, job: crypto.randomUUID(), fenceAction: "freeze", generation }, 503);
+    assert.equal(refused.error, "RestoreJobChanged");
+  }
+  // A lower abort cannot lower the durable floor, even when already active.
+  await call("fence", { name: floorName, job: crypto.randomUUID(), fenceAction: "abort", generation: "1" });
+  assert.deepEqual(await call("fenceState", { name: floorName }), { abortFloor: floorJob.generation, aborted: [] });
+  const previous = floorJob;
+  floorJob = await call("stage", { name: floorName, manifest: backup.key });
+  assert.equal(floorJob.generation, (BigInt(previous.generation) + 1n).toString());
+  assert.notEqual(floorJob.id, previous.id);
+  while (floorJob.phase !== "safety") floorJob = await call("advance", { name: floorName, job: floorJob.id });
+  // A mismatched abort must roll back its floor update with the failed fence.
+  assert.equal((await call("fence", { name: floorName, job: crypto.randomUUID(), fenceAction: "abort",
+    generation: (BigInt(floorJob.generation) + 100n).toString() }, 503)).error, "RestoreJobChanged");
+  assert.equal((await call("fenceState", { name: floorName })).abortFloor, previous.generation);
+  await call("fence", { name: floorName, job: floorJob.id, fenceAction: "freeze", generation: floorJob.generation });
+  await call("abort", { name: floorName, job: floorJob.id });
+  await call("advance", { name: floorName, job: floorJob.id });
+  evidence.push("BigInt generations survive restart/lost abort ack; older/equal freezes refuse, lower abort preserves floor, next durable generation freezes idempotently");
+
+  const beforeMalformed = await call("fenceState", { name: floorName });
+  for (const generation of ["", "00", "01", "-1", "+1", "1.0", "1e3", " 1", "1\n", 1, null, {}, []]) {
+    for (const fenceAction of ["freeze", "abort", "retire", "enable"]) {
+      assert.equal((await call("fence", { name: floorName, job: floorJob.id, fenceAction, generation }, 503)).error, "RestoreJobChanged");
+    }
+  }
+  assert.deepEqual(await call("fenceState", { name: floorName }), beforeMalformed);
+  assert.ok((await call("session", { name: floorName })).value);
+  evidence.push("malformed/non-string generation refused for every fence action without changing the floor or active fence");
+
+  // Persist a pre-upgrade UUID-only job and retain its tombstone indefinitely.
+  let legacy = await call("stage", { name: floorName, manifest: backup.key });
+  legacy = await call("legacyJob", { name: floorName });
+  assert.equal(legacy.generation, undefined);
+  await mf.dispose(); await start();
+  while (legacy.phase !== "safety") legacy = await call("advance", { name: floorName, job: legacy.id });
+  await call("abort", { name: floorName, job: legacy.id });
+  await call("advance", { name: floorName, job: legacy.id });
+  await mf.dispose(); await start();
+  const legacyState = await call("fenceState", { name: floorName });
+  assert.deepEqual(legacyState, { ...beforeMalformed, aborted: [`aborted:${legacy.id}`] });
+  for (const generation of [undefined, (BigInt(floorJob.generation) + 100n).toString()]) {
+    assert.equal((await call("fence", { name: floorName, job: legacy.id, fenceAction: "freeze", generation }, 503)).error, "RestoreJobChanged");
+  }
+  const modern = await call("stage", { name: floorName, manifest: backup.key });
+  assert.equal(modern.generation, (BigInt(floorJob.generation) + 2n).toString());
+  await call("abort", { name: floorName, job: modern.id });
+  await call("advance", { name: floorName, job: modern.id });
+  assert.deepEqual((await call("fenceState", { name: floorName })).aborted, legacyState.aborted);
+  evidence.push("persisted legacy job freezes/aborts with a retained UUID tombstone; delayed freeze refuses with or without generation after restart; modern abort never deletes legacy evidence");
   assert.equal((await call("wrongContext", { name })).error, "AuthorityChanged");
   assert.equal((await call("wrongCapability", { name })).error, "Unauthorized");
   assert.equal((await call("readAttempt", { name, payload: "{}" })).error, "Forbidden");

@@ -6,7 +6,7 @@ import { immutable, load, publish, verifyPublished, type Snapshot, type Publishe
 interface Route extends Identity { name: string }
 type Phase = "import" | "staged" | "freezing" | "safety" | "report" | "confirm" | "flip" | "retire" | "enable" | "done" | "aborting" | "aborted";
 interface Job {
-  id: string; phase: Phase; old: Route; target: Route; source: string;
+  id: string; generation?: string; phase: Phase; old: Route; target: Route; source: string;
   safety?: Published; report?: string; reportDigest?: string; frozenRevision?: string;
   accepted?: { digest: string; revision: string; confirmed: true };
 }
@@ -78,8 +78,10 @@ export class AuthorityDO extends DurableObject<Env> {
       const existing = this.ctx.storage.kv.get<Job>("restore");
       if (existing && !["done", "aborted"].includes(existing.phase)) throw new Failure("RestoreBusy");
       if (this.route(capability, name).incarnation !== old.incarnation) throw new Failure("AuthorityChanged");
-      const job: Job = { id: crypto.randomUUID(), phase: "import", old,
+      const generation = (BigInt(this.ctx.storage.kv.get<string>("restoreGeneration") ?? "0") + 1n).toString();
+      const job: Job = { id: crypto.randomUUID(), generation, phase: "import", old,
         target: { name, workspace: old.workspace, incarnation: crypto.randomUUID() }, source: manifest };
+      this.ctx.storage.kv.put("restoreGeneration", generation);
       this.ctx.storage.kv.put("restore", job);
       return job;
     });
@@ -105,7 +107,7 @@ export class AuthorityDO extends DurableObject<Env> {
     }
     if (job.phase === "staged") return this.#move(id, "staged", { phase: "freezing" });
     if (job.phase === "freezing") {
-      await old.fence(oldContext, id, "freeze");
+      await old.fence(oldContext, id, "freeze", job.generation);
       return this.#move(id, "freezing", { phase: "safety" });
     }
     if (job.phase === "safety") {
@@ -152,19 +154,19 @@ export class AuthorityDO extends DurableObject<Env> {
       });
     }
     if (job.phase === "retire") {
-      await old.fence(oldContext, id, "retire");
+      await old.fence(oldContext, id, "retire", job.generation);
       return this.#move(id, "retire", { phase: "enable" });
     }
     if (job.phase === "enable") {
       if (this.route(capability, job.old.name).incarnation !== job.target.incarnation) throw new Failure("AuthorityChanged");
-      await target.fence(targetContext, id, "enable");
+      await target.fence(targetContext, id, "enable", job.generation);
       await target.schedule(targetContext);
       return this.#move(id, "enable", { phase: "done" });
     }
     if (job.phase === "aborting") {
       if (this.route(capability, job.old.name).incarnation !== job.old.incarnation) throw new Failure("AbortAfterFlip");
       // An unfrozen old DO needs no transition. Freeze acknowledgment may have been lost.
-      await old.fence(oldContext, id, "abort");
+      await old.fence(oldContext, id, "abort", job.generation);
       return this.#move(id, "aborting", { phase: "aborted" });
     }
     return job;
