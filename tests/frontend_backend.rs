@@ -104,12 +104,20 @@ fn missing_or_corrupt_remote_configuration_does_not_fall_back() {
 
 type RequestLog = Arc<Mutex<Vec<(String, Vec<u8>)>>>;
 
+#[derive(Clone, Copy)]
+enum PaginationFault {
+    Repeat,
+    Cycle,
+    Empty,
+}
+
 // A localhost transport fixture backed by the real service, not Worker parity proof.
 struct Server {
     origin: String,
     stop: Arc<AtomicBool>,
     requests: RequestLog,
     workspace: Arc<Mutex<workspace::Workspace>>,
+    pagination_fault: Arc<Mutex<Option<PaginationFault>>>,
     handle: Option<thread::JoinHandle<()>>,
 }
 
@@ -124,8 +132,11 @@ impl Server {
         let worker_stop = stop.clone();
         let worker_requests = requests.clone();
         let worker_workspace = workspace.clone();
+        let pagination_fault = Arc::new(Mutex::new(None));
+        let worker_fault = pagination_fault.clone();
         let handle = thread::spawn(move || {
             let mut drop_command = drop_first_command;
+            let mut entry_pages = 0;
             while !worker_stop.load(Ordering::Relaxed) {
                 let (stream, _) = match listener.accept() {
                     Ok(connection) => connection,
@@ -173,12 +184,33 @@ impl Server {
                     "session" => {
                         serde_json::to_vec(&workspace.session("owner", now).unwrap()).unwrap()
                     }
-                    "read" => serde_json::to_vec(
-                        &workspace
-                            .read(tt::host::decode_query(&body).unwrap(), now)
-                            .unwrap(),
-                    )
-                    .unwrap(),
+                    "read" => {
+                        let mut query = tt::host::decode_query(&body).unwrap();
+                        let fault = *worker_fault.lock().unwrap();
+                        if fault.is_some()
+                            && let workspace::Query::Entries { cursor, .. } = &mut query
+                        {
+                            *cursor = None;
+                        }
+                        let mut projection = workspace.read(query, now).unwrap();
+                        if let Some(fault) = fault
+                            && let workspace::ProjectionValue::Entries { entries, cursor } =
+                                &mut projection.value
+                        {
+                            entry_pages += 1;
+                            *cursor = Some(
+                                match fault {
+                                    PaginationFault::Cycle if entry_pages % 2 == 0 => "cursor-b",
+                                    _ => "cursor-a",
+                                }
+                                .into(),
+                            );
+                            if matches!(fault, PaginationFault::Empty) {
+                                entries.clear();
+                            }
+                        }
+                        serde_json::to_vec(&projection).unwrap()
+                    }
                     "commands" => {
                         let envelope = protocol::Envelope::from_bytes(&body).unwrap();
                         let outcome = workspace.execute("owner", &envelope, now).unwrap();
@@ -207,6 +239,7 @@ impl Server {
             stop,
             requests,
             workspace,
+            pagination_fault,
             handle: Some(handle),
         }
     }
@@ -389,6 +422,102 @@ fn remote_stop_uses_server_now_and_the_complete_selected_timer() {
     };
     assert_eq!(selected, expected);
     assert!(!root.path().join("data").exists());
+}
+
+#[test]
+fn remote_entry_list_rejects_nonprogressing_pagination() {
+    for (fault, expected_pages, diagnostic) in [
+        (
+            PaginationFault::Repeat,
+            2,
+            "repeated entry pagination cursor",
+        ),
+        (
+            PaginationFault::Cycle,
+            3,
+            "repeated entry pagination cursor",
+        ),
+        (
+            PaginationFault::Empty,
+            1,
+            "empty entry page with continuation",
+        ),
+    ] {
+        let server = Server::new(false);
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path();
+        cli(path)
+            .args([
+                "config",
+                "backend",
+                "remote",
+                "--url",
+                &server.origin,
+                "--workspace",
+                "test",
+                "--credential-env",
+                "TT_FRONTEND_TEST_TOKEN",
+            ])
+            .assert()
+            .success();
+        for args in [
+            vec!["client", "add", "--name", "Acme"],
+            vec![
+                "project",
+                "add",
+                "--client",
+                "id:1",
+                "--name",
+                "API",
+                "--timezone",
+                "UTC",
+                "--agreement",
+                "Support",
+                "--rate",
+                "1",
+                "--currency",
+                "EUR",
+                "--effective-on",
+                "2026-03-01",
+            ],
+            vec![
+                "log",
+                "--agreement",
+                "id:1",
+                "-s",
+                "Work",
+                "-f",
+                "2026-03-05T10:00:00Z",
+                "-e",
+                "2026-03-05T11:00:00Z",
+            ],
+        ] {
+            cli(path).args(args).assert().success();
+        }
+        *server.pagination_fault.lock().unwrap() = Some(fault);
+        server.requests.lock().unwrap().clear();
+        assert_cmd::Command::from_std(cli(path))
+            .timeout(Duration::from_secs(3))
+            .args(["entry", "list", "--agreement", "id:1"])
+            .assert()
+            .failure()
+            .stderr(predicates::str::contains(diagnostic));
+        let requests = server.requests.lock().unwrap();
+        let entry_reads = requests
+            .iter()
+            .filter(|(route, body)| {
+                route == "read"
+                    && matches!(
+                        tt::host::decode_query(body).unwrap(),
+                        workspace::Query::Entries { .. }
+                    )
+            })
+            .count();
+        assert_eq!(entry_reads, expected_pages);
+        // Each read refreshes the session; admission and overview add three calls.
+        assert!(requests.len() <= 2 * expected_pages + 3);
+        assert!(!path.join("data").exists());
+    }
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Frontend service adapter. A command retains its admission context across reads.
 use std::{
     cell::{Cell, RefCell},
+    collections::HashSet,
     fs,
     path::PathBuf,
 };
@@ -485,6 +486,7 @@ impl Backend {
     pub fn entries(&self, agreement: model::ServiceAgreementId) -> Result<Vec<model::TimeEntry>> {
         let mut entries = Vec::new();
         let mut cursor = None;
+        let mut seen = HashSet::new();
         let mut stamp: Option<w::Stamp> = None;
         loop {
             let page = self
@@ -518,6 +520,18 @@ impl Backend {
             else {
                 return Err(client::Error::Core(tt::Error::InvalidRequest));
             };
+            if let Some(next) = &next {
+                if batch.is_empty() {
+                    return Err(client::Error::Unavailable(
+                        "empty entry page with continuation".into(),
+                    ));
+                }
+                if !seen.insert(next.clone()) {
+                    return Err(client::Error::Unavailable(
+                        "repeated entry pagination cursor".into(),
+                    ));
+                }
+            }
             entries.extend(batch);
             cursor = next;
             if cursor.is_none() {
