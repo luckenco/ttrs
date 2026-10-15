@@ -3,7 +3,7 @@ import { DurableObject } from "cloudflare:workers";
 import { WorkspaceDO as ProductWorkspace } from "../src/workspace";
 import { AuthorityDO as ProductAuthority } from "../src/authority";
 import { control, type Context } from "../src/platform";
-interface Rule { method: string; kind?: "payload" | "manifest"; timing: "before" | "after"; mode: "throw" | "block" }
+interface Rule { method: string; kind?: "payload" | "manifest"; prefix?: string; timing: "before" | "after"; mode: "throw" | "block" }
 interface TestEnv extends Env { FAULT: DurableObjectNamespace<FaultDO> }
 export class FaultDO extends DurableObject<TestEnv> {
   #releaseWait?: () => void;
@@ -18,7 +18,7 @@ export class FaultDO extends DurableObject<TestEnv> {
     control(capability, this.env);
     const rule = this.ctx.storage.kv.get<Rule>("rule");
     const kind = key.endsWith(".manifest.json") ? "manifest" : "payload";
-    if (!rule || rule.method !== method || rule.timing !== timing || (rule.kind && rule.kind !== kind)) return;
+    if (!rule || rule.method !== method || rule.timing !== timing || (rule.kind && rule.kind !== kind) || (rule.prefix && !key.startsWith(rule.prefix))) return;
     this.ctx.storage.kv.delete("rule"); // one-shot, persisted BEFORE the failure/await
     this.ctx.storage.kv.put("hit", { method, key, timing });
     if (rule.mode === "block") await new Promise<void>(resolve => { this.#releaseWait = resolve; });
@@ -65,9 +65,26 @@ function wrapped(env: TestEnv): TestEnv {
   return { ...env, BACKUPS, WORKSPACE };
 }
 export class WorkspaceDO extends ProductWorkspace {
-  constructor(ctx: DurableObjectState, env: TestEnv) { super(ctx, wrapped(env)); }
+  constructor(ctx: DurableObjectState, env: TestEnv) {
+    super(ctx, wrapped(env));
+    const setAlarm = ctx.storage.setAlarm.bind(ctx.storage);
+    ctx.storage.setAlarm = async (time, options) => {
+      const fault = env.FAULT.getByName("fault");
+      await fault.check(env.CONTROL, "setAlarm", ctx.id.toString(), "before");
+      await setAlarm(time, options);
+      await fault.check(env.CONTROL, "setAlarm", ctx.id.toString(), "after");
+    };
+  }
+  override async alarm() {
+    this.ctx.storage.kv.put("alarmRuns", (this.ctx.storage.kv.get<number>("alarmRuns") ?? 0) + 1);
+    await super.alarm();
+  }
   override async backupState(c: Context) {
-    const state = await super.backupState(c);
+    const original = await super.backupState(c);
+    const last = original.last as { captured_at: string } | undefined;
+    const state = { ...original, alarmRuns: this.ctx.storage.kv.get<number>("alarmRuns") ?? 0,
+      daily: last && this.ctx.storage.kv.get("retention:daily:" + last.captured_at.slice(0, 10)),
+      monthly: last && this.ctx.storage.kv.get("retention:monthly:" + last.captured_at.slice(0, 7)) };
     const pending = this.ctx.storage.kv.get<{ id: string }>("pendingBackup");
     if (!pending) return state;
     const job = this.ctx.storage.kv.get<{ bytes: number }>("backup:" + pending.id)!;
@@ -82,7 +99,7 @@ export class AuthorityDO extends ProductAuthority {
 export default {
   async fetch(request: Request, env: TestEnv) {
     control(request.headers.get("authorization") ?? "", env);
-    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; member: string; property: boolean; target: "authority" | "workspace" };
+    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; backupId?: string; safety?: boolean; member: string; property: boolean; target: "authority" | "workspace" };
     const fault = env.FAULT.getByName("fault");
     try {
       let result: unknown;
@@ -118,7 +135,7 @@ export default {
           else if (body.action === "backup") {
             const state: { pending?: { id: string } } = await workspace.backupState(context);
             const pending = state.pending;
-            result = await workspace.backup(context, pending?.id);
+            result = await workspace.backup(context, body.backupId ?? pending?.id, body.safety);
           }
           else if (body.action === "backupState") result = await workspace.backupState(context);
           else if (body.action === "session") result = await workspace.request(context, "session");

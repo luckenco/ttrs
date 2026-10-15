@@ -71,6 +71,37 @@ try {
     assert.equal((await call("backupState", { name })).pending, undefined);
     evidence.push(`${method}/${kind}/${timing}: persistent cut survives restart/live write; retry publishes identical whole cut`);
   }
+  // Hold a real R2 effect while a duplicate completes the same cut, then a
+  // later capture completes (same revision). Neither stale completion nor a
+  // delayed first-tier publication may overwrite the winning pointers.
+  for (const tier of ["hourly", "daily", "monthly"]) for (const timing of ["before", "after"]) {
+    const name = `duplicate-${tier}-${timing}`;
+    await call("bootstrap", { name });
+    const backupId = crypto.randomUUID();
+    await call("configure", { rule: { method: "put", kind: "manifest", prefix: `${tier}/`, timing, mode: "block" } });
+    const late = call("backup", { name, backupId });
+    await waitHit();
+    // Safety publication skips retention selection. This lets a newer capture
+    // win a tier while the older tier effect is still in flight.
+    const first = await call("backup", { name, backupId, safety: tier !== "hourly" });
+    const newer = await call("backup", { name });
+    assert.equal(newer.revision, first.revision);
+    const selected = await call("backupState", { name });
+    const newerFile = newer.key.split("/").at(-1);
+    assert.ok(selected.daily.key.endsWith(tier === "daily" ? newerFile : `${backupId}.manifest.json`));
+    assert.ok(selected.monthly.key.endsWith(tier === "hourly" ? `${backupId}.manifest.json` : newerFile));
+    await call("release");
+    assert.deepEqual(await late, first);
+    const final = await call("backupState", { name });
+    assert.deepEqual(final.last, newer);
+    assert.deepEqual(final.daily, selected.daily);
+    assert.deepEqual(final.monthly, selected.monthly);
+    assert.equal(final.pending, undefined);
+    await mf.dispose(); await start();
+    assert.deepEqual(await call("backup", { name, backupId }), first);
+    assert.deepEqual((await call("backupState", { name })).last, newer);
+    evidence.push(`${tier}/${timing}: delayed real R2 effect cannot regress completion/last or replace first tier selections; restart retains newer capture`);
+  }
   // A real scheduled alarm fails publication, retains its cut and rearms; retry
   // after restart consumes exactly that cut, not the current live database.
   const name = "alarm-fault";
@@ -169,6 +200,9 @@ try {
   await call("configure", { rule: { method: "fence:enable", timing: "after", mode: "throw" } });
   await call("advance", { name, job: job.id }, 503);
   assert.equal((await call("status", { name, job: job.id })).phase, "enable");
+  assert.ok((await call("backupState", { name })).alarm > Date.now(), "lost enable ack must already have a durable alarm");
+  await mf.dispose(); await start();
+  assert.ok((await call("backupState", { name })).alarm > Date.now(), "alarm must survive restart without another advance");
   const active = JSON.parse((await call("session", { name })).value);
   const write = { principal: "admin", authority: active.stamp.authority,
     id: { created_at: active.stamp.calculated_at, nonce: crypto.randomUUID().replaceAll("-", "") },
@@ -180,9 +214,48 @@ try {
   assert.equal((await call("advance", { name, job: job.id })).phase, "done");
   assert.deepEqual(JSON.parse((await call("attempt", { name, payload: JSON.stringify(write) })).value), written);
   assert.ok((await call("backupState", { name })).alarm > Date.now());
-  evidence.push("lost enable acknowledgment preserves active target writes; restart repeats enable, arms alarm, completes same target");
+  evidence.push("lost enable acknowledgment already has a durable alarm before retry; restart preserves alarm, target writes and receipt replay");
   const resumed = JSON.parse((await call("session", { name })).value);
   assert.equal(resumed.stamp.authority.incarnation, job.target.incarnation);
   evidence.push("lost CAS response persists selected route/retire; abort refused; restart resumes retire/enable without a second target");
+  // Fail the actual storage arm: the selected target must remain non-writable.
+  // Then hold enable AFTER the persisted arm and let a real inactive alarm run.
+  job = await call("stage", { name, manifest: backup.key });
+  while (job.phase !== "confirm") job = await call("advance", { name, job: job.id });
+  job = await call("accept", { name, job: job.id, revision: job.frozenRevision, digest: job.reportDigest });
+  while (job.phase !== "enable") job = await call("advance", { name, job: job.id });
+  await call("configure", { rule: { method: "setAlarm", timing: "before", mode: "throw" } });
+  await call("advance", { name, job: job.id }, 503);
+  assert.equal((await call("session", { name })).error, "WorkspaceFrozen");
+  await mf.dispose(); await start();
+  assert.equal((await call("session", { name })).error, "WorkspaceFrozen");
+  await call("configure", { rule: { method: "setAlarm", timing: "after", mode: "block" } });
+  const enabling = call("advance", { name, job: job.id }, 503);
+  await waitHit();
+  assert.equal((await call("session", { name })).error, "WorkspaceFrozen");
+  const runs = (await call("backupState", { name })).alarmRuns;
+  await call("schedule", { name });
+  let inactive;
+  for (let i = 0; i < 100; i++) {
+    inactive = await call("backupState", { name });
+    if (inactive.alarmRuns > runs && inactive.alarm > Date.now() + 3_590_000) break;
+    await new Promise(resolve => setTimeout(resolve, 20));
+  }
+  assert.ok(inactive.alarmRuns > runs && inactive.alarm > Date.now() + 3_590_000);
+  assert.equal(inactive.last, undefined, "inactive alarm must not capture a backup");
+  assert.equal((await call("advance", { name, job: job.id })).phase, "done");
+  assert.ok((await call("session", { name })).value);
+  // A concurrent enable finishes, then a subsequent restore freezes that target.
+  // The held enable must revalidate after its await, not reactivate the old job.
+  job = await call("stage", { name, manifest: backup.key });
+  while (job.phase !== "safety") job = await call("advance", { name, job: job.id });
+  await call("release");
+  assert.equal((await enabling).error, "RestoreJobChanged");
+  assert.equal((await call("session", { name })).error, "WorkspaceFrozen");
+  await call("abort", { name, job: job.id });
+  assert.equal((await call("advance", { name, job: job.id })).phase, "aborted");
+  await mf.dispose(); await start();
+  assert.ok((await call("backupState", { name })).alarm > Date.now());
+  evidence.push("storage arm failure keeps target inactive across restart; real inactive alarm racing pre-armed enable rearms instead of deleting the wake-up; stale enable revalidates after await and cannot undo a later freeze");
   console.log(JSON.stringify({ runtime: "workerd private effect sidecar / product classes + production Wasm / real SQL and R2", gates: evidence }, null, 2));
 } finally { await mf?.dispose(); await rm(dir, { recursive: true, force: true }); }

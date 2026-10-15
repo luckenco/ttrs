@@ -7,7 +7,7 @@ import { publish, verifyPublished, type Published } from "./backup";
 // These private ABI reserves match crates/tt-wasm/src/budget.rs.
 const WRITE_HEADROOM = 4096, IMPORT_HEADROOM = 2048;
 interface Config extends Identity { name: string; job?: string }
-interface BackupJob { id: string; payload: string; attempts: number; complete?: Published }
+interface BackupJob { id: string; payload: string; attempts: number; order?: string; complete?: Published }
 export class WorkspaceDO extends DurableObject<Env> {
   #core() { return new Core(module, this.ctx.storage.sql); }
   #config(): Config {
@@ -111,7 +111,15 @@ export class WorkspaceDO extends DurableObject<Env> {
       return result;
     });
   }
-  fence(c: Context, job: string, action: "freeze" | "retire" | "enable" | "abort") {
+  async fence(c: Context, job: string, action: "freeze" | "retire" | "enable" | "abort") {
+    if (action === "enable") {
+      this.#check(c, false);
+      if (c.role !== "admin") throw new Failure("Forbidden", 403);
+      if (this.#config().job !== job || !this.ctx.storage.kv.get("import")) throw new Failure("RestoreJobChanged");
+      // Persist the wake-up BEFORE admitting writes, even if the RPC ack is lost.
+      // The transaction below revalidates the fence after this async boundary.
+      await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+    }
     return this.ctx.storage.transactionSync(() => {
       this.#check(c, false);
       const config = this.#config();
@@ -164,7 +172,10 @@ export class WorkspaceDO extends DurableObject<Env> {
         const bytes = new TextEncoder().encode(payload);
         if (bytes.length > SNAPSHOT_LIMIT) throw new Failure("SnapshotTooLarge", 503);
         for (let i = 0; i < bytes.length; i += 48 * 1024) this.ctx.storage.kv.put(`cut:${id}:${i / (48 * 1024)}`, bytes.slice(i, i + 48 * 1024));
-        this.ctx.storage.kv.put("backup:" + id, { ...job, bytes: bytes.length });
+        // Durable capture order, independent of wall-clock corrections/revision.
+        const order = (BigInt(this.ctx.storage.kv.get<string>("backupOrder") ?? "0") + 1n).toString();
+        this.ctx.storage.kv.put("backupOrder", order);
+        this.ctx.storage.kv.put("backup:" + id, { ...job, order, bytes: bytes.length });
         this.ctx.storage.kv.put("pendingBackup", { id, safety });
       });
     }
@@ -184,18 +195,26 @@ export class WorkspaceDO extends DurableObject<Env> {
         const selection = `retention:${tier}:${cut}`;
         if (!this.ctx.storage.kv.get(selection)) {
           const copy = await publish(this.env.BACKUPS, `${tier}/${base}`, id, payload);
-          this.ctx.storage.kv.put(selection, copy);
+          // Another continuation may have selected a copy during publication.
+          if (!this.ctx.storage.kv.get(selection)) this.ctx.storage.kv.put(selection, copy);
         }
       }
     }
-    this.ctx.storage.transactionSync(() => {
-      this.ctx.storage.kv.put("backup:" + id, { ...state, complete });
-      this.ctx.storage.kv.put("lastBackup", complete);
+    return this.ctx.storage.transactionSync(() => {
+      const current = this.ctx.storage.kv.get<BackupJob>("backup:" + id)!;
+      if (current.complete) return current.complete;
+      this.ctx.storage.kv.put("backup:" + id, { ...current, complete });
+      // Legacy pending cuts have order zero; all newly captured cuts follow them.
+      const order = current.order ?? "0";
+      if (BigInt(order) > BigInt(this.ctx.storage.kv.get<string>("lastBackupOrder") ?? "-1")) {
+        this.ctx.storage.kv.put("lastBackup", complete);
+        this.ctx.storage.kv.put("lastBackupOrder", order);
+      }
       const pending = this.ctx.storage.kv.get<{ id: string }>("pendingBackup");
       if (pending?.id === id) this.ctx.storage.kv.delete("pendingBackup");
       for (let i = 0; i < bytes.length; i += 48 * 1024) this.ctx.storage.kv.delete(`cut:${id}:${i / (48 * 1024)}`);
+      return complete;
     });
-    return complete;
   }
   async schedule(c: Context) {
     this.#check(c, false);
@@ -213,7 +232,13 @@ export class WorkspaceDO extends DurableObject<Env> {
     const config = this.ctx.storage.kv.get<Config>("config");
     if (!config) return;
     const fence = this.ctx.storage.sql.exec<{ state: string }>("SELECT state FROM tt_fence WHERE id=1").one();
-    if (fence.state === "retired" || fence.state === "inactive") { await this.ctx.storage.deleteAlarm(); return; }
+    if (fence.state === "retired") return;
+    if (fence.state === "inactive") {
+      // Enable may be awaiting its persisted pre-arm. Never consume that wake-up
+      // without replacing it: enable can commit immediately after this await.
+      await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
+      return;
+    }
     const context: Context = { ...config, principal: "scheduler", role: "admin", capability: this.env.CONTROL };
     try {
       const pending = this.ctx.storage.kv.get<{ id: string; safety: boolean }>("pendingBackup");
