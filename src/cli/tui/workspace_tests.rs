@@ -350,9 +350,28 @@ fn drafts_survive_refresh_help_paste_resize_and_discard_requires_a_choice() {
         &[KeyCode::Enter, KeyCode::Enter],
     );
     app.refresh_error = Some("Database unavailable".into());
-    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(
+        form(&mut app).error.as_deref(),
+        Some("Backend unavailable; refresh before writing.")
+    );
+    assert!(app.pending.mutation.is_none());
     assert_eq!(tracker.clients().unwrap().len(), 1);
     assert!(form(&mut app).review.is_some());
+    assert_eq!(form(&mut app).text(F::Name), draft);
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("Backend unavailable; refresh before writing.")
+    );
     app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(
         &mut app,
@@ -850,7 +869,15 @@ fn cancelling_future_timer_requires_review_and_escape_never_records_work() {
     assert!(tracker.entries(agreement).unwrap().is_empty());
     action(&mut app, &mut tracker, now, "Cancel selected timer");
     app.refresh_error = Some("offline".into());
-    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(
+        form(&mut app).error.as_deref(),
+        Some("Backend unavailable; refresh before writing.")
+    );
+    assert!(app.pending.mutation.is_none());
     assert_eq!(tracker.running().unwrap().len(), 1);
     assert!(form(&mut app).review.is_some());
     app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
@@ -916,7 +943,79 @@ fn recovery_actions_are_disabled_when_refresh_failed() {
         assert!(matches!(app.workspace.overlay, Some(Overlay::Actions(_))));
         press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
     }
+    for section in Section::ALL {
+        app.workspace.section = section;
+        for key in [KeyCode::Char('l'), KeyCode::Char('n')] {
+            assert!(
+                app.key_sync(key.into(), &mut tracker, now, &TimeZone::UTC)
+                    .is_err()
+            );
+            assert_eq!(
+                app.error.as_ref().unwrap().text,
+                "Database unavailable; actions resume after refresh succeeds."
+            );
+            assert!(app.workspace.overlay.is_none());
+            assert!(app.pending.read.is_none());
+            assert!(app.pending.mutation.is_none());
+        }
+    }
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('3'), KeyCode::Enter],
+    );
+    assert!(matches!(
+        app.workspace.overlay,
+        Some(Overlay::Detail { .. })
+    ));
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    assert!(
+        app.key_sync(KeyCode::Char('q').into(), &mut tracker, now, &TimeZone::UTC)
+            .unwrap()
+    );
     assert_eq!(tracker.running().unwrap().len(), 1);
+}
+
+#[test]
+fn scope_draft_survives_unavailable_enter_and_submits_after_refresh() {
+    let (mut tracker, mut app, now) = setup();
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('s'), KeyCode::Enter],
+    );
+    app.paste("Preserved scope");
+    app.refresh_error = Some("offline".into());
+    assert!(
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(
+        app.error.as_ref().unwrap().text,
+        "Backend unavailable; refresh before writing."
+    );
+    assert!(
+        matches!(&app.picker, Some(super::state::Picker::Scope { input, .. })
+            if input.as_str() == "Preserved scope")
+    );
+    assert!(app.pending.mutation.is_none());
+    assert!(tracker.running().unwrap().is_empty());
+    let mut terminal = Terminal::new(TestBackend::new(100, 24)).unwrap();
+    terminal
+        .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
+        .unwrap();
+    assert!(
+        terminal
+            .backend()
+            .to_string()
+            .contains("Backend unavailable; refresh before writing.")
+    );
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(app.picker.is_none());
+    assert_eq!(tracker.running().unwrap()[0].scope(), "Preserved scope");
 }
 
 #[test]
@@ -977,7 +1076,15 @@ fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
     assert!(matches!(app.workspace.overlay, Some(Overlay::Entries(_))));
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     app.refresh_error = Some("offline".into());
-    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(
+        form(&mut app).error.as_deref(),
+        Some("Backend unavailable; refresh before writing.")
+    );
+    assert!(app.pending.mutation.is_none());
     assert_eq!(tracker.entries(agreement).unwrap(), [entry]);
     app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);

@@ -427,7 +427,7 @@ impl App {
                     Ok(())
                 } else if let Some(review) = &form.review {
                     match key.code {
-                        KeyCode::Enter if self.refresh_error.is_none() => self
+                        KeyCode::Enter => self
                             .request_apply(Apply::Prepared(review.clone()), form.admission.clone()),
                         _ => {
                             scroll(&mut form.scroll, key.code);
@@ -667,6 +667,11 @@ impl App {
                 });
             }
             action => {
+                if self.refresh_error.is_some() {
+                    return Err(Error::usage(
+                        "Database unavailable; actions resume after refresh succeeds.",
+                    ));
+                }
                 let kind = match action {
                     Action::NewClient => Kind::Client,
                     Action::NewProject => {

@@ -291,7 +291,12 @@ impl App {
                 KeyCode::Up if *field == Field::Scope => {
                     move_selection(selection, scopes(recent, input.as_str()).len(), false)
                 }
-                KeyCode::Enter if self.refresh_error.is_none() => {
+                KeyCode::Enter => {
+                    if self.refresh_error.is_some() {
+                        return Err(Error::runtime(
+                            "Backend unavailable; refresh before writing.",
+                        ));
+                    }
                     self.error = None;
                     let choices = scopes(recent, input.as_str());
                     let scope = selection

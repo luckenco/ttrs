@@ -514,8 +514,15 @@ fn errors_stay_in_the_form_with_contextual_hints_at_compact_and_full_sizes() {
     assert!(terminal.backend().to_string().contains("bad time"));
     assert!(tracker.running().unwrap().is_empty());
     app.refresh_error = Some("Refresh failed; actions disabled".into());
-    app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
-        .unwrap();
+    assert!(
+        app.key_sync(KeyCode::Enter.into(), &mut tracker, now, &TimeZone::UTC)
+            .is_err()
+    );
+    assert_eq!(
+        app.error.as_ref().unwrap().text,
+        "Backend unavailable; refresh before writing."
+    );
+    assert!(app.pending.mutation.is_none());
     terminal
         .draw(|f| view::draw(f, &mut app, now, &TimeZone::UTC))
         .unwrap();
