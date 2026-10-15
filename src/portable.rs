@@ -259,22 +259,26 @@ fn validate(snapshot: Snapshot) -> Result<Verified> {
         }
     }
     validate_data(&snapshot.data)?;
-    let mut keys = BTreeSet::new();
+    let mut previous = None;
     for receipt in &snapshot.receipts {
+        let key = (
+            &receipt.workspace,
+            &receipt.incarnation,
+            &receipt.principal,
+            &receipt.request_key,
+        );
+        if previous.is_some_and(|p| p >= key) {
+            return Err(invalid("duplicate or unordered receipt"));
+        }
+        previous = Some(key);
         let envelope = crate::protocol::Envelope::from_bytes(receipt.envelope.as_bytes())?;
         if envelope.authority.workspace != receipt.workspace
             || envelope.authority.incarnation != receipt.incarnation
             || envelope.principal != receipt.principal
             || envelope.id.key() != receipt.request_key
             || envelope.to_bytes()? != receipt.envelope.as_bytes()
-            || !keys.insert((
-                &receipt.workspace,
-                &receipt.incarnation,
-                &receipt.principal,
-                &receipt.request_key,
-            ))
         {
-            return Err(invalid("invalid receipt identity or duplicate"));
+            return Err(invalid("invalid receipt identity"));
         }
         let outcome: crate::protocol::RecordedOutcome =
             serde_json::from_str(&receipt.outcome).map_err(storage)?;
@@ -789,4 +793,45 @@ pub(crate) fn import(tx: &mut dyn sql::WriteSql, verified: &Verified) -> Result<
         return Err(invalid("imported data digest mismatch"));
     }
     Ok(())
+}
+
+#[cfg(all(test, feature = "native"))]
+mod tests {
+    use super::*;
+    use crate::{maintenance, protocol, workspace};
+
+    #[test]
+    fn digest_valid_unordered_receipts_fail_verification_before_import() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source");
+        let mut workspace = workspace::Workspace::open(&source).unwrap();
+        let now: Timestamp = "2026-01-10T10:00:00Z".parse().unwrap();
+        let authority = workspace.session("A", now).unwrap().stamp.authority;
+        for nonce in [1, 2] {
+            let request = protocol::Envelope::new(
+                "A".into(),
+                authority.clone(),
+                protocol::RequestId::new(now, [nonce; 16]),
+                &workspace::Operation::AddClient {
+                    name: "Acme".into(),
+                },
+                None,
+            )
+            .unwrap();
+            workspace.execute("A", &request, now).unwrap();
+        }
+        let verified = maintenance::export(&source, now).unwrap();
+        let target = dir.path().join("target");
+        maintenance::import(&target, &verified).unwrap();
+        // Exercise both live receipts and receipts carried forward as audit.
+        for mut snapshot in [verified.0, maintenance::export(&target, now).unwrap().0] {
+            snapshot.receipts.reverse();
+            snapshot.manifest.receipt_digest = receipt_digest(&snapshot).unwrap();
+            let bytes = serde_json::to_vec(&snapshot).unwrap();
+            assert!(matches!(
+                verify(&bytes),
+                Err(Error::InvalidBackup("duplicate or unordered receipt"))
+            ));
+        }
+    }
 }
