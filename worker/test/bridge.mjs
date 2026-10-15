@@ -5,6 +5,13 @@ import { readFile, mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { build } from "esbuild";
+import { storageStatus } from "../src/monitor.ts";
+
+for (const bytes of [49_999_999, 50_000_000]) {
+  assert.deepEqual(storageStatus({ databaseSize: bytes }, "test-monitor"), {
+    metric: "sqlite_database_bytes", bytes, warningBytes: 50_000_000, warning: bytes >= 50_000_000,
+  });
+}
 const directory = await mkdtemp(path.join(tmpdir(), "tt-bridge-"));
 try {
   await build({ entryPoints: [path.resolve(import.meta.dirname, "../src/core.ts")], outfile: path.join(directory,"core.mjs"), bundle: true, format: "esm", platform: "node" });

@@ -3,6 +3,7 @@ import module from "../../crates/tt-wasm/target/wasm32-unknown-unknown/release/t
 import { Core } from "./core";
 import { control, digest, Failure, now, SNAPSHOT_LIMIT, type Grant, type Identity, type Context } from "./platform";
 import { immutable, load, publish, verifyPublished, type Snapshot, type Published } from "./backup";
+import { storageStatus } from "./monitor";
 interface Route extends Identity { name: string }
 type Phase = "import" | "staged" | "freezing" | "safety" | "report" | "confirm" | "flip" | "retire" | "enable" | "done" | "aborting" | "aborted";
 interface Job {
@@ -15,7 +16,10 @@ export class AuthorityDO extends DurableObject<Env> {
     return { ...route, ...grant, capability: this.env.CONTROL };
   }
   #workspace(route: Route) { return this.env.WORKSPACE.getByName(route.incarnation); }
-  #admin(capability: string) { control(capability, this.env); }
+  #admin(capability: string) {
+    control(capability, this.env);
+    return storageStatus(this.ctx.storage.sql, this.ctx.id.toString());
+  }
   route(capability: string, name: string) {
     this.#admin(capability);
     const route = this.ctx.storage.kv.get<Route>("route");
@@ -45,10 +49,14 @@ export class AuthorityDO extends DurableObject<Env> {
     if (!job || job.id !== id) throw new Failure("RestoreJobChanged");
     return job;
   }
+  /** Historical IDs are read-only; mutations still require the current job via #job. */
   status(capability: string, id?: string) {
-    this.#admin(capability);
-    if (id === undefined) return this.ctx.storage.kv.get<Job>("restore") ?? null;
-    return this.#job(id);
+    const storage = this.#admin(capability);
+    const current = this.ctx.storage.kv.get<Job>("restore");
+    if (id === undefined) return current ? { ...current, storage } : null;
+    const job = current?.id === id ? current : this.ctx.storage.kv.get<Job>("restoreHistory:" + id);
+    if (!job) throw new Failure("RestoreJobChanged");
+    return { ...job, storage };
   }
   #move(id: string, from: Phase, changes: Partial<Job>) {
     return this.ctx.storage.transactionSync(() => {
@@ -56,6 +64,7 @@ export class AuthorityDO extends DurableObject<Env> {
       if (job.phase !== from) return job; // Repeated/concurrent effects never regress a phase.
       const next = { ...job, ...changes };
       this.ctx.storage.kv.put("restore", next);
+      if (next.phase === "done" || next.phase === "aborted") this.ctx.storage.kv.put("restoreHistory:" + id, next);
       return next;
     });
   }
@@ -81,6 +90,8 @@ export class AuthorityDO extends DurableObject<Env> {
       const generation = (BigInt(this.ctx.storage.kv.get<string>("restoreGeneration") ?? "0") + 1n).toString();
       const job: Job = { id: crypto.randomUUID(), generation, phase: "import", old,
         target: { name, workspace: old.workspace, incarnation: crypto.randomUUID() }, source: manifest };
+      // Preserve pre-upgrade terminal jobs before replacing the current pointer too.
+      if (existing) this.ctx.storage.kv.put("restoreHistory:" + existing.id, existing);
       this.ctx.storage.kv.put("restoreGeneration", generation);
       this.ctx.storage.kv.put("restore", job);
       return job;
@@ -187,8 +198,9 @@ export class AuthorityDO extends DurableObject<Env> {
   }
   async report(capability: string, id: string) {
     this.#admin(capability);
-    const job = this.#job(id);
-    if (!job.report) throw new Failure("ReportNotReady");
+    if (typeof id !== "string") throw new Failure("RestoreJobChanged");
+    const job = this.status(capability, id);
+    if (!job?.report) throw new Failure("ReportNotReady");
     const text = await load(this.env.BACKUPS, job.report, 4 * 1024 * 1024);
     if (await digest(text) !== job.reportDigest) throw new Failure("BackupVerification", 503);
     return text;

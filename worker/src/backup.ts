@@ -3,6 +3,12 @@ export interface Snapshot {
   manifest: { workspace: string; incarnation: string; revision: string; data_digest: string; receipt_digest: string; captured_at: string; counts: string[] };
   data: { tables: (string | null)[][][]; sequences: string[]; revision: string };
 }
+/** Rust capture has deterministic field/row order. Ignore ONLY the capture clock, not any state. */
+export function contents(payload: string): string {
+  const snapshot = JSON.parse(payload);
+  delete snapshot.manifest.captured_at;
+  return JSON.stringify(snapshot);
+}
 export interface Published { key: string; payload: string; sha256: string; revision: string; captured_at: string }
 export async function load(bucket: R2Bucket, key: string, limit = SNAPSHOT_LIMIT): Promise<string> {
   const object = await bucket.get(key);
@@ -31,8 +37,11 @@ export async function publish(bucket: R2Bucket, prefix: string, id: string, text
   return manifest;
 }
 export async function verifyPublished(bucket: R2Bucket, key: string): Promise<string> {
-  const manifest = JSON.parse(await load(bucket, key, 4096)) as Published;
-  if (typeof manifest.payload !== "string" || typeof manifest.sha256 !== "string") throw new Failure("InvalidBackup", 503);
+  const text = await load(bucket, key, 4096);
+  let manifest: Published;
+  try { manifest = JSON.parse(text); }
+  catch { throw new Failure("InvalidBackup", 503); }
+  if (!manifest || typeof manifest.payload !== "string" || typeof manifest.sha256 !== "string") throw new Failure("InvalidBackup", 503);
   const payload = await load(bucket, manifest.payload);
   if (await digest(payload) !== manifest.sha256) throw new Failure("BackupVerification", 503);
   return payload;

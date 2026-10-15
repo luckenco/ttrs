@@ -1,8 +1,9 @@
 import { DurableObject } from "cloudflare:workers";
 import module from "../../crates/tt-wasm/target/wasm32-unknown-unknown/release/tt_wasm.wasm";
 import { Core, Rollback } from "./core";
-import { control, Failure, now, SNAPSHOT_LIMIT, type Context, type Identity } from "./platform";
-import { publish, verifyPublished, type Published } from "./backup";
+import { control, digest, Failure, now, SNAPSHOT_LIMIT, type Context, type Identity } from "./platform";
+import { contents, publish, verifyPublished, type Published } from "./backup";
+import { storageStatus } from "./monitor";
 
 // These private ABI reserves match crates/tt-wasm/src/budget.rs.
 const WRITE_HEADROOM = 4096, IMPORT_HEADROOM = 2048;
@@ -197,17 +198,25 @@ export class WorkspaceDO extends DurableObject<Env> {
     this.ctx.storage.kv.put("backup:" + id, { ...state, attempts: state.attempts + 1 });
     const config = this.#config();
     const base = `${config.workspace}/${config.incarnation}`;
+    const fingerprint = await digest(contents(payload));
     const complete = await publish(this.env.BACKUPS, `${safety ? "safety" : "hourly"}/${base}`, id, payload);
     if (!safety) {
       // Independent immutable payload copies, not unverified lifecycle moves.
       const captured = JSON.parse(payload).manifest.captured_at as string;
       for (const [tier, cut] of [["daily", captured.slice(0, 10)], ["monthly", captured.slice(0, 7)]]) {
         const selection = `retention:${tier}:${cut}`;
-        if (!this.ctx.storage.kv.get(selection)) {
-          const copy = await publish(this.env.BACKUPS, `${tier}/${base}`, id, payload);
-          // Another continuation may have selected a copy during publication.
-          if (!this.ctx.storage.kv.get(selection)) this.ctx.storage.kv.put(selection, copy);
+        const selected = this.ctx.storage.kv.get<Published>(selection);
+        if (selected) {
+          try { await verifyPublished(this.env.BACKUPS, selected.key); continue; }
+          catch (error) {
+            // Only confirmed missing/corrupt copies permit replacement. Read
+            // outages retain the original selection and pending cut for retry.
+            if (!(error instanceof Failure) || !["InvalidBackup", "BackupVerification"].includes(error.code)) throw error;
+          }
         }
+        const copy = await publish(this.env.BACKUPS, `${tier}/${base}`, id, payload);
+        // Another continuation may have selected a copy during publication.
+        if (this.ctx.storage.kv.get<Published>(selection)?.key === selected?.key) this.ctx.storage.kv.put(selection, copy);
       }
     }
     return this.ctx.storage.transactionSync(() => {
@@ -218,6 +227,7 @@ export class WorkspaceDO extends DurableObject<Env> {
       const order = current.order ?? "0";
       if (BigInt(order) > BigInt(this.ctx.storage.kv.get<string>("lastBackupOrder") ?? "-1")) {
         this.ctx.storage.kv.put("lastBackup", complete);
+        this.ctx.storage.kv.put("lastBackupFingerprint", fingerprint);
         this.ctx.storage.kv.put("lastBackupOrder", order);
       }
       const pending = this.ctx.storage.kv.get<{ id: string }>("pendingBackup");
@@ -233,10 +243,40 @@ export class WorkspaceDO extends DurableObject<Env> {
     await this.ctx.storage.setAlarm(scheduled);
     return { scheduled };
   }
+  /** A sampled verification, never a promise that R2 cannot subsequently expire an object. */
+  async #freshness(c: Context) {
+    const payload = this.capture(c), content = contents(payload);
+    const captured = JSON.parse(payload).manifest.captured_at as string;
+    const last = this.ctx.storage.kv.get<Published>("lastBackup");
+    const fingerprint = this.ctx.storage.kv.get<string>("lastBackupFingerprint");
+    const order = this.ctx.storage.kv.get<string>("lastBackupOrder");
+    let state: "changed" | "unverified" | "verified_unchanged" = "unverified";
+    if (last && fingerprint) {
+      if (await digest(content) !== fingerprint) state = "changed";
+      else {
+        try {
+          // Unchanged state still needs recoverable files and this period's independent tiers.
+          const daily = this.ctx.storage.kv.get<Published>("retention:daily:" + captured.slice(0, 10));
+          const monthly = this.ctx.storage.kv.get<Published>("retention:monthly:" + captured.slice(0, 7));
+          if (daily && monthly) {
+            for (const copy of [last, daily, monthly]) await verifyPublished(this.env.BACKUPS, copy.key);
+            state = "verified_unchanged";
+          }
+        } catch { /* Missing/unreadable files must not be reported as recoverable. */ }
+      }
+    }
+    // Writes/fences or a newer publication during any await cannot be falsely covered.
+    if (contents(this.capture(c)) !== content) state = "changed";
+    const checked_at = now();
+    if (this.ctx.storage.kv.get<string>("lastBackupOrder") !== order || checked_at.slice(0, 10) !== captured.slice(0, 10)) state = "unverified";
+    return { state, checked_at, backup: last?.key };
+  }
   async backupState(c: Context) {
     this.#check(c, false);
     if (c.role !== "admin") throw new Failure("Forbidden", 403);
-    return { last: this.ctx.storage.kv.get("lastBackup"), pending: this.ctx.storage.kv.get("pendingBackup"), alarm: await this.ctx.storage.getAlarm() };
+    const freshness = await this.#freshness(c);
+    return { last: this.ctx.storage.kv.get<Published>("lastBackup"), pending: this.ctx.storage.kv.get("pendingBackup"),
+      freshness, storage: storageStatus(this.ctx.storage.sql, this.ctx.id.toString()), alarm: await this.ctx.storage.getAlarm() };
   }
   async alarm() {
     const config = this.ctx.storage.kv.get<Config>("config");
@@ -252,8 +292,12 @@ export class WorkspaceDO extends DurableObject<Env> {
     const context: Context = { ...config, principal: "scheduler", role: "admin", capability: this.env.CONTROL };
     try {
       const pending = this.ctx.storage.kv.get<{ id: string; safety: boolean }>("pendingBackup");
-      await this.backup(context, pending?.id, pending?.safety);
+      // Explicit manual and restore safety backups never take the unchanged shortcut.
+      if (pending || (await this.#freshness(context)).state !== "verified_unchanged") {
+        await this.backup(context, pending?.id, pending?.safety);
+      }
     } finally {
+      storageStatus(this.ctx.storage.sql, this.ctx.id.toString());
       // Persisted rearm, even after the platform's finite retry count is exhausted.
       await this.ctx.storage.setAlarm(Date.now() + 3_600_000);
     }

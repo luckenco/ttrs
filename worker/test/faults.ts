@@ -75,6 +75,20 @@ export class WorkspaceDO extends ProductWorkspace {
       await fault.check(env.CONTROL, "setAlarm", ctx.id.toString(), "after");
     };
   }
+  async fixture(capability: string, kind: string) {
+    control(capability, this.env);
+    if (kind === "alarm") return super.alarm();
+    if (kind === "sequence") this.ctx.storage.sql.exec("INSERT INTO sqlite_sequence(name,seq) VALUES('tt_time_entries',9007199254740996)").toArray();
+    else if (kind === "floor") this.ctx.storage.sql.exec("UPDATE tt_fence SET receipt_floor_us=1 WHERE id=1").toArray();
+    else if (kind === "audit") this.ctx.storage.sql.exec("INSERT INTO tt_fence_audit VALUES(?,?,'active',NULL,1)", crypto.randomUUID(), crypto.randomUUID()).toArray();
+    else if (kind === "daily" || kind === "monthly") {
+      const last = this.ctx.storage.kv.get<{ captured_at: string }>("lastBackup")!;
+      const key = `retention:${kind}:${last.captured_at.slice(0, kind === "daily" ? 10 : 7)}`;
+      this.ctx.storage.kv.put(key + ":previous-period", this.ctx.storage.kv.get(key));
+      this.ctx.storage.kv.delete(key); // Simulate entering a new UTC retention period.
+    }
+  }
+  backupJob(capability: string, id: string) { control(capability, this.env); return this.ctx.storage.kv.get("backup:" + id); }
   async fenceState(capability: string) {
     control(capability, this.env);
     return { abortFloor: this.ctx.storage.kv.get<string>("abortFloor"),
@@ -117,7 +131,7 @@ export class AuthorityDO extends ProductAuthority {
 export default {
   async fetch(request: Request, env: TestEnv) {
     control(request.headers.get("authorization") ?? "", env);
-    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; backupId?: string; safety?: boolean; member: string; property: boolean; target: "authority" | "workspace"; generation?: string; fenceAction: "freeze" | "abort" | "retire" | "enable" };
+    const body = await request.json() as { action: string; rule: Rule; name: string; job: string; manifest: string; payload: string; revision: string; digest: string; confirmed?: boolean; backupId?: string; safety?: boolean; member: string; property: boolean; target: "authority" | "workspace"; generation?: string; fenceAction: "freeze" | "abort" | "retire" | "enable"; fixture: string };
     const fault = env.FAULT.getByName("fault");
     try {
       let result: unknown;
@@ -132,6 +146,7 @@ export default {
         else if (body.action === "abort") result = await authority.abort(env.CONTROL, body.job);
         else if (body.action === "accept") result = await authority.accept(env.CONTROL, body.job, body.revision, body.digest, body.confirmed ?? true);
         else if (body.action === "status") result = await authority.status(env.CONTROL, body.job);
+        else if (body.action === "report") result = await authority.report(env.CONTROL, body.job);
         else if (body.action === "legacyJob") result = await (authority as DurableObjectStub<AuthorityDO>).legacyJob(env.CONTROL);
         else if (body.action === "seedGeneration") result = await (authority as DurableObjectStub<AuthorityDO>).seedGeneration(env.CONTROL, body.generation!);
         else if (body.action === "oldAttempt") {
@@ -157,6 +172,8 @@ export default {
             const pending = state.pending;
             result = await workspace.backup(context, body.backupId ?? pending?.id, body.safety);
           }
+          else if (body.action === "fixture") result = await (workspace as DurableObjectStub<WorkspaceDO>).fixture(env.CONTROL, body.fixture);
+          else if (body.action === "backupJob") result = await (workspace as DurableObjectStub<WorkspaceDO>).backupJob(env.CONTROL, body.backupId!);
           else if (body.action === "fenceState") result = await (workspace as DurableObjectStub<WorkspaceDO>).fenceState(env.CONTROL);
           else if (body.action === "fence") result = await workspace.fence(context, body.job, body.fenceAction, body.generation);
           else if (body.action === "backupState") result = await workspace.backupState(context);
