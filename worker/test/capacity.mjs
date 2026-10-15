@@ -39,7 +39,10 @@ const evidence = {
   artifact: { configSha256: sha(JSON.stringify(config)), modules: await artifacts(), unchangedAfterRun: false },
   protocol: { runsPerFixture: runs, warmupRuns: 0, concurrency: 1,
     isolation: "Separate disposed seed runtime; fresh Miniflare runtime and SQLite/R2 persistence per repetition; targets never enabled; only old DO one-hour bootstrap alarms, runtime lifetime bounded below one hour",
-    wallTime: "Node performance.now around HTTPS request through complete response body; includes RPC/SQL/R2/serialization/loopback, not CPU",
+    wallTime: "Node performance.now around HTTPS request through complete response body; includes RPC/SQL/R2/serialization/loopback, not CPU. Import and capture/report requests are marked inspectorAttached; profilerActive marks profiling perturbation.",
+    inspector: "getInspectorURL() discovers the ephemeral inspector endpoint; HTTP /json/list selects exact core:user:<workerName> (or named proxy), excluding Miniflare internal targets. Worker-wide samples include frontend, AuthorityDO and WorkspaceDO, NOT one Core/DO or the whole workerd process. Matching CDP console/product metrics verifies DO work is visible on this target when supported.",
+    sampledCpu: "Sum CDP timeDeltas for resolved samples other than (idle), in microseconds / 1000. Sampled profiler CPU estimate, not charged CPU or OS thread CPU; (program) and (garbage collector) included and visible in frame totals, unresolved deltas separate. Sampling interval requested at 1000 us; actual cadence may differ. Unsampled profile time is not assigned CPU.",
+    jsHeap: "Runtime.getHeapUsage before/after request interval: protocol usedSize/totalSize JS heap samples, NOT peak, NOT Wasm/external/SQL memory. Extra protocol fields (embedderHeapUsedSize/backingStorageSize) preserved verbatim, not equated with SQL/Wasm totals or added to JS heap. No forced GC; retained objects and GC timing affect samples.",
     rustMetrics: "Exactly one expected unmodified product event per known import/capture request interval; no background alarms during measurements. Import includes preflight/import/inactive-state budget preflight. Report capture is the inactive target's actual Core capture.",
     captureReportWallTime: "report -> confirm request includes safety verification, target capture, report construction and R2 publication; NOT backup time. A 413 is a failed report, not confirmation.",
     importVerification: "Successful import -> staged requires product Authority verification of imported workspace/incarnation, data_digest and receipt_digest against the published source manifest.",
@@ -47,16 +50,18 @@ const evidence = {
     linearBytes: "Wasm linear-memory capacity at log time; includes Rust heap; NOT additive with rustPeakBytes",
     serializedBytes: "UTF-8 JSON representations, NOT resident JS/SQL memory or a peak",
   },
-  unavailable: { cpuTime: "Not measured: local wall time is not workerd CPU time",
+  inspectorRuns: [],
+  unavailable: { cpuTime: "Exact/charged CPU unavailable; CDP sampled profiler estimates, when supported, are separate",
     wholeIsolateMemoryPeak: "Unavailable: no whole-isolate/external/SQL peak instrumentation",
-    jsHeap: "Not measured; no CDP heap sample or peak claimed", sqlMemory: "Not measured" },
+    sqlMemory: "Not measured" },
   limitations: [
     "Local single-process Miniflare/workerd evidence only, not paid-tier production capacity, cold-start or SLA evidence.",
     "Three sequential runs without warmup, each in a fresh runtime; host caches may persist. UUIDs/timestamps and fixture hashes vary by run.",
     "No restored target activation or restored backup publication tested; snapshotBytes is the inactive capture log, sourceBytes is serialized input. Report wall time is not standalone capture time.",
     "No concurrent-DO, retained-generation soak, platform hard termination or production CPU/memory gate coverage.",
     "Rust allocation peak and linear capacity overlap; serialized JS/SQL representations are not added to either.",
-    "Miniflare structured console log callback only; no CPU profiler or Runtime.getHeapUsage measurement attempted.",
+    "Inspector attaches only after bootstrap; profiles cover import, old safety capture and inactive capture/report request intervals including log flush waits. HTTP wall times taken while profiling are explicitly marked; other calls in that runtime can still be perturbed by the attached inspector.",
+    "Inspector target is worker-wide, not DO-specific. No per-DO heap/CPU attribution, true CPU accounting, or heap peak is claimed.",
   ],
   fixtures: [], measurements: [], uncorrelatedRuntimeEvents: [],
 };
@@ -77,6 +82,117 @@ const token = "capacity-local-admin-not-production";
 const persist = await mkdtemp(path.join(os.tmpdir(), "ttrs-capacity-"));
 let mf;
 let runtimeStarted;
+let inspector;
+const samplingIntervalUs = 1000;
+
+// Small request/response CDP client; unsupported methods must not break baseline evidence.
+async function connectCdp(url) {
+  const socket = new WebSocket(url);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      socket.close();
+      reject(new Error("CDP connection timeout"));
+    }, 10_000);
+    socket.addEventListener("open", () => { clearTimeout(timer); resolve(); }, { once: true });
+    socket.addEventListener("error", () => { clearTimeout(timer); reject(new Error("CDP WebSocket connection error")); }, { once: true });
+  });
+  let id = 0;
+  const pending = new Map();
+  const consoleMetrics = [];
+  socket.addEventListener("message", ({ data }) => {
+    const message = JSON.parse(data);
+    if (message.method === "Runtime.consoleAPICalled") {
+      for (const arg of message.params.args) {
+        try {
+          const event = JSON.parse(arg.value);
+          if (event.event === "import" || event.event === "capture") consoleMetrics.push(event);
+        } catch { /* Not a product metric. */ }
+      }
+    }
+    const request = pending.get(message.id);
+    if (!request) return;
+    pending.delete(message.id);
+    clearTimeout(request.timer);
+    if (message.error) request.reject(new Error(JSON.stringify(message.error)));
+    else request.resolve(message.result ?? {});
+  });
+  socket.addEventListener("close", () => {
+    for (const request of pending.values()) {
+      clearTimeout(request.timer);
+      request.reject(new Error("CDP socket closed"));
+    }
+    pending.clear();
+  });
+  return {
+    consoleMetrics,
+    send(method, params = {}) {
+      return new Promise((resolve, reject) => {
+        const requestId = ++id;
+        const timer = setTimeout(() => {
+          pending.delete(requestId);
+          reject(new Error(`CDP timeout: ${method}`));
+        }, 10_000);
+        pending.set(requestId, { resolve, reject, timer });
+        socket.send(JSON.stringify({ id: requestId, method, params }));
+      });
+    },
+    close() { socket.close(); },
+  };
+}
+async function inspect(method, params) {
+  try { return await inspector.client.send(method, params); }
+  catch (error) {
+    (evidence.unavailable[method] ??= []).push({ runtime, error: error.message });
+  }
+}
+async function startInspector() {
+  try {
+    const url = await mf.getInspectorURL();
+    const listUrl = new URL("/json/list", url);
+    listUrl.protocol = "http:";
+    const targets = await (await fetch(listUrl, { signal: AbortSignal.timeout(10_000) })).json();
+    const record = { runtime, discoveryUrl: listUrl.href, targets, samplingIntervalUs };
+    evidence.inspectorRuns.push(record);
+    // This Miniflare version exposes raw workerd targets, including internal R2/cache workers.
+    const matching = targets.filter(target => target.id === `core:user:${config.name}` ||
+      new URL(target.webSocketDebuggerUrl).pathname === `/${config.name}`);
+    assert.equal(matching.length, 1, "expected exactly one configured user-worker inspector target");
+    const target = matching[0];
+    record.selectedTarget = target.id;
+    inspector = { client: await connectCdp(target.webSocketDebuggerUrl) };
+    await inspect("Runtime.enable");
+    const enabled = await inspect("Profiler.enable");
+    const configured = await inspect("Profiler.setSamplingInterval", { interval: samplingIntervalUs });
+    inspector.canProfile = enabled !== undefined && configured !== undefined;
+  } catch (error) {
+    (evidence.unavailable.inspector ??= []).push({ runtime, error: error.message });
+  }
+}
+function summarizeProfile(profile) {
+  const nodes = new Map(profile.nodes.map(node => [node.id, node.callFrame]));
+  assert.ok(profile.samples.length > 0, "CDP profile has no samples; no CPU estimate available");
+  assert.equal(profile.samples.length, profile.timeDeltas.length, "CDP samples/deltas mismatch");
+  const byFrame = new Map();
+  let nonIdleUs = 0;
+  let idleUs = 0;
+  let unresolvedUs = 0;
+  for (let i = 0; i < profile.samples.length; i++) {
+    const frame = nodes.get(profile.samples[i]);
+    const delta = profile.timeDeltas[i];
+    if (!frame) { unresolvedUs += delta; continue; }
+    if (frame.functionName === "(idle)") idleUs += delta;
+    else nonIdleUs += delta;
+    const key = JSON.stringify(frame);
+    byFrame.set(key, (byFrame.get(key) ?? 0) + delta);
+  }
+  return { label: "sampled profiler CPU estimate (worker isolate, not per DO)",
+    samplingIntervalRequestedUs: samplingIntervalUs, nonIdleSampledMs: nonIdleUs / 1000,
+    idleSampledMs: idleUs / 1000, unresolvedSampledMs: unresolvedUs / 1000,
+    startTime: profile.startTime, endTime: profile.endTime, samples: profile.samples.length,
+    sampledDeltaUs: nonIdleUs + idleUs + unresolvedUs,
+    observedDeltaRangeUs: [Math.min(...profile.timeDeltas), Math.max(...profile.timeDeltas)],
+    frames: [...byFrame].map(([frame, sampledUs]) => ({ ...JSON.parse(frame), sampledUs })) };
+}
 async function call(workspace, action, body, expected = 200, eventType) {
   // Only bootstrap schedules alarms, one hour out. Never let a runtime approach that deadline.
   assert.ok(performance.now() - runtimeStarted < 1_800_000, "runtime too old for alarm-free measurement");
@@ -84,6 +200,11 @@ async function call(workspace, action, body, expected = 200, eventType) {
   assert.equal(evidence.uncorrelatedRuntimeEvents.length, 0, "uncorrelated runtime metrics");
   const endpoint = await mf.ready;
   const encoded = body === undefined ? undefined : JSON.stringify(body);
+  const profiled = inspector && eventType && (action === "admin/restore/advance");
+  const consoleStart = inspector?.client.consoleMetrics.length;
+  const telemetry = profiled ? { inspectorAttached: true,
+    heapBefore: await inspect("Runtime.getHeapUsage"), profilerActive: false } : undefined;
+  if (profiled && inspector.canProfile) telemetry.profilerActive = await inspect("Profiler.start") !== undefined;
   interval = [];
   const started = performance.now();
   const result = await new Promise((resolve, reject) => {
@@ -121,6 +242,26 @@ async function call(workspace, action, body, expected = 200, eventType) {
     assert.fail(`unexpected runtime events for ${workspace}/${action}: expected ${expectedTypes}, got ${observed.map(event => event.event)}`);
   }
   measurement.rust = observed;
+  if (profiled) {
+    if (telemetry.profilerActive) {
+      const stopped = await inspect("Profiler.stop");
+      if (stopped?.profile) {
+        try { telemetry.cpu = summarizeProfile(stopped.profile); }
+        catch (error) { (evidence.unavailable.profileAttribution ??= []).push({ runtime, error: error.message }); }
+      } else if (stopped) {
+        (evidence.unavailable["Profiler.stop"] ??= []).push({ runtime,
+          error: `No profile in protocol response: ${JSON.stringify(stopped)}` });
+      }
+    }
+    telemetry.heapAfter = await inspect("Runtime.getHeapUsage");
+    telemetry.consoleMetrics = inspector.client.consoleMetrics.slice(consoleStart);
+    telemetry.productMetricMatches = JSON.stringify(telemetry.consoleMetrics) === JSON.stringify(observed);
+    if (!telemetry.productMetricMatches) {
+      (evidence.unavailable.doConsoleAttribution ??= []).push({ runtime, action,
+        error: "CDP console metrics did not match the request's structured product metrics; no per-DO attribution claimed" });
+    }
+    measurement.inspector = telemetry;
+  }
   assert.ok([expected].flat().includes(result.status), `${workspace}/${action}: ${result.bytes.toString().slice(0, 500)}`);
   return JSON.parse(result.bytes);
 }
@@ -153,6 +294,8 @@ async function startRuntime(name) {
   await mf.ready;
 }
 async function stopRuntime() {
+  inspector?.client.close();
+  inspector = undefined;
   await mf?.dispose();
   mf = undefined;
   await flushLogs();
@@ -188,6 +331,7 @@ try {
       const workspace = `${name}-${run}`;
       await startRuntime(workspace);
       await call(workspace, "admin/bootstrap", {});
+      await startInspector();
       let job = await call(workspace, "admin/import", source);
       job = await call(workspace, "admin/restore/advance", { job: job.id }, 200, "import");
       assert.equal(job.phase, "staged");
@@ -228,6 +372,7 @@ try {
   evidence.error = error.stack;
   process.exitCode = 1;
 } finally {
+  inspector?.client.close();
   await mf?.dispose();
   await rm(persist, { recursive: true, force: true });
   evidence.finishedAt = new Date().toISOString();
