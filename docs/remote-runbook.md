@@ -1,7 +1,8 @@
 # Connected workspace production runbook
 
 Status: **local integration implemented; NOT approved for real tracking data**.
-No resources, credentials, deployment, commit or push were created for this work.
+No resources, real credentials, deployment or push were created for this work.
+Local jj follow-ups and the latest reproduced evidence are recorded in section 9.
 This runbook records concrete implementation and remaining release gates, not a
 promise that completing a happy-path restore makes a deployment production-safe.
 
@@ -18,6 +19,7 @@ npm run types
 npm run check
 npm run build
 npm test
+npm run test:capacity
 cd ..
 cargo fmt --check
 cargo test --locked --all-targets
@@ -145,8 +147,13 @@ is pending; retain final safety copies through the incident/review policy.
 Uploader code never modifies lock/lifecycle configuration and never deletes R2
 objects. Do not silently delete an unverified copy, move one object between
 retention tiers, or count a manifest referencing a missing payload as a backup.
-Completed-job/retention-selection metadata currently accumulates in DO KV; cleanup
-is a remaining bounded-control-plane requirement, not implicit tracking retention.
+Completed-job/retention-selection metadata and abort tombstones accumulate in DO KV.
+The [control-record inventory and proposed policy](remote-review-2026-10-15.md#control-kv-inventory-and-retention-decision)
+explain why TTL deletion is unsafe. Cleanup remains blocked on the owner's evidence/
+replay/expiry decision; it is not implicit tracking retention. Verified completion
+removes only the existing pending cut chunks/marker. Duplicate completions cannot
+regress lastBackup: durable capture order, not wall time/revision, orders that pointer;
+daily/monthly selections are rechecked after publication before installation.
 
 Alarm delivery, publication failure, restart, identical-cut retry and hourly rearm
 are tested in workerd. The private effect sidecar injects failures before/after real
@@ -220,8 +227,12 @@ retire -> enable -> done. Each admin/restore/advance runs one resumable phase.
   human review and an independent operator restore remain production gates.
 - Reverify final safety immediately before durable route CAS. CAS and job phase
   update occur in one Authority transaction, with target still inactive.
-- Old retires permanently; only then target enables and rearms backup scheduling.
-  A restart between CAS/retire/enable yields maintenance, never overlapping writers.
+- Old retires permanently; target enable persists an alarm **before** it admits
+  writes and revalidates its fence after the await. An inactive alarm rearms rather
+  than consuming that wake-up. A lost enable acknowledgment therefore leaves
+  durable backup scheduling even without another advance. Authority's subsequent
+  schedule requests an early backup. A restart between CAS/retire/enable yields
+  maintenance until enable, never overlapping writers.
 - Original envelopes, cursors and reviews fail AuthorityChanged even if IDs match.
   Imported receipts are audit-only and cannot replay in the target authority.
 
@@ -363,7 +374,8 @@ Before real data:
 
 ## 8. Verification snapshot and remaining work
 
-**Final local integration evidence reported passed** (not production approval):
+**Prior integration checkpoint** (not production approval; reproduced and superseded
+by [section 9](#9-independent-hardening-follow-up-2026-10-15)):
 - Root `cargo test --locked --all-targets`: **245 tests** — 53 library, 60 binary,
   15 CLI, 20 client, 10 data-safety, 7 diagnostics, 5 frontend, 8 maintenance,
   23 protocol, 5 recovery, 7 journal, 13 remote-maintenance, 9 tick, 3 time-anchor,
@@ -428,3 +440,102 @@ cuts and full independent locked-copy/scoped-identity/monthly operator restore
 operations. Local mechanisms and candidate checks pass; these production gates
 remain open. No real data/resources were touched and no deployment, push or
 bookmark movement is implied.
+
+## 9. Independent hardening follow-up 2026-10-15
+
+[Independent findings, fixes, unresolved observations and control-record policy](remote-review-2026-10-15.md)
+are the companion review ledger. Four product findings were fixed in focused local
+jj changes: lost-enable alarm coverage, stale backup/period-selector completion,
+unordered receipt verification and nonprogressing entry pagination. An initial
+capacity harness had interleaved alarm-log attribution; those draft results were
+discarded and the corrected harness independently reviewed.
+
+### Reproduced checks
+
+Baseline reproduction passed the previous **245 native tests / 13 doctests**.
+After fixes, the complete section-1 Rust command set was rerun:
+- **247 native tests** (54 library, 60 binary, 133 integration), **13 doctests**.
+- Core-only **9 tests / 5 doctests**; native-only integration crates correctly run
+  zero tests in this configuration.
+- Root and bridge formatting; strict native all-features, core-only and Wasm
+  Clippy; core Wasm check; warning-free native/core Rustdoc.
+- Bridge **3 budget tests**, zero doctest examples; native all-features and
+  Wasm test-probes strict Clippy. No unsupported Wasm all-features claim.
+
+Worker: pinned `npm ci` reported **zero vulnerabilities**; generated types, both
+TypeScript configurations, cf production build with
+`WRANGLER_DOCKER_BIN=/nonexistent`, and full `npm test` passed. The suite includes
+raw bridge, workerd trap/SQL probes, real-effect fault schedules, unchanged-cf-artifact
+integration and the actual Rust CLI/workerd roundtrip. The final rebuilt artifact,
+not an earlier binary, was tested. `node --check test/capacity.mjs` and the separate
+corrected capacity command below passed. These local checks do not complete any
+external operational gate.
+
+### Reproduce isolated actual-artifact capacity evidence
+
+After the pinned build, run:
+
+```sh
+cd worker
+npm run test:capacity
+```
+
+The script loads cf's manifest/module files unchanged, checks their hashes before
+and after, and writes ignored `worker/results/capacity.json`. It records environment,
+lock/module/fixture hashes, individual HTTP wall times, serialized input/output
+bytes and the product Core's allocation/linear-memory/crossing logs. Three fresh
+Miniflare runtimes per fixture; seed runtime disposed; no warmup; sequential calls;
+imported targets remain inactive through report readiness, **never enabled or
+scheduled**. Only old-DO one-hour bootstrap alarms exist, and runtime-age guards
+keep successful measurements below their deadline. Unexpected/unassigned metric
+events fail the harness; byte equality alone is not log correlation.
+
+Observed **2026-10-15 10:23:19–10:23:53 UTC**, Node 24.21.0, macOS arm64
+25.6.0, Apple M5 Max, Miniflare 5.20261006.1-alpha / workerd 1.20261006.1,
+compatibility date 2026-10-06. **15 runs / 118 HTTP calls / 46 product metric events /
+zero uncorrelated events**; all reports reached confirm (ready, not accepted).
+Module hashes for this run, **not stable golden constants**:
+- Wasm 1,564,750 bytes: `82b71f1862f3a29d1a642e7c56832d865de8516e111e8f8f3d8876d82eb0e7b6`.
+- JS 795,591 bytes: `4e9040fd2bfb1cf4b6c9229731536de95f778138426c9f967cda61f14d2a6f2d`.
+
+All sizes below are **bytes**, not heap estimates. Allocation columns show
+import / inactive capture. Minor ranges are timestamp/encoding variation.
+
+| Fixture | Serialized source → inactive snapshot | Requested Rust peak, import / capture | Linear capacity, import / capture |
+|---|---:|---:|---:|
+| Representative long-span/DST, 7 receipts | 9,642 → 9,862 | 1,097,727 / 1,060,054 | 3,801,088 / 3,735,552 |
+| Quoted tables | 1,901,138 → 1,901,157 | 15,810,003 / 6,069,249 | 22,151,168 / 9,502,720 |
+| Near limit, meaningful receipt fence | 2,093,056 → 2,093,257–2,093,259 | 16,081,787 / 7,712,118–7,712,124 | 19,857,408 / 12,255,232 |
+| Quoted receipt audit, 74 receipts | 1,027,084 → 1,027,287–1,027,288 | 8,329,620 / 2,443,930–2,443,934 | 12,189,696 / 4,849,664 |
+| 8,000 clients + 8,000 entries | 1,836,507 → 1,836,526 | 17,146,308 / 9,427,129 | 22,413,312 / 12,386,304 |
+
+| Fixture | HTTP import wall ms, min–max | HTTP capture/report wall ms, min–max | Import / capture SQL crossings |
+|---|---:|---:|---:|
+| Representative | 18.9–30.9 | 6.9–14.2 | 75 / 15 |
+| Quoted tables | 205.0–208.5 | 73.7–85.0 | 67 / 15 |
+| Near limit | 117.7–128.8 | 50.5–67.8 | 75 / 15 |
+| Receipt audit | 183.1–196.3 | 59.2–70.5 | 143 / 15 |
+| Many rows | 406.5–427.7 | 79.6–88.6 | 16,063 / 15 |
+
+Import metrics belong to one target Core, including preflight/import/post-import
+budget work. Capture metrics belong to its later disposable capture Core.
+Capture/report wall time includes final-safety verification, RPC/capture, whole
+report construction, R2 publication and serialization; **not standalone capture or
+backup time**. This harness stops before enable; full integration separately tests
+activation and restored backupability. No human confirmation or operator drill is
+claimed. Its 413 report handling was not exercised in these runs; the full
+integration many-changed-rows refusal regression did pass.
+
+**Not measured:** CPU time, whole-isolate resident/peak memory, V8/JS/external/SQL
+memory peaks, allocator overhead, concurrent DO pressure, long retained-audit chains,
+intended paid-tier behavior or cold starts. Requested Rust peaks overlap linear
+capacity and must not be added to it; serialized strings/objects are not a measured
+resident-memory peak. Wall time is not CPU, and a local machine's large RAM is not
+a Worker admission grant.
+
+Production budgets and bounded control KV remain open. The next explicit owner
+decision is [control evidence/replay/expiry and archive-outage behavior](remote-review-2026-10-15.md#proposed-policy-not-implemented-needs-approval).
+No abort tombstones, backup replay records, receipt/floor history or R2 objects were
+deleted. Independent locked copies, external HTTPS validation, operator drill,
+paid-tier CPU/isolate memory, Linux/suspend and hard-crash/power-cut evidence remain
+separate gates in the [ordered release list](remote-review-2026-10-15.md#ordered-remaining-release-gates).

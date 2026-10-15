@@ -15,6 +15,7 @@ npm run types
 npm run check
 npm run build
 npm test
+npm run test:capacity
 ```
 
 This Worker has no containers. The pinned plugin nevertheless synchronously probes
@@ -135,9 +136,13 @@ same executing command/instance, and production Wasm rejects the probe command.
 It also checks unknown schema objects and SQL exceptions after domain/receipt writes.
 `test/faults.mjs` wraps real product DO/R2 effects with private persisted one-shot
 faults/barriers: payload/manifest put/readback before/after failures, alarm retry,
-lost freeze/CAS/enable acknowledgments and concurrent abort/freeze/flip. A lost enable
-ack leaves target active with Authority still at enable; restart resumes the same
-target, preserves intervening writes and armed alarms, and old mutations still refuse.
+lost freeze/CAS/enable acknowledgments and concurrent abort/freeze/flip. Enable
+persists an alarm before admitting writes, then revalidates after the await; inactive
+alarms rearm. A lost enable ack leaves target active with Authority still at enable
+and the alarm already durable **before** any retry. Restart resumes the same target,
+preserves intervening writes/alarms, and old mutations still refuse. Real R2 barriers
+also prove duplicate completions cannot regress lastBackup or replace first-period
+selections; capture order is durable and independent of clock/revision.
 No fault flag, binding or test route is present in the cf production artifact.
 
 `test/client.mjs` (`npm run test:client`, also in `npm test`) runs the actual Rust CLI
@@ -154,6 +159,12 @@ old request with AuthorityChanged rather than retargeting. Remote TT_DB is never
 created and credential strings are not serialized. Per-run artifact hashes are
 transcript evidence, not stable golden hashes.
 
+`test/capacity.mjs` (`npm run test:capacity`, separate from `npm test`) measures the
+unchanged cf artifact in fresh runtimes with imported targets left inactive. Its
+structured evidence distinguishes serialized bytes, per-Core requested Rust peaks,
+linear capacity and HTTP wall time; CPU and isolate/JS/SQL peak memory are unmeasured.
+See the [current measurement ledger](../docs/remote-runbook.md#9-independent-hardening-follow-up-2026-10-15).
+
 Request limit 64 KiB; SQL JSON scratch 1 MiB; snapshot 2 MiB; response 2 MiB + 1 KiB.
 These are conservative experimental refusal thresholds, NOT measured production
 limits. An oversized operation rolls back, never truncates. Each successful command
@@ -169,6 +180,8 @@ Known receipt replay bypasses size admission. Abort clears its job UUID and rema
 available even for legacy over-budget state. This is intentionally personal-scale and makes writes O(history/receipts)
 despite indexed core operations. Entry browsing materializes every page on the
 client and the Worker scans/materializes history; snapshots are O(all rows), journal
-discovery O(retained records). Completed backup jobs/tier-selection metadata accrue
-in control KV without automatic cleanup. JSON escaping can make a snapshot hit the ABI input
+discovery O(retained records). Completed backup jobs, abort tombstones and tier-selection metadata accrue
+in control KV without automatic cleanup. [Control retention requires an explicit
+policy decision](../docs/remote-review-2026-10-15.md#control-kv-inventory-and-retention-decision);
+tracking receipt horizons are not control-job expiry. JSON escaping can make a snapshot hit the ABI input
 limit before the nominal import limit. See the [production gate/runbook](../docs/remote-runbook.md).

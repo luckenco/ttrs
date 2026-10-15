@@ -4,6 +4,31 @@ Status: **stages 4–5 implemented; stage-6 local durable backup/restore protoco
 fault matrix implemented; production NOT approved.** No deployment, provisioning,
 actual resource/secret setup, push or bookmark movement has been performed.
 
+## Independent follow-up — 2026-10-15
+
+Three scoped independent reviews and a second review of fixes/measurement attribution
+are complete. [Findings, regressions and the control-retention decision](remote-review-2026-10-15.md)
+separate implementation bugs from operational gates. Local jj follow-ups fix lost-enable
+backup scheduling, stale backup/tier completion, verified-but-unimportable receipt
+ordering, and cyclic/empty entry pagination. No receipt/floor history was deleted.
+
+Fresh baseline checks reproduced the earlier 245 native / 13 doctest result. Final
+candidate checks pass **247 native / 13 doctests**, core **9 / 5**, bridge **3**,
+strict native/core/Wasm Clippy, warning-free Rustdoc, formatting, pinned Worker build,
+generated types, both TypeScript checks, bridge/probe/fault/actual-artifact integration
+and Rust CLI/workerd suites. The separate capacity harness passes 15 isolated runs.
+See [the latest ledger](remote-runbook.md#9-independent-hardening-follow-up-2026-10-15)
+for measured bytes/Rust allocations/linear capacity/wall time and explicit CPU/isolate
+memory limitations. Initial alarm-interleaved measurement results were discarded.
+
+**Cleanup stopped at a policy boundary:** control RPCs have no expiry/generation
+floor, so deleting abort or backup replay records is unsafe. The inventory proposes
+fenced generations plus archive-verified bounded hot KV; the owner must first decide
+historical discoverability/replay horizon and required control/report evidence.
+No new control cleanup is enabled; bounded control growth is still a release blocker.
+Low-severity TUI outage-submit feedback inconsistency and repeated session RTTs remain.
+No deployment, provisioning, real-data import, push or bookmark movement occurred.
+
 ## Current implementation
 
 - `src/workspace.rs`, `operation.rs`, `protocol.rs`, `host.rs`: coherent projection,
@@ -54,7 +79,7 @@ The stage-3 142 native / 10 doctest counts describe **v1 only**, not today's agg
   roundtrips, lost-command recovery, credential rotation and B-to-C restore authority
   fencing are covered. Fixture-only TLS forwarding is not external TLS validation or
   an independent-account/operator/human-review release gate.
-- Root final checks passed **245 native tests / 13 doctests**, core **9 tests / 5
+- The pre-follow-up checkpoint passed **245 native tests / 13 doctests**, core **9 tests / 5
   doctests**, strict native/core/Wasm Clippy, formatting and warning-free Rustdoc.
   Bridge has **3 passing budget tests** and strict native/Wasm Clippy. Worker install
   (zero reported vulnerabilities), pinned build, types, product/test TypeScript and

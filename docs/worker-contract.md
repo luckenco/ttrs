@@ -30,6 +30,10 @@ never means receipt absence. Retry checks status first: Recorded never POSTs aga
 NotObserved alone permits identical bytes/key to resend, NotApplied is durably
 terminal, OutcomeExpired never retries and remains unresolved.
 
+Entry browsing rejects repeated/cyclic cursors and empty continuation pages rather
+than looping indefinitely on malformed pagination. It still materializes all valid
+history; no total-page/history ceiling or production memory guarantee is implied.
+
 CLI `request list` discovers every journal namespace file-only, including original
 context and origin. TUI startup reconciles before overview; startup/poll cycles query
 at most four statuses matching the original endpoint, principal and authority, never
@@ -238,8 +242,10 @@ neither receipts nor a floor are dropped on carry-forward; job-only history is n
 current replay authority. The captured source/current fence remains in the source
 snapshot, and durable control/R2 reports retain restore history outside the imported
 snapshot. Verification requires fence/audit closure for every receipt context and
-rejects identity collisions. Fresh target identity and compaction necessarily change
-the operational digest, not data, sequences, revision or receipt digest. Neither audit
+rejects identity collisions. Verification rejects duplicate or unordered receipt
+keys rather than accepting a file that later fails canonical import comparison.
+Fresh target identity and compaction necessarily change the operational digest,
+not data, sequences, revision or receipt digest. Neither audit
 receipts nor fences permit replay or change target activation. Meaningful proofs are
 retained indefinitely and can exhaust bounded capacity, safely refusing writes/import.
 
@@ -264,8 +270,13 @@ overview/catalog/entries/scopes with no write capabilities.
 
 The browser loads every entry page into memory; Worker entry processing is O(history).
 Snapshots/preflight are O(all rows/receipts) and journal discovery O(retained records).
-Control KV completed jobs and tier-selection metadata accumulate; there is no
-automatic cleanup. These costs can reach CPU/isolate-heap limits before byte refusal.
+Control KV completed backups, abort tombstones and tier-selection metadata accumulate;
+there is no new automatic cleanup. Authority retains one latest restore, not a full
+historical job archive. See the [inventory/policy decision](remote-review-2026-10-15.md#control-kv-inventory-and-retention-decision).
+Target enable durably arms its backup alarm before becoming writable, including
+lost acknowledgments; duplicate backup completion cannot regress lastBackup or
+replace an already installed first-period selection.
+History-dependent costs can reach CPU/isolate-heap limits before byte refusal.
 Experimental caps are ordinary request 64 KiB, SQL scratch 1 MiB, snapshot 2 MiB,
 Worker ordinary response 2 MiB + 1 KiB, import ABI 4 MiB + 64 KiB and full report
 4 MiB. Rust tracking JSON responses share the Worker's 2 MiB + 1 KiB cap, including

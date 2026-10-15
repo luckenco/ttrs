@@ -87,6 +87,8 @@ millionths, dates ISO and billing zones named IANA zones.
   receipt/floor proofs persist indefinitely and may exhaust bounded Worker capacity;
   writes/import then refuse safely rather than deleting proofs.
 
+Verification rejects duplicate/non-increasing receipt keys before import; a valid
+digest alone must not admit receipt order that canonical re-capture would change.
 Verification is fallible and checks digests/counts, canonical integers, ranges,
 nullability, IDs/names, currency/pricing/limits, dates/zones, references/succession,
 work periods, timer ownership and high-water marks. It does not replay admission
