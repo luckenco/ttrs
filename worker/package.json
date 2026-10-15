@@ -13,7 +13,8 @@
     "check": "tsc --noEmit && tsc --project test/tsconfig.json --noEmit",
     "build:probes": "cargo build --manifest-path ../crates/tt-wasm/Cargo.toml --target-dir ../crates/tt-wasm/target/probes --release --target wasm32-unknown-unknown --features test-probes --locked",
     "test": "npm run build:probes && node test/bridge.mjs && node test/probes.mjs && node test/faults.mjs && node test/integration.mjs && npm run test:client",
-    "test:client": "node test/client.mjs"
+    "test:client": "node test/client.mjs",
+    "test:capacity": "node test/capacity.mjs"
   },
   "devDependencies": {
     "@cloudflare/build-output-utils": "0.9.0",
