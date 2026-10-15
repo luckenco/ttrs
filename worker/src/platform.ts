@@ -1,5 +1,5 @@
 export const REQUEST_LIMIT = 64 * 1024;
-// Provisional refusal thresholds. The runbook distinguishes measured fixtures from release gates.
+// Personal-scale refusal thresholds, not CPU or memory guarantees.
 export const SQL_LIMIT = 1024 * 1024;
 export const SNAPSHOT_LIMIT = 2 * 1024 * 1024;
 export const RESPONSE_LIMIT = 2 * 1024 * 1024 + 1024;

@@ -28,7 +28,7 @@ const options = {
 };
 let mf;
 const evidence = { runtime: "actual cf artifact / miniflare 5 / workerd", measurements: [], gates: [] };
-async function start() { mf = new Miniflare(convertV4MiniflareOptions({ workers: [options], https: true, resourcePersistencePath: persist, inspectorPort: 0, log: new Log(LogLevel.ERROR) })); await mf.ready; }
+async function start() { mf = new Miniflare(convertV4MiniflareOptions({ workers: [options], cf: false, https: true, resourcePersistencePath: persist, inspectorPort: 0, log: new Log(LogLevel.ERROR) })); await mf.ready; }
 async function restart() { await mf.dispose(); await start(); }
 async function transport(route, body, token = tokens.read, headers = {}) {
   const endpoint = await mf.ready;

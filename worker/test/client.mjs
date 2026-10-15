@@ -62,7 +62,7 @@ try {
     ] }) },
     durableObjects: { WORKSPACE: { className: "WorkspaceDO", useSQLite: true }, AUTHORITY: { className: "AuthorityDO", useSQLite: true } },
     r2Buckets: { BACKUPS: "cli-fixture-backups" },
-  }], https: true, resourcePersistencePath: persist, inspectorPort: 0, log: new Log(LogLevel.ERROR) }));
+  }], cf: false, https: true, resourcePersistencePath: persist, inspectorPort: 0, log: new Log(LogLevel.ERROR) }));
   const endpoint = await mf.ready;
   proxy = http.createServer((req, res) => {
     const action = `${req.method} ${req.url}`;

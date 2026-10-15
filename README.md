@@ -107,13 +107,11 @@ Daily/safety copies remain on-device and are not automatically deleted: monitor
 disk usage and arrange independent copies. Never copy only a live WAL database's
 main file or manually replace a live workspace.
 
-## Remote workspace design
+## Connected mode
 
-[Local and connected-remote workspaces](docs/remote-workspace.md) describes the
-backend contracts and staged implementation. Stages 1–5 and the stage-6 local
-durable backup/restore protocol and fault matrix are implemented. Connected CLI/TUI and read-only MCP are available as a local/pilot
-implementation, **not production-approved or deployed**. External TLS trust, CPU/isolate-memory capacity, control-KV cleanup, independent
-locked copies/operator drill and exhaustive crash coverage remain release gates. Select remote mode with:
+CLI/TUI and read-only MCP can use one remote workspace without changing tracking
+commands. There is no offline write queue or local fallback. Switching backends
+does not move data. Select remote mode with:
 
 ```sh
 tt config backend remote --url https://tt.example --workspace personal \
@@ -122,12 +120,9 @@ tt config backend remote --url https://tt.example --workspace personal \
 
 Use `--credential-file FILE` instead for a file reference; settings store references,
 never secrets. Remote errors never fall back to a local database.
-See the [current contract](docs/worker-contract.md) and
-[handoff](docs/remote-workspace-handoff.md) for implementation evidence and remaining
-release work. Final local checks passed: 242 native tests and 13 doctests, core and
-Wasm checks, and the full Worker suite including the Rust CLI roundtrip. See the
-[verification ledger](docs/remote-runbook.md#8-verification-snapshot-and-remaining-work)
-for exact scope; historical checkpoint counts are not current aggregates.
+See [invariants and assumptions](docs/worker-contract.md), the
+[operation runbook](docs/remote-runbook.md) and [Worker setup](worker/README.md).
+Connected use is personal-scale; do a practical restore check before trusting real data.
 
 ## Development
 

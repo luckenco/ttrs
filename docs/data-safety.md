@@ -1,10 +1,8 @@
 # Data safety: native and connected workspaces
 
-Status: native preservation and stage-4 receipt-aware snapshots are implemented;
-stage-6 connected backup/restore is implemented and tested locally, **not
-production-approved**. See the [current service contract](worker-contract.md) and
-[release gates and local measurements](remote-runbook.md). Public library contracts
-live in `tt::maintenance` and `tt::portable`; Rustdoc examples are executable doctests.
+Public library contracts live in `tt::maintenance` and `tt::portable`; Rustdoc
+examples are executable doctests. See [workspace invariants](worker-contract.md)
+and [connected operation](remote-runbook.md) for the remote boundary and assumptions.
 
 ## Opening and migration
 
@@ -149,15 +147,8 @@ file**, reviewed and confirmed before I/O; summaries/preliminary reports are not
 accepted. Uncertain admin responses require status inspection and explicit resumption,
 not a claim of rollback. Abort is unavailable after route flip.
 
-The host implements hourly alarms and first daily/monthly capture selection,
-immutable publication with verification, final safety copy and resumable frozen
-restore. It performs no application R2 deletion. Out-of-band locks/lifecycle,
-independent scoped copy identity and operator drill are **not configured or run**.
-Full capture is O(all rows/receipts); native history can exhaust RAM, and experimental
-remote byte limits do not certify CPU/isolate memory. See the runbook for narrow
-local boundary fixtures, control-KV accumulation and outstanding production gates.
-
-Historical stage-3 **v1** checks (142 native tests / 10 doctests) remain in the
-[checkpoint evidence](remote-workspace.md#stage-3-data-safety-evidence); they are not
-current aggregate counts. See the [final local verification ledger](remote-runbook.md#8-verification-snapshot-and-remaining-work)
-for current results and still-open production gates.
+The host implements hourly alarms, daily/monthly selection, verified immutable
+publication and resumable frozen restore. It never deletes R2 objects or configures
+locks/lifecycle. Personal backups remain in-account; account-wide loss is a shared
+risk. Full capture is O(all rows/receipts); byte limits do not certify CPU/memory.
+Control records remain indefinitely, with a monitoring-only 50 MB SQLite warning.

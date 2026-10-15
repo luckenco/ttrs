@@ -18,7 +18,7 @@ try {
       { type: "CompiledWasm", path: path.join(dir, "production.wasm"), contents: await readFile(path.resolve(import.meta.dirname, "../../crates/tt-wasm/target/wasm32-unknown-unknown/release/tt_wasm.wasm")) } ],
     bindings: { CONTROL: capability },
     durableObjects: { PROBE: { className: "ProbeDO", useSQLite: true } },
-  }], resourcePersistencePath: dir, inspectorPort: 0 }));
+  }], cf: false, resourcePersistencePath: dir, inspectorPort: 0 }));
   const result = await mf.dispatchFetch("http://local.invalid", { headers: { authorization: capability } });
   const body = await result.json();
   assert.equal(result.status, 200, JSON.stringify(body));
