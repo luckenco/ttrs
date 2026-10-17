@@ -1,5 +1,5 @@
 {
   "extends": "../tsconfig.json",
-  "compilerOptions": { "types": ["../.cloudflare/types/index.d.ts"] },
+  "compilerOptions": { "types": ["../.cloudflare/types/index.d.ts", "node"] },
   "include": ["../src/**/*.ts", "./*.ts", "../.cloudflare/types/**/*.d.ts"]
 }

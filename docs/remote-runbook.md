@@ -5,21 +5,20 @@ restore check yourself, and monitor ordinary use. Backups stay in the same Cloud
 account; no outside-account copy or second operator is required. Account-wide loss
 or loss of access remains a shared risk.
 
-No real tracking data has been imported or approved here. The synthetic paid test
-used **98 application requests**; its Worker, two DO namespaces/alarms and 62 R2
-objects/bucket were removed on 2026-10-17. Protected local evidence was preserved.
-Paid subscriptions were not changed. Further benchmarking/profiling is paused.
+Keep deployment addresses, account selection and credentials outside this public
+repository. Switching backends does not migrate local data. Benchmarking is paused.
 
 ## Setup
 
-1. Review `worker/cloudflare.config.ts`: resource names, exact HTTPS ORIGIN and
-   bindings. The checked-in origin is deliberately non-routable.
+1. Review `worker/cloudflare.config.ts`: resource names and bindings. Set
+   `CLOUDFLARE_ACCOUNT_ID` and `TTRS_ORIGIN` in your build/deploy environment.
+   The fallback origin is non-routable and for local tests only.
 2. Supply independent high-entropy GRANTS app tokens and private CONTROL through
    protected secret files. Keep management credentials separate; never pass secret
    values as command arguments or commit them. Grants cover every workspace name.
 3. Use the pinned cf CLI for authentication/types/build/deploy. Verify the account
    and preview the exact scope before management changes. Provisioning, deployment,
-   deletion and real-data use need explicit approval.
+   deletion and importing existing data need explicit approval.
 4. Run the [Worker checks](../worker/README.md#local-checks) and root README checks.
    Configure the client, then explicitly bootstrap with an admin credential:
 

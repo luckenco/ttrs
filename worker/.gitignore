@@ -2,4 +2,6 @@
 /.cloudflare/
 /dist/
 /results/
-/.dev.vars
+/.dev.vars*
+/.env*
+!/.env.example

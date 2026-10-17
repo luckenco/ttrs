@@ -28,8 +28,10 @@ Generated types, builds, local state and results stay ignored.
 
 ## Configuration
 
-Review names/bindings/ORIGIN in `cloudflare.config.ts` before an approved deployment.
-The placeholder origin is non-routable. Use one exact HTTPS origin.
+Review names/bindings in `cloudflare.config.ts`. Before building for deployment,
+set `CLOUDFLARE_ACCOUNT_ID` and `TTRS_ORIGIN` outside version control. The latter
+must be the exact HTTPS deployment origin; its `https://tt.invalid` fallback is
+for local tests only. Rebuild after changing it.
 
 - GRANTS: secret `{"grants":[{"principal":"stable-id","role":"read|write|admin","token":"..."}]}`.
   Generate high-entropy tokens (at least 128 random bits); preserve principal on rotation.

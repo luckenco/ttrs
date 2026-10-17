@@ -103,26 +103,55 @@ Connected mode uses explicit `tt workspace create`, remote `backup create` witho
 remote activation requires the exact whole frozen report. See the
 [operator runbook](docs/remote-runbook.md) before using connected maintenance.
 
-Daily/safety copies remain on-device and are not automatically deleted: monitor
+Native daily/safety copies remain on-device and are not automatically deleted: monitor
 disk usage and arrange independent copies. Never copy only a live WAL database's
 main file or manually replace a live workspace.
 
 ## Connected mode
 
-CLI/TUI and read-only MCP can use one remote workspace without changing tracking
-commands. There is no offline write queue or local fallback. Switching backends
-does not move data. Select remote mode with:
+After configuring a remote workspace, just run `tt` or `tt status`.
+Tracking commands are unchanged. There is no offline write queue or local fallback;
+switching backends does not move data. Use `tt --backend local` to access local data.
+
+### CLI authentication
+
+On another machine, install `tt` and securely transfer an app token file to
+`~/.config/tt/remote-token`, then:
 
 ```sh
-tt config backend remote --url https://tt.example --workspace personal \
-    --credential-env TT_REMOTE_TOKEN
+chmod 600 ~/.config/tt/remote-token
+tt config backend remote \
+    --url https://tt.example \
+    --workspace personal \
+    --credential-file ~/.config/tt/remote-token
+tt status
 ```
 
-Use `--credential-file FILE` instead for a file reference; settings store references,
-never secrets. Remote errors never fall back to a local database.
+Settings in `~/.config/tt/backend.json` store the URL, workspace and credential-file
+reference, not the token. The CLI reads the referenced token file and authenticates
+with an HTTPS bearer token, checked against the Worker's `GRANTS` secret.
+No `cf auth login` is needed to use `tt`; management credentials are separate. Alternatively,
+use `--credential-env NAME` to reference an environment variable.
+
+Use a write token for tracking, an admin token for backup/restore, and a read token
+for MCP. Never put token values in command arguments, Git or chat.
+
+### Storage and Cloudflare dashboard
+
+Select your deployment's Cloudflare account. Dashboard access uses your Cloudflare login:
+
+- **[Durable Objects](https://dash.cloudflare.com/?to=/:account/workers/durable-objects)
+  → `ttrs-connected_WorkspaceDO` → Data Studio:** live SQLite `tt_*` tables.
+  Enter the current incarnation UUID as the object **name**, not `personal`; find it
+  in a current backup's `manifest.incarnation`. It changes after restore.
+  **Inspect only:** direct SQL edits bypass validation, revisions and receipts.
+- **R2 → `ttrs-backups`:** private JSON snapshots and manifests under
+  `hourly/`, `daily/` and `monthly/`. Backups remain in the same account.
+- **Workers & Pages → `ttrs-connected` → Observability:** logs and traces.
+
+Connected use is personal-scale; do a practical restore check before trusting real data.
 See [invariants and assumptions](docs/worker-contract.md), the
 [operation runbook](docs/remote-runbook.md) and [Worker setup](worker/README.md).
-Connected use is personal-scale; do a practical restore check before trusting real data.
 
 ## Development
 
