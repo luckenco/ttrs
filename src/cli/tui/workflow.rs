@@ -30,6 +30,7 @@ enum Mutation {
     },
     Start(command::Start),
     Log(command::LogEntry),
+    Planning(tt::workspace::Operation),
     Stop {
         timer: model::RunningTimer,
         at: Timestamp,
@@ -53,6 +54,36 @@ pub(super) struct Outcome {
 }
 
 impl Prepared {
+    pub fn entry_action(&self) -> &'static str {
+        if matches!(
+            self.mutation,
+            Mutation::Planning(tt::workspace::Operation::Plan(_))
+        ) {
+            return "Save planned time";
+        }
+        "Log completed time"
+    }
+
+    pub fn warn_planning(&mut self, tracker: &Backend) -> Result<(), Error> {
+        let (interval, previous) = match &self.mutation {
+            Mutation::Planning(tt::workspace::Operation::Plan(interval)) => (interval, None),
+            Mutation::Planning(tt::workspace::Operation::Reschedule { expected, interval }) => {
+                (interval, Some(expected))
+            }
+            _ => return Ok(()),
+        };
+        if let Some(warning) = tracker
+            .plan_warning(interval, previous)
+            .map_err(core_error)?
+        {
+            self.summary = format!(
+                "WARNING: {warning}\nAdvisory only; saving is still allowed.\n\n{}",
+                self.summary
+            );
+        }
+        Ok(())
+    }
+
     /// Executes the reviewed values. Failures leave the draft and review intact.
     pub fn apply(&self, tracker: &mut Backend, now: Timestamp) -> Result<Outcome, Error> {
         let mut outcome = Outcome {
@@ -101,6 +132,22 @@ impl Prepared {
             Mutation::Log(command) => {
                 let entry = tracker.log(command.clone()).map_err(core_error)?;
                 outcome.message = format!("Logged {} · id:{}.", entry.scope(), entry.id());
+            }
+            Mutation::Planning(operation) => {
+                let value = tracker.apply(operation.clone()).map_err(core_error)?;
+                outcome.message = match value {
+                    tt::workspace::MutationValue::Plan(plan) => format!(
+                        "Saved plan {} · id:{}. No actual work recorded.",
+                        plan.scope(),
+                        plan.id()
+                    ),
+                    tt::workspace::MutationValue::Entry(entry) => format!(
+                        "Completed {} · entry id:{}. Reservation released.",
+                        entry.scope(),
+                        entry.id()
+                    ),
+                    _ => "Plan cancelled. No actual work recorded.".into(),
+                };
             }
             Mutation::Stop { timer, at } => {
                 let entry = tracker.end_if_current(timer, *at).map_err(core_error)?;
@@ -222,7 +269,68 @@ impl Form {
                 let command =
                     command::LogEntry::new(agreement, scope, from, to).map_err(core_error)?;
                 extra = interval(from, to, zone);
-                Mutation::Log(command)
+                let planned = match self.choice(F::EntryKind) {
+                    Some(Choice::Planned) => true,
+                    Some(Choice::Completed) => false,
+                    _ => from > now,
+                };
+                if planned {
+                    extra.push_str("\nPLANNED: reserves included hours; no earnings or hard recording cap usage. Remains planned until explicitly completed or cancelled.");
+                    Mutation::Planning(tt::workspace::Operation::Plan(command))
+                } else {
+                    extra.push_str("\nCOMPLETED: recorded as actual work.");
+                    Mutation::Log(command)
+                }
+            }
+            Kind::Reschedule(plan) | Kind::CompletePlan(plan) => {
+                let plan = plan.clone();
+                let from = self.time(F::From, zone, now)?;
+                let to = self.time(F::To, zone, now)?;
+                let actual =
+                    command::LogEntry::new(plan.agreement(), self.required(F::Scope)?, from, to)
+                        .map_err(core_error)?;
+                extra = interval(from, to, zone);
+                let operation = if matches!(self.kind, Kind::Reschedule(_)) {
+                    extra.push_str("\nPLANNED: updates only this reservation.");
+                    tt::workspace::Operation::Reschedule {
+                        expected: plan.clone(),
+                        interval: actual,
+                    }
+                } else {
+                    if to > now {
+                        return Err(Error::usage(
+                            "Actual completion must end at or before now. Adjust From/To.",
+                        ));
+                    }
+                    extra.push_str("\nCOMPLETED: records actual time and releases this reservation atomically.");
+                    tt::workspace::Operation::CompletePlan {
+                        expected: plan.clone(),
+                        actual,
+                    }
+                };
+                Mutation::Planning(operation)
+            }
+            Kind::CancelPlan(plan) => {
+                self.context = format!(
+                    "{} · plan id:{}\nCancel this reservation without recording work.",
+                    plan.scope(),
+                    plan.id()
+                );
+                Mutation::Planning(tt::workspace::Operation::CancelPlan {
+                    expected: plan.clone(),
+                })
+            }
+            Kind::ConvertToPlan(entry) => {
+                if entry.started_at() <= now {
+                    return Err(Error::usage(
+                        "Only wholly future logs can be converted to plans.",
+                    ));
+                }
+                self.context = super::recovery::entry_detail(entry, zone);
+                extra = "CONVERT TO PLAN: preserves agreement, scope and dates; removes actual-work classification and releases hard recording capacity. Nothing becomes worked automatically.".into();
+                Mutation::Planning(tt::workspace::Operation::ConvertToPlan {
+                    expected: entry.clone(),
+                })
             }
             Kind::Stop(timer) => {
                 let timer = timer.clone();

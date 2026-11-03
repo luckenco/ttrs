@@ -6,7 +6,7 @@ import https from "node:https";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { operations, queries, normalize, canonical } from "./fixtures.mjs";
-import { receipts, largeTables, manyRows, nearLimit } from "./budgets.mjs";
+import { receipts, largeTables, manyRows, nearLimit, rehash } from "./budgets.mjs";
 import { Miniflare, Log, LogLevel, convertV4MiniflareOptions } from "miniflare";
 import { readBuildOutput } from "@cloudflare/build-output-utils";
 const root = path.resolve(import.meta.dirname, "..");
@@ -137,7 +137,7 @@ try {
   assert.deepEqual(rejectedSwitch, { Rejected: { code: "MonthlyMaximumReached" } });
   assert.deepEqual((await call("golden", "read", { Lookup: { kind: "Timer", id: timer.id } })).value.Item.Timer, timer);
   const pageAfter = await call("golden", "read", queries[1]);
-  assert.equal(pageAfter.value.Entries.entries.length, 2);
+  assert.deepEqual(pageAfter.value.Entries.entries, projections[1].value.Entries.entries);
   assert.deepEqual(await call("golden", "commands", switchRequest), rejectedSwitch);
   evidence.gates.push("partial switch rejection rolls back entry insertion/timer deletion; Rust-owned cached rejection survives exception rollback; exact rejection replay");
   const backup = await call("alpha", "admin/backup", {}, tokens.admin);
@@ -188,7 +188,7 @@ try {
   const goldenBackup = await call("golden", "admin/backup", {}, tokens.admin);
   bucket = await mf.getR2Bucket("BACKUPS");
   const high = JSON.parse(await (await bucket.get(goldenBackup.payload)).text());
-  high.data.sequences = ["9007199254740993", "9007199254740993"];
+  high.data.sequences = high.data.sequences.map(() => "9007199254740993");
   const dataBytes = JSON.stringify({ tables: high.data.tables, sequences: high.data.sequences, revision: high.data.revision });
   high.manifest.data_bytes = String(Buffer.byteLength(dataBytes));
   high.manifest.data_digest = createHash("sha256").update(dataBytes).digest("hex");
@@ -202,7 +202,30 @@ try {
   assert.equal(wideLog.Committed.value.Entry.id, "9007199254740994");
   const wideTimer = await call("wide", "commands", envelope(wideSession, canonical({ Start: { agreement: "1", scope: "wide id", at: { At: "2024-11-04T10:00:00Z" } } })));
   assert.equal(wideTimer.Committed.value.Timer.id, "9007199254740994");
+  const widePlan = await call("wide", "commands", envelope(wideSession, canonical({ Plan: { agreement: "2", scope: "wide plan", started_at: "2099-05-01T10:00:00Z", ended_at: "2099-05-01T11:00:00Z" } })));
+  assert.equal(widePlan.Committed.value.Plan.id, "9007199254740994");
   evidence.gates.push("bounded raw portable import; preserved deleted high-water marks above 2^53; exact timer and entry IDs after restore");
+  // An older portable has no plans table/sequence. Rust verifies expansion,
+  // while the source digest remains distinct from the current-schema cut.
+  const legacy = structuredClone(high);
+  legacy.manifest.schema = 2;
+  legacy.data.tables = legacy.data.tables.slice(0, 5);
+  legacy.data.sequences = legacy.data.sequences.slice(0, 2);
+  legacy.manifest.counts = legacy.manifest.counts.slice(0, 5);
+  legacy.receipts = [];
+  rehash(legacy);
+  await call("legacy", "admin/bootstrap", {}, tokens.admin);
+  let legacyJob = await call("legacy", "admin/import", legacy, tokens.admin);
+  while (legacyJob.phase !== "confirm") legacyJob = await call("legacy", "admin/restore/advance", { job: legacyJob.id }, tokens.admin);
+  await call("legacy", "admin/restore/accept", { job: legacyJob.id, revision: legacyJob.frozenRevision, digest: legacyJob.reportDigest, confirmed: true }, tokens.admin);
+  for (let i = 0; i < 3; i++) await call("legacy", "admin/restore/advance", { job: legacyJob.id }, tokens.admin);
+  const legacyBackup = await call("legacy", "admin/backup", {}, tokens.admin);
+  const legacyRestored = JSON.parse(await (await bucket.get(legacyBackup.payload)).text());
+  assert.equal(legacyRestored.manifest.schema, 3);
+  assert.deepEqual(legacyRestored.data.tables.slice(0, 5), legacy.data.tables);
+  assert.deepEqual(legacyRestored.data.tables[5], []);
+  assert.deepEqual(legacyRestored.data.sequences, [...legacy.data.sequences, "0"]);
+  evidence.gates.push("schema-2 portable restores through source-digest proof into schema 3 with original rows/high-water marks and empty plans");
   let abandoned = await call("beta", "admin/restore/stage", { manifest: backup.key }, tokens.admin);
   for (const phase of ["staged", "freezing", "safety"]) {
     abandoned = await call("beta", "admin/restore/advance", { job: abandoned.id }, tokens.admin);

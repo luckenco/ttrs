@@ -3,11 +3,11 @@ source: src/cli/tui/workspace_tests.rs
 expression: terminal.backend()
 ---
 " 1 Dash  [2 Agreements]  : menu "
-"Log completed time              "
+"Log or plan time                "
 "Ticket or description           "
-"Agreement · 2/5                 "
-"Support · id:1 · From 2026-01-01"
-"› Scope · 3/5                   "
+"Entry type · 3/6                "
+"Auto (future → Planned)         "
+"› Scope · 4/6                   "
 "                                "
 "                                "
 "[ Review ]                      "

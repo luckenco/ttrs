@@ -278,7 +278,7 @@ fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: 
         return;
     }
     let visible = usize::from(area.height.saturating_sub(1) / 2);
-    let mut title = "Retainers · monthly estimate".to_owned();
+    let mut title = "Retainers · Worked / Planned / Available".to_owned();
     if visible < totals.len() {
         title = format!("Retainers · {visible}/{} · : totals", totals.len());
     }
@@ -303,10 +303,10 @@ fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: 
             .bold(),
         );
         let mut detail = format!(
-            "{} · {} / {} incl",
-            total.month.strftime("%b %Y"),
+            "W {} · P {} · A {}",
             hours(total.worked_us),
-            hours(total.included_us),
+            hours(total.planned_us),
+            hours(total.available_us()),
         );
         if area.width >= 60 {
             detail.push_str(&format!(
@@ -342,8 +342,13 @@ fn limit_amounts(values: &mut Vec<String>, rows: usize) {
 }
 
 fn hours(micros: i128) -> String {
-    let minutes = micros / 60_000_000;
-    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+    let minutes = micros.abs() / 60_000_000;
+    format!(
+        "{}{:02}:{:02}",
+        if micros < 0 { "-" } else { "" },
+        minutes / 60,
+        minutes % 60
+    )
 }
 
 pub(super) fn money(currency: &str, micros: i128) -> String {

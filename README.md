@@ -26,7 +26,7 @@ In an empty workspace, press **n** to create a client, then **: → New project 
 | `1` / `2` | Dashboard / Agreements |
 | `s` | Start or switch a timer |
 | `x` / `X` | On Dashboard: stop now / choose a stop time |
-| `l` | Log completed time against the selected agreement |
+| `l` | Log completed time or plan work against the selected agreement |
 | `/` | Search the current list |
 | `:` | Find actions and administrative screens |
 | `?` / `F1` | Workspace help / form help |
@@ -37,6 +37,12 @@ Forms use `Tab` to move between fields, `Enter` to choose or review, and `Esc` t
 **Need to undo a mistake?** On Dashboard, select a timer and use **: → Cancel selected timer**; confirmation removes it without recording completed time. In Agreements, select an agreement and use **: → Browse completed entries**. Search the list, press `Tab` for full details, or `Enter` to review deletion and `Enter` again to confirm. `Esc` cancels without changing work. Historical and archived agreements are available with `a`. Deletion is permanent and updates recorded usage and hourly/overage estimates; it does not remove a retainer’s fixed fee.
 
 **Forgot to track something?** Open Agreements (`2`), select the agreement, and press `l`. Enter a scope (ticket or description) and From/To times, then review and save. Historical agreements are available with `a`. Stop that client's running timer before logging.
+
+**Planning ahead?** Still press **l**. Future starts default to **Planned**; past/current starts default to **Completed**. The Entry type field overrides that default, and review names the action explicitly. Plans reserve included hours without becoming worked time or earnings, even after their dates pass. Overbooking warnings are advisory, not hard recording caps.
+
+Use **: → Browse planned entries** for the selected agreement: **Enter** reviews completion (adjust actual From/To), **Alt-r** reschedules, and **Alt-d** cancels. All changes require review. Ordinary typing still searches. **: → Retainer budgets** shows Worked / Planned / Included / Available; **[ / ]** browse billing months. Negative available time means overbooked. Dashboard uses W / P / A for worked, planned and available.
+
+Existing logs are never silently reclassified. To convert a wholly future log while keeping its agreement, scope and dates, use **Alt-c** in the completed-entry browser and confirm. Entry IDs and plan IDs are separate. See [planning contracts and limits](docs/planning.md).
 
 Times like `0900` or `09:00` mean **today** in the display timezone. For past or overnight work, use explicit dates such as `2026-03-12 09:00`. Offset timestamps are also accepted. Change the display timezone in Settings; otherwise your device timezone is used.
 
@@ -60,6 +66,14 @@ Recovery commands require explicit confirmation:
 tt cancel --id id:1 --yes                  # Cancel without recording an entry
 tt entry list --agreement id:1            # Includes historical/future entries
 tt entry delete --id id:1 --yes            # Permanently delete a completed entry
+tt log -p website -s Planning --from "2026-11-10 09:00" --to "2026-11-10 10:00"
+tt log -p website -s Actual --kind completed --from "2026-03-12 09:00" --to "2026-03-12 10:00"
+tt plan list --agreement id:1
+tt plan reschedule --id id:1 --from "2026-11-11 09:00" --to "2026-11-11 10:00"
+tt plan complete --id id:1 --from "2026-03-12 09:00" --to "2026-03-12 10:00"
+tt plan cancel --id id:1 --yes
+tt entry convert-to-plan --id id:1 --yes
+tt budget --month 2026-11
 ```
 
 Timer IDs and entry IDs are separate, non-reusable identifiers. Inspect `tt status` or `tt entry list` before confirming recovery.

@@ -1182,3 +1182,185 @@ fn historical_entries_in_archived_projects_can_be_deleted() {
     );
     assert!(tracker.entries(previous.id()).unwrap().is_empty());
 }
+
+#[test]
+fn l_plans_future_work_then_browser_reschedules_and_completes_actual_time() {
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    let (mut tracker, mut app, now) = setup();
+    let old = app.snapshot.projects[0].agreement.id();
+    let terms = model::NewAgreement::new(
+        "Retainer".into(),
+        model::Retainer::new(
+            model::MonthlyFee::new(100_000_000, "EUR".into()).unwrap(),
+            1,
+            None,
+        )
+        .unwrap(),
+        model::MonthlyHours::default(),
+        "2026-01-02".parse().unwrap(),
+    )
+    .unwrap();
+    let agreement = tracker.add_service_agreement(old, terms, now).unwrap().id();
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('2'), KeyCode::Down, KeyCode::Char('l')],
+    );
+    app.paste("Scheduled work");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab]);
+    app.paste("2026-01-03 09:00");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab]);
+    app.paste("2026-01-03 11:00");
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab, KeyCode::Enter]);
+    let f = form(&mut app);
+    assert!(
+        f.review.is_some(),
+        "error {:?}; fields {:?}",
+        f.error,
+        f.fields
+            .iter()
+            .map(|f| (f.label, f.text_value()))
+            .collect::<Vec<_>>()
+    );
+    let summary = &form(&mut app).review.as_ref().unwrap().summary;
+    assert!(summary.contains("PLANNED") && summary.contains("OVERBOOKED"));
+    for (width, height) in [(32, 10), (100, 24)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
+            .unwrap();
+        assert!(terminal.backend().to_string().contains("Save planned time"));
+        insta::assert_snapshot!(
+            format!("planned_review_{width}x{height}"),
+            terminal.backend()
+        );
+    }
+    assert!(tracker.plans(agreement).unwrap().is_empty());
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert_eq!(tracker.plans(agreement).unwrap().len(), 1);
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+    action(&mut app, &mut tracker, now, "Browse planned entries");
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(form(&mut app).review.is_some());
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    assert_eq!(tracker.plans(agreement).unwrap().len(), 1);
+    // Ordinary letters remain searchable text, never destructive shortcuts.
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('r'), KeyCode::Char('d')],
+    );
+    assert!(matches!(&app.workspace.overlay, Some(Overlay::Plans(p)) if p.input.as_str() == "rd"));
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    // Prefilled offset times must parse unchanged.
+    let f = form(&mut app);
+    f.focus = f.visible().len();
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("PLANNED")
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    action(&mut app, &mut tracker, now, "Browse planned entries");
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    let f = form(&mut app);
+    f.set(F::From, "2026-01-02 08:00");
+    f.set(F::To, "2026-01-02 09:00");
+    f.focus = f.visible().len();
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("COMPLETED")
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.plans(agreement).unwrap().is_empty());
+    assert_eq!(tracker.entries(agreement).unwrap().len(), 1);
+    assert_eq!(app.snapshot.today.worked_us, 3_600_000_000);
+    action(&mut app, &mut tracker, now, "Retainer budgets");
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Budget { month, text, .. }) if month.to_string() == "2026-01-01" && text.contains("Planned: 00:00:00"))
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Char(']')]);
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Budget { month, .. }) if month.to_string() == "2026-02-01")
+    );
+}
+
+#[test]
+fn future_log_conversion_requires_review_and_keeps_search_and_dates_intact() {
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let original = tracker
+        .log(
+            command::LogEntry::new(
+                agreement,
+                "convert".into(),
+                "2026-01-03T09:00:00Z".parse().unwrap(),
+                "2026-01-03T10:00:00Z".parse().unwrap(),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
+    action(&mut app, &mut tracker, now, "Browse completed entries");
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('c')]);
+    assert!(matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.input.as_str() == "c"));
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(
+        form(&mut app)
+            .review
+            .as_ref()
+            .unwrap()
+            .summary
+            .contains("CONVERT TO PLAN")
+    );
+    assert_eq!(
+        tracker.entries(agreement).unwrap().as_slice(),
+        std::slice::from_ref(&original)
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+    let plans = tracker.plans(agreement).unwrap();
+    assert_eq!(
+        (plans[0].scope(), plans[0].started_at(), plans[0].ended_at()),
+        (original.scope(), original.started_at(), original.ended_at())
+    );
+}

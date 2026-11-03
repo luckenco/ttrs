@@ -284,13 +284,13 @@ fn verify(connection: &Connection) -> Result<()> {
         }
         return crate::portable::validate_legacy(&Adapter(connection));
     }
-    if matches(connection, schema::V1)? {
+    if let Some(version) = old_version(connection)? {
         let versions: (u32, u32) = connection.query_row(
             "SELECT schema_version, rules_version FROM tt_metadata WHERE id = 1",
             [],
             |r| Ok((r.get(0)?, r.get(1)?)),
         )?;
-        if versions != (1, schema::RULES) {
+        if versions != (version, schema::RULES) {
             return Err(Error::DatabaseSchemaOutdated);
         }
     } else {
@@ -322,7 +322,15 @@ fn bookkeeping(connection: &Connection) -> Result<()> {
             "invalid metadata singleton or legacy sentinel",
         ));
     }
-    for table in ["tt_running_timers", "tt_time_entries"] {
+    let version: u32 = connection.query_row(
+        "SELECT schema_version FROM tt_metadata WHERE id = 1",
+        [],
+        |r| r.get(0),
+    )?;
+    for table in ["tt_running_timers", "tt_time_entries", "tt_plans"]
+        .into_iter()
+        .take(if version >= 3 { 3 } else { 2 })
+    {
         let max: i64 = connection.query_row(
             &format!("SELECT coalesce(max(id), 0) FROM {table}"),
             [],
@@ -449,6 +457,16 @@ fn matches(connection: &Connection, schema: &str) -> Result<bool> {
     crate::schema::matches(&Adapter(connection), schema)
 }
 
+fn old_version(connection: &Connection) -> Result<Option<u32>> {
+    if matches(connection, schema::V1)? {
+        return Ok(Some(1));
+    }
+    if matches(connection, schema::V2)? {
+        return Ok(Some(2));
+    }
+    Ok(None)
+}
+
 fn current(connection: &Connection) -> Result<()> {
     let versions: Option<(u32, u32)> = connection
         .query_row(
@@ -472,7 +490,7 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         [],
         |row| row.get(0),
     )?;
-    if upgraded && !matches(&snapshot, schema::V1)? {
+    if upgraded && old_version(&snapshot)?.is_none() {
         current(&snapshot)?;
         bookkeeping(&snapshot)?;
         snapshot.commit()?;
@@ -486,19 +504,19 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         |row| row.get(0),
     )?;
     if has_metadata {
-        if matches(&transaction, schema::V1)? {
+        if let Some(version) = old_version(&transaction)? {
             let versions: (u32, u32) = transaction.query_row(
                 "SELECT schema_version, rules_version FROM tt_metadata WHERE id = 1",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )?;
-            if versions != (1, schema::RULES) {
+            if versions != (version, schema::RULES) {
                 return Err(Error::DatabaseSchemaOutdated);
             }
             let path = path.ok_or_else(|| sql::invalid("migration requires on-disk backup"))?;
             let source = Connection::open(path)?;
             configure(&source)?;
-            let safety = safety_path(path, "pre-v2-migration");
+            let safety = safety_path(path, "pre-v3-migration");
             backup(&source, &safety)?;
             let saved =
                 Connection::open_with_flags(&safety, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -512,12 +530,14 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
                     "migration backup does not match source",
                 ));
             }
-            transaction.execute_batch(schema::MIGRATE_V2)?;
-            if crate::portable::capture(&Adapter(&transaction), now)?
-                .manifest()
-                .data_digest
-                != before.manifest().data_digest
-            {
+            if versions.0 == 1 {
+                transaction.execute_batch(schema::MIGRATE_V2)?;
+            }
+            transaction.execute_batch(schema::MIGRATE_V3)?;
+            if !crate::portable::same_data(
+                &crate::portable::capture(&Adapter(&transaction), now)?,
+                &before,
+            ) {
                 return Err(Error::InvalidBackup(
                     "migration changed domain data or revision",
                 ));
@@ -547,6 +567,7 @@ fn initialize(connection: &mut Connection, path: Option<&Path>) -> Result<()> {
         backup(&source, &safety_path(path, "pre-migration"))?;
         transaction.execute_batch(schema::MIGRATE)?;
         transaction.execute_batch(schema::MIGRATE_V2)?;
+        transaction.execute_batch(schema::MIGRATE_V3)?;
         identity(&transaction, None)?;
     }
     verify(&transaction)?;

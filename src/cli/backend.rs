@@ -265,7 +265,7 @@ impl Backend {
         Ok(view)
     }
 
-    fn apply(&mut self, operation: w::Operation) -> Result<w::MutationValue> {
+    pub(super) fn apply(&mut self, operation: w::Operation) -> Result<w::MutationValue> {
         let now = self.now()?;
         self.uncertain = false;
         let result = self.client.get_mut().apply(&self.context, operation, now);
@@ -618,6 +618,80 @@ impl Backend {
         match self.apply(w::Operation::Stop { expected, at })? {
             w::MutationValue::Entry(e) => Ok(e),
             _ => unreachable!("Stop result"),
+        }
+    }
+    pub fn plans(&self, agreement: model::ServiceAgreementId) -> Result<Vec<model::Plan>> {
+        match self.read(w::Query::Plans { agreement })?.value {
+            w::ProjectionValue::Plans(plans) => Ok(plans),
+            _ => Err(client::Error::Core(tt::Error::InvalidRequest)),
+        }
+    }
+    pub fn plan(&self, id: model::PlanId) -> Result<model::Plan> {
+        match self.read(w::Query::Lookup(w::Reference::Plan(id)))?.value {
+            w::ProjectionValue::Item(w::Item::Plan(plan)) => Ok(plan),
+            _ => Err(client::Error::Core(tt::Error::InvalidRequest)),
+        }
+    }
+    /// Advisory capacity after adding/replacing this reservation; never enforces a cap.
+    pub fn plan_warning(
+        &self,
+        interval: &command::LogEntry,
+        previous: Option<&model::Plan>,
+    ) -> Result<Option<String>> {
+        let terms = self.service_agreement(interval.agreement())?;
+        if !matches!(terms.pricing(), model::Pricing::Retainer(_)) {
+            return Ok(None);
+        }
+        let project = self.project(terms.project())?;
+        let zone = project.billing_timezone();
+        let (start, end) = interval.interval();
+        let mut month = start.to_zoned(zone.clone()).date().first_of_month();
+        let mut warnings = Vec::new();
+        loop {
+            let next = month
+                .checked_add(jiff::Span::new().months(1))
+                .map_err(|e| client::Error::Unavailable(e.to_string()))?;
+            let from = month
+                .to_zoned(zone.clone())
+                .map_err(|e| client::Error::Unavailable(e.to_string()))?
+                .timestamp();
+            let to = next
+                .to_zoned(zone.clone())
+                .map_err(|e| client::Error::Unavailable(e.to_string()))?
+                .timestamp();
+            let overlap = |start: Timestamp, end: Timestamp| {
+                i128::from((end.min(to).as_microsecond() - start.max(from).as_microsecond()).max(0))
+            };
+            if let Some(total) = self
+                .budget(month)?
+                .iter()
+                .find(|r| r.agreement.id() == terms.id())
+            {
+                let released = previous.map_or(0, |p| overlap(p.started_at(), p.ended_at()));
+                let available = total.available_us() + released - overlap(start, end);
+                if available < 0 {
+                    warnings.push(format!(
+                        "{}: OVERBOOKED by {} after this plan.",
+                        month.strftime("%Y-%m"),
+                        app::duration_us(-available)
+                    ));
+                }
+            }
+            if to >= end {
+                break;
+            }
+            month = next;
+        }
+        if warnings.is_empty() {
+            return Ok(None);
+        }
+        Ok(Some(warnings.join("\n")))
+    }
+
+    pub fn budget(&self, month: Date) -> Result<Vec<model::RetainerMonth>> {
+        match self.read(w::Query::Budget { month })?.value {
+            w::ProjectionValue::Budget(totals) => Ok(totals),
+            _ => Err(client::Error::Core(tt::Error::InvalidRequest)),
         }
     }
     pub fn log(&mut self, entry: command::LogEntry) -> Result<model::TimeEntry> {

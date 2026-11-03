@@ -132,11 +132,12 @@ try {
   assert.equal(deletedId, "9007199254740996");
   await cli(["entry", "delete", "--id", `id:${deletedId}`, "--yes"], native);
   await cli(["start", "--project", "id:1", "--scope", scope, "--at", "2026-04-01T10:00:00Z"], native);
+  await cli(["log", "--agreement", "id:1", "--scope", "Reserved future", "--from", "2099-11-10T09:00:00Z", "--to", "2099-11-10T10:00:00Z"], native);
   const sourceFile = path.join(temp, "native-portable.json");
   await cli(["backup", "export", "--output", sourceFile], native);
   await cli(["backup", "verify", sourceFile], native);
   const source = JSON.parse(await readFile(sourceFile, "utf8"));
-  // Portable has two AUTOINCREMENT sequences: timers [0], time entries [1], not table index [4].
+  // Portable sequences: timers [0], entries [1], plans [2], not table index [4].
   assert.equal(source.data.sequences[1], deletedId);
   assert.ok(BigInt(source.data.sequences[1]) > 2n ** 53n);
   assert.equal(source.data.tables[4].length, 1);
@@ -160,7 +161,7 @@ try {
   assert.deepEqual(report.old, stage.old);
   assert.deepEqual(report.target, stage.target);
   assert.equal(report.frozenRevision, "0");
-  assert.equal(report.frozenDigest, sha(JSON.stringify({ tables: [[], [], [], [], []], sequences: ["0", "0"], revision: "0" })));
+  assert.equal(report.frozenDigest, sha(JSON.stringify({ tables: [[], [], [], [], [], []], sequences: ["0", "0", "0"], revision: "0" })));
   assert.equal(report.restoredDigest, source.manifest.data_digest);
   assert.deepEqual(report.restoredSequences, source.data.sequences);
   assert.ok(report.changes[4].some(row => row.restored?.[2] === scope));
@@ -178,6 +179,8 @@ try {
   await cli(["backup", "export", "--output", importedFile], remote);
   const imported = JSON.parse(await readFile(importedFile, "utf8"));
   assert.deepEqual(imported.data, source.data);
+  assert.equal(imported.data.tables[5].length, 1);
+  assert.match(await cli(["plan", "list", "--agreement", "id:1"], remote), /Reserved future.*2099-11-10/);
   assert.equal(imported.manifest.data_digest, source.manifest.data_digest);
   await cli(["client", "add", "--name", "BRows"], { ...remote, TT_TEST_TOKEN: tokens.write });
   const baseFile = path.join(temp, "remote-base.json");

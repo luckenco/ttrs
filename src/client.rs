@@ -1050,6 +1050,8 @@ fn publish_file(output: &Path, bytes: &[u8]) -> Result<()> {
 fn encode_query(query: &workspace::Query) -> Result<Vec<u8>> {
     use workspace::{Query, Reference};
     let value = match query {
+        Query::Plans { agreement } => json!({"Plans":{"agreement":agreement}}),
+        Query::Budget { month } => json!({"Budget":{"month":month.to_string()}}),
         Query::Overview { zone } => json!({"Overview":{"zone":protocol::display_zone(zone)?}}),
         Query::Lookup(reference) => {
             let (kind, id) = match reference {
@@ -1058,6 +1060,7 @@ fn encode_query(query: &workspace::Query) -> Result<Vec<u8>> {
                 Reference::Agreement(id) => ("Agreement", id.to_string()),
                 Reference::Timer(id) => ("Timer", id.to_string()),
                 Reference::Entry(id) => ("Entry", id.to_string()),
+                Reference::Plan(id) => ("Plan", id.to_string()),
             };
             json!({"Lookup":{"kind":kind,"id":id}})
         }

@@ -3,6 +3,8 @@ use std::{error, fmt, str::FromStr};
 use jiff::{Timestamp, civil::Date, tz::TimeZone};
 
 mod dashboard;
+mod planning;
+pub use planning::Plan;
 mod pricing;
 pub use dashboard::{
     DailyTotal, Dashboard, ProjectSummary, RetainerMonth, RunningStatus, TimerStatus,
@@ -69,6 +71,10 @@ macro_rules! id_type {
     };
 }
 
+id_type!(
+    PlanId,
+    "A non-reusable identifier for a planned interval, separate from entry IDs."
+);
 id_type!(ClientId, "The stable identifier of a client.");
 id_type!(ProjectId, "The stable identifier of a project.");
 id_type!(

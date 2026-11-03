@@ -7,6 +7,17 @@ use crate::{Result, model};
 
 use super::calendar::{self, HOUR_US};
 
+pub(super) enum Period {
+    Current {
+        today: Timestamp,
+        now: Timestamp,
+    },
+    Month {
+        month: jiff::civil::Date,
+        now: Timestamp,
+    },
+}
+
 impl<S: ReadSql> super::Store<S> {
     // Daily earnings remain weighted (microseconds × rate micros/hour) so the
     // dashboard can combine fractions across hourly work and all retainers.
@@ -16,9 +27,12 @@ impl<S: ReadSql> super::Store<S> {
         agreements: &[model::ServiceAgreement],
         clients: &HashMap<model::ClientId, model::Client>,
         timers: &[model::TimerStatus],
-        today: Timestamp,
-        now: Timestamp,
+        period: Period,
     ) -> Result<(Vec<model::RetainerMonth>, BTreeMap<String, i128>)> {
+        let (today, now, requested_month) = match period {
+            Period::Current { today, now } => (today, now, None),
+            Period::Month { month, now } => (now, now, Some(month)),
+        };
         let projects: HashMap<_, _> = projects.iter().map(|p| (p.id(), p)).collect();
         let mut totals = Vec::new();
         let mut earnings = BTreeMap::new();
@@ -33,8 +47,10 @@ impl<S: ReadSql> super::Store<S> {
                 .get(index + 1)
                 .filter(|next| next.project() == project.id())
                 .map(model::ServiceAgreement::effective_on);
-            let current = now.to_zoned(zone.clone()).date().first_of_month();
-            let previous = today.to_zoned(zone.clone()).date().first_of_month();
+            let current = requested_month
+                .unwrap_or_else(|| now.to_zoned(zone.clone()).date().first_of_month());
+            let previous = requested_month
+                .unwrap_or_else(|| today.to_zoned(zone.clone()).date().first_of_month());
             // A display day can straddle a project-local month boundary. Charge
             // today's overage in both months, but display only the current month.
             for month in std::iter::once(current).chain((previous != current).then_some(previous)) {
@@ -48,19 +64,26 @@ impl<S: ReadSql> super::Store<S> {
                     continue;
                 };
                 let start_at = super::day_start(start, zone)?;
-                if start_at > now {
+                if start_at > now && requested_month.is_none() {
                     continue;
                 }
                 let days = i128::from(start.duration_until(end).as_hours() / 24);
                 let month_days = i128::from(month.days_in_month());
                 let included_us = i128::from(terms.included_hours()) * HOUR_US * days / month_days;
-                let (worked_us, before_today) = self.retainer_usage(
-                    agreement.id(),
-                    start_at,
-                    super::day_start(end, zone)?.min(now),
-                    today,
-                    timers,
-                )?;
+                let end_at = super::day_start(end, zone)?;
+                let plans = self.plans(agreement.id())?;
+                let planned_us = plans
+                    .iter()
+                    .map(|p| {
+                        i128::from(
+                            (p.ended_at().min(end_at).as_microsecond()
+                                - p.started_at().max(start_at).as_microsecond())
+                            .max(0),
+                        )
+                    })
+                    .sum();
+                let (worked_us, before_today) =
+                    self.retainer_usage(agreement.id(), start_at, end_at.min(now), today, timers)?;
                 let rate = i128::from(
                     terms
                         .hourly_rate()
@@ -80,6 +103,7 @@ impl<S: ReadSql> super::Store<S> {
                         agreement: agreement.clone(),
                         month,
                         worked_us,
+                        planned_us,
                         included_us,
                         fee_micros: i128::from(terms.fee().amount_micros()) * days / month_days,
                         overage_micros: overage / HOUR_US,
@@ -88,6 +112,33 @@ impl<S: ReadSql> super::Store<S> {
             }
         }
         Ok((totals, earnings))
+    }
+
+    pub(crate) fn budget(
+        &self,
+        month: jiff::civil::Date,
+        now: Timestamp,
+    ) -> Result<Vec<model::RetainerMonth>> {
+        let projects = self.projects()?;
+        let agreements = self.agreements()?;
+        let clients = self.clients()?.into_iter().map(|c| (c.id(), c)).collect();
+        let timers = self
+            .running()?
+            .into_iter()
+            .map(|timer| {
+                let limit = self.limit(&timer, now)?;
+                Ok(model::TimerStatus { timer, limit })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(self
+            .retainer_totals(
+                &projects,
+                &agreements,
+                &clients,
+                &timers,
+                Period::Month { month, now },
+            )?
+            .0)
     }
 
     fn retainer_usage(

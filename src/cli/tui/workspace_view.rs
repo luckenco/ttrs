@@ -80,7 +80,25 @@ pub(super) fn draw(
                 picker,
                 area,
                 |entry| super::recovery::entry_label(entry, zone),
-                "Enter: review deletion · Tab: details · Esc: back",
+                "Enter: delete · Alt-c: convert future log to plan · Tab: details",
+            ),
+            Overlay::Plans(picker) => choose(
+                frame,
+                picker,
+                area,
+                |plan| super::recovery::plan_label(plan, zone),
+                "Enter: complete · Alt-r: reschedule · Alt-d: cancel · Esc: back",
+            ),
+            Overlay::Budget {
+                month,
+                text,
+                scroll,
+            } => detail(
+                frame,
+                &format!("Budget {month} · [ previous / ] next"),
+                text,
+                scroll,
+                area,
             ),
             Overlay::Filter(picker) => choose(
                 frame,
@@ -470,7 +488,10 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
             if form.review.is_some()
                 && matches!(
                     form.kind,
-                    super::form::Kind::Cancel(_) | super::form::Kind::DeleteEntry(_)
+                    super::form::Kind::Cancel(_)
+                        | super::form::Kind::DeleteEntry(_)
+                        | super::form::Kind::CancelPlan(_)
+                        | super::form::Kind::ConvertToPlan(_)
                 ) =>
         {
             Some("↑↓ scroll  Esc cancel  F1 help")
@@ -482,7 +503,9 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         Some(Overlay::Form(_)) => {
             Some("Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details")
         }
-        Some(Overlay::Entries(_)) => Some("Search  Enter review  Tab info"),
+        Some(Overlay::Entries(_)) => Some("Search  Enter delete  Alt-c plan"),
+        Some(Overlay::Plans(_)) => Some("Enter complete  Alt-r move  Alt-d cancel"),
+        Some(Overlay::Budget { .. }) => Some("[ / ] month  ↑↓ scroll  Esc back"),
         Some(Overlay::Detail { .. }) => Some("↑↓ scroll  : actions  Esc back"),
         Some(_) => Some("↑↓ choose  Enter open  Esc back"),
         None if app.workspace.section == Section::Agreements

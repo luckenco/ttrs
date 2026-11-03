@@ -66,7 +66,7 @@ impl host::WriteSql for Sql {
 }
 impl host::SchemaSql for Sql {
     fn batch(&mut self, q: &str) -> Result<()> {
-        assert!(q == host::SCHEMA || q == host::MIGRATE_V2);
+        assert!(q == host::SCHEMA || q == host::MIGRATE_V2 || q == host::MIGRATE_V3);
         // SAFETY: trusted static schema borrowed only during import.
         unsafe { batch(q.as_ptr() as u32, q.len() as u32) };
         Ok(())
@@ -144,6 +144,16 @@ fn run(c: Command) -> Result<serde_json::Value> {
         }
         return value(snapshot.manifest());
     }
+    if c.cmd == "migration_snapshot" {
+        return match host::migration_snapshot(&sql, now)? {
+            Some(snapshot) => serde_json::from_slice(&snapshot.to_bytes()?).map_err(storage),
+            None => value(()),
+        };
+    }
+    if c.cmd == "migrate" {
+        host::migrate_v1(&mut sql, &portable::verify(c.payload.as_bytes())?)?;
+        return value(());
+    }
     host::verify_schema(&sql)?;
     match c.cmd.as_str() {
         "session" => value(host::session(&sql, &c.principal, now)?),
@@ -204,8 +214,13 @@ fn run(c: Command) -> Result<serde_json::Value> {
             serde_json::from_slice(&host::capture(&sql, now)?.to_bytes()?).map_err(storage)
         }
         "import" => {
-            host::import(&mut sql, &portable::verify(c.payload.as_bytes())?)?;
-            value(host::capture(&sql, now)?.manifest())
+            let snapshot = portable::verify(c.payload.as_bytes())?;
+            host::import(&mut sql, &snapshot)?;
+            let mut manifest = value(host::capture(&sql, now)?.manifest())?;
+            // Rust verified old-schema expansion against every source row and
+            // sequence. Preserve its digest proof separately from the new cut.
+            manifest["source_data_digest"] = value(&snapshot.manifest().data_digest)?;
+            Ok(manifest)
         }
         _ => Err(Error::InvalidRequest),
     }

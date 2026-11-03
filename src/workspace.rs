@@ -20,6 +20,14 @@ pub struct Stamp {
 }
 #[derive(Clone, Debug)]
 pub enum Query {
+    /// All reservations for an agreement, including overdue ones.
+    Plans {
+        agreement: model::ServiceAgreementId,
+    },
+    /// Retainer budgets for a project-local month (first day required).
+    Budget {
+        month: jiff::civil::Date,
+    },
     Lookup(Reference),
     Overview {
         zone: jiff::tz::TimeZone,
@@ -41,6 +49,7 @@ pub enum Reference {
     Agreement(model::ServiceAgreementId),
     Timer(model::TimerId),
     Entry(model::EntryId),
+    Plan(model::PlanId),
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub enum Item {
@@ -49,6 +58,7 @@ pub enum Item {
     Agreement(model::ServiceAgreement),
     Timer(model::RunningTimer),
     Entry(model::TimeEntry),
+    Plan(model::Plan),
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub struct Overview {
@@ -60,6 +70,8 @@ pub struct Overview {
 }
 #[derive(Clone, Debug, serde::Serialize)]
 pub enum ProjectionValue {
+    Plans(Vec<model::Plan>),
+    Budget(Vec<model::RetainerMonth>),
     Item(Item),
     Overview(Box<Overview>),
     Entries {
@@ -89,6 +101,7 @@ pub enum MutationValue {
     Archived(model::Project),
     Timer(model::RunningTimer),
     Entry(model::TimeEntry),
+    Plan(model::Plan),
     Switched(model::TimeEntry, model::RunningTimer),
     Removed,
 }

@@ -39,6 +39,18 @@ try {
     durableObjects: { WORKSPACE: { className: "WorkspaceDO", useSQLite: true }, AUTHORITY: { className: "AuthorityDO", useSQLite: true }, FAULT: { className: "FaultDO", useSQLite: true } },
     r2Buckets: { BACKUPS: "test-fault-backups" } };
   await start();
+  await call("bootstrap", { name: "migration" });
+  await call("fixture", { name: "migration", fixture: "v2" });
+  await mf.dispose(); await start();
+  await call("configure", { rule: { method: "put", prefix: "safety/", timing: "before", mode: "throw" } });
+  await call("session", { name: "migration" }, 503);
+  assert.equal((await call("hit")).method, "put");
+  const migrated = JSON.parse((await call("session", { name: "migration" })).value);
+  assert.equal(migrated.stamp.schema, 3);
+  const migrationBucket = await mf.getR2Bucket("BACKUPS");
+  const migrationCopies = await migrationBucket.list({ prefix: "safety/" });
+  assert.ok(migrationCopies.objects.some(o => o.key.includes("pre-v3-") && o.key.endsWith(".manifest.json")));
+  evidence.push("schema-2 startup migration fails closed on R2 failure, retries with verified safety publication, then serves schema 3");
   await call("bootstrap", { name: "private-probe" });
   for (const [target, members] of Object.entries({ authority: ["ctxFor", "workspace", "admin", "job", "move", "preflight"],
     workspace: ["core", "config", "check", "failure", "budget", "freshness", "alarm"] })) {

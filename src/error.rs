@@ -19,6 +19,16 @@ use crate::model;
 /// ```
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// Actual completion cannot include future work.
+    #[error("actual completion must end at or before now; adjust the interval")]
+    FutureCompletion,
+    /// Only a wholly future completed entry can become a reservation.
+    #[error("only wholly future completed entries can be converted to plans")]
+    EntryNotFuture,
+    #[error("plan {0} not found")]
+    PlanNotFound(model::PlanId),
+    #[error("plan {0} changed; review it again")]
+    PlanChanged(model::PlanId),
     #[error("reviewed authority changed")]
     AuthorityChanged,
     #[error("authenticated principal changed")]

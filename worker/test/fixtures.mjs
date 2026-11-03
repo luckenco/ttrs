@@ -13,11 +13,19 @@ export const operations = [
   { Log: { agreement: "1", scope: "spring DST", started_at: "2024-03-10T06:30:00Z", ended_at: "2024-03-10T08:30:00Z" } },
   { Log: { agreement: "2", scope: "fall DST", started_at: "2024-10-27T00:30:00Z", ended_at: "2024-10-27T02:30:00Z" } },
   { Log: { agreement: "1", scope: "long calendar span", started_at: "1900-01-01T05:00:00Z", ended_at: "2020-01-01T05:00:00Z" } },
+  { Plan: { agreement: "2", scope: "planned next month", started_at: "2099-04-01T03:00:00Z", ended_at: "2099-04-01T05:00:00Z" } },
+  { Reschedule: { expected: { id: "1", agreement: "2", scope: "planned next month", started_at: "2099-04-01T03:00:00Z", ended_at: "2099-04-01T05:00:00Z" },
+    interval: { agreement: "2", scope: "rescheduled", started_at: "2099-04-02T03:00:00Z", ended_at: "2099-04-02T05:00:00Z" } } },
+  { Plan: { agreement: "1", scope: "actual review", started_at: "2024-03-10T06:30:00Z", ended_at: "2024-03-10T08:30:00Z" } },
+  { CompletePlan: { expected: { id: "2", agreement: "1", scope: "actual review", started_at: "2024-03-10T06:30:00Z", ended_at: "2024-03-10T08:30:00Z" },
+    actual: { agreement: "1", scope: "actual", started_at: "2024-03-10T06:30:00Z", ended_at: "2024-03-10T07:30:00Z" } } },
 ].map(canonical);
 export const queries = [
   { Overview: { zone: "Europe/Berlin" } },
   { Entries: { agreement: "1", limit: 100, cursor: null } },
   { RecentScopes: { project: "1", limit: 20 } },
+  { Plans: { agreement: "2" } },
+  { Budget: { month: "2099-04-01" } },
 ].map(canonical);
 export function normalize(value) {
   if (Array.isArray(value)) return value.map(normalize);

@@ -37,6 +37,8 @@ pub(super) enum Effect {
 pub(super) enum Read {
     Scopes(model::ProjectId),
     Entries(model::ServiceAgreementId),
+    Plans(model::ServiceAgreementId),
+    Budget(jiff::civil::Date),
     Prepare {
         draft: Box<Form>,
         catalogs: Catalogs,
@@ -66,6 +68,8 @@ pub(super) struct Refreshed {
 pub(super) enum ReadValue {
     Scopes(Vec<String>),
     Entries(Vec<model::TimeEntry>),
+    Plans(Vec<model::Plan>),
+    Budget(jiff::civil::Date, Vec<model::RetainerMonth>),
     FormPrepared(Box<Form>),
 }
 
@@ -397,6 +401,22 @@ impl App {
                                     }),
                                 )));
                             }
+                            ReadValue::Plans(plans) => {
+                                self.workspace.overlay = Some(Overlay::Plans(Choose::new(
+                                    "Plans · Enter complete · Alt-r reschedule · Alt-d cancel",
+                                    plans.into_iter().map(|plan| {
+                                        let label = recovery::plan_label(&plan, zone);
+                                        (plan, label)
+                                    }),
+                                )));
+                            }
+                            ReadValue::Budget(month, totals) => {
+                                self.workspace.overlay = Some(Overlay::Budget {
+                                    month,
+                                    text: super::workspace::budget_text(&totals),
+                                    scroll: 0,
+                                });
+                            }
                             ReadValue::FormPrepared(prepared) => {
                                 if let Some(Overlay::Form(form)) = &mut self.workspace.overlay {
                                     form.review = prepared.review;
@@ -550,12 +570,21 @@ pub(super) fn execute(
                     Read::Entries(agreement) => {
                         ReadValue::Entries(backend.entries(agreement).map_err(core_error)?)
                     }
+                    Read::Plans(agreement) => {
+                        ReadValue::Plans(backend.plans(agreement).map_err(core_error)?)
+                    }
+                    Read::Budget(month) => {
+                        ReadValue::Budget(month, backend.budget(month).map_err(core_error)?)
+                    }
                     Read::Prepare {
                         mut draft,
                         catalogs,
                     } => {
                         match draft.prepare(&catalogs, now, &zone) {
-                            Ok(review) => draft.review = Some(review),
+                            Ok(mut review) => match review.warn_planning(backend) {
+                                Ok(()) => draft.review = Some(review),
+                                Err(error) => draft.error = Some(error.to_string()),
+                            },
                             Err(error) => draft.error = Some(error.to_string()),
                         }
                         draft.scroll = 0;

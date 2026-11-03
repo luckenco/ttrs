@@ -30,6 +30,7 @@ pub(super) enum FieldId {
     From,
     To,
     At,
+    EntryKind,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -37,6 +38,9 @@ pub(super) enum Choice {
     Reference(Reference),
     Hourly,
     Retainer,
+    Auto,
+    Completed,
+    Planned,
 }
 
 #[derive(Clone)]
@@ -112,6 +116,10 @@ pub(super) enum Kind {
     Replace,
     Start,
     Log,
+    Reschedule(model::Plan),
+    CompletePlan(model::Plan),
+    CancelPlan(model::Plan),
+    ConvertToPlan(model::TimeEntry),
     Stop(model::RunningTimer),
     Cancel(model::RunningTimer),
     DeleteEntry(model::TimeEntry),
@@ -237,6 +245,29 @@ impl Form {
                     "Later than From; use dates for overnight work",
                 ),
             ],
+            Kind::Reschedule(plan) | Kind::CompletePlan(plan) => vec![
+                Field::text(F::Scope, "Scope", plan.scope(), "Ticket or description"),
+                Field::text(
+                    F::From,
+                    "From",
+                    &plan
+                        .started_at()
+                        .to_zoned(zone.clone())
+                        .strftime("%FT%T%.f%:z")
+                        .to_string(),
+                    "Actual or scheduled start",
+                ),
+                Field::text(
+                    F::To,
+                    "To",
+                    &plan
+                        .ended_at()
+                        .to_zoned(zone.clone())
+                        .strftime("%FT%T%.f%:z")
+                        .to_string(),
+                    "Actual or scheduled end",
+                ),
+            ],
             Kind::Stop(_) => vec![Field::text(
                 F::At,
                 "Stop at",
@@ -251,7 +282,11 @@ impl Form {
                     .to_string(),
                 "YYYY-MM-DD; this day remains active",
             )],
-            Kind::Unarchive(_) | Kind::Cancel(_) | Kind::DeleteEntry(_) => Vec::new(),
+            Kind::Unarchive(_)
+            | Kind::Cancel(_)
+            | Kind::DeleteEntry(_)
+            | Kind::CancelPlan(_)
+            | Kind::ConvertToPlan(_) => Vec::new(),
             Kind::Timezone => vec![Field::text(
                 F::Zone,
                 "Display timezone",
@@ -259,6 +294,21 @@ impl Form {
                 "IANA name, e.g. Europe/Berlin",
             )],
         };
+        if matches!(kind, Kind::Log) {
+            fields.insert(
+                2,
+                Field::choice(
+                    F::EntryKind,
+                    "Entry type",
+                    vec![
+                        (Choice::Auto, "Auto (future → Planned)".into()),
+                        (Choice::Completed, "Completed".into()),
+                        (Choice::Planned, "Planned".into()),
+                    ],
+                    Some(Choice::Auto),
+                ),
+            );
+        }
         if matches!(kind, Kind::Project | Kind::Replace) {
             fields.extend([
                 Field::text(
@@ -373,7 +423,11 @@ impl Form {
             Kind::Project => "New project",
             Kind::Replace => "Replace agreement",
             Kind::Start => "Start timer at…",
-            Kind::Log => "Log completed time",
+            Kind::Log => "Log or plan time",
+            Kind::Reschedule(_) => "Reschedule plan",
+            Kind::CompletePlan(_) => "Complete plan · actual time",
+            Kind::CancelPlan(_) => "Cancel plan",
+            Kind::ConvertToPlan(_) => "Convert future log to plan",
             Kind::Stop(_) => "Stop at…",
             Kind::Cancel(_) => "Cancel selected timer",
             Kind::DeleteEntry(_) => "Delete completed entry",
@@ -389,7 +443,14 @@ impl Form {
             Kind::Project => "Create project + agreement",
             Kind::Replace => "Replace agreement",
             Kind::Start => "Start timer (no switch)",
-            Kind::Log => "Log time",
+            Kind::Log => self
+                .review
+                .as_ref()
+                .map_or("Save time", |r| r.entry_action()),
+            Kind::Reschedule(_) => "Reschedule plan",
+            Kind::CompletePlan(_) => "Record actual time + release plan",
+            Kind::CancelPlan(_) => "Cancel plan",
+            Kind::ConvertToPlan(_) => "Convert to plan",
             Kind::Stop(_) => "Stop timer",
             Kind::Cancel(_) => "Cancel timer",
             Kind::DeleteEntry(_) => "Delete entry permanently",

@@ -1,0 +1,28 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dashboard  [2 Agreements]  : menu                                                                "
+"Review · Log or plan time · 1/17                                                                    "
+"WARNING: 2026-01: OVERBOOKED by 01:01:56 after this plan.                                           "
+"Advisory only; saving is still allowed.                                                             "
+"                                                                                                    "
+"Times without a date mean today in UTC.                                                             "
+"                                                                                                    "
+"From: 2026-01-03 09:00:00 UTC                                                                       "
+"To: 2026-01-03 11:00:00 UTC                                                                         "
+"Duration: 02:00:00                                                                                  "
+"PLANNED: reserves included hours; no earnings or hard recording cap usage. Remains planned until    "
+"explicitly completed or cancelled.                                                                  "
+"                                                                                                    "
+"Project: Acme / website                                                                             "
+"Agreement: Retainer · id:2 · From 2026-01-02                                                        "
+"Entry type: Auto (future → Planned)                                                                 "
+"Scope: Scheduled work                                                                               "
+"From: 2026-01-03 09:00                                                                              "
+"To: 2026-01-03 11:00                                                                                "
+"                                                                                                    "
+"                                                                                                    "
+"                                                                                                    "
+"Enter: Save planned time                                                                            "
+"↑↓ scroll  Esc edit  F1 details                                                                     "

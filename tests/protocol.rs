@@ -400,7 +400,7 @@ fn v1_schema_migration_is_backed_up_preserves_identity_and_accepts_v1_portables(
     drop(db);
     let w = Workspace::open(&path).unwrap();
     let s = w.session("A", now()).unwrap();
-    assert_eq!(s.stamp.schema, 2);
+    assert_eq!(s.stamp.schema, 3);
     assert_eq!(s.stamp.revision, 7);
     assert_eq!(
         s.stamp.authority.incarnation,
@@ -410,15 +410,21 @@ fn v1_schema_migration_is_backed_up_preserves_identity_and_accepts_v1_portables(
         p.unwrap()
             .file_name()
             .to_string_lossy()
-            .contains("pre-v2-migration")
+            .contains("pre-v3-migration")
     }));
-    assert_eq!(
-        maintenance::export(&path, now())
+    let upgraded: serde_json::Value = serde_json::from_slice(
+        &maintenance::export(&path, now())
             .unwrap()
-            .manifest()
-            .data_digest,
-        legacy.manifest().data_digest
+            .to_bytes()
+            .unwrap(),
+    )
+    .unwrap();
+    let old: serde_json::Value = serde_json::from_slice(&legacy.to_bytes().unwrap()).unwrap();
+    assert_eq!(
+        &upgraded["data"]["tables"].as_array().unwrap()[..5],
+        old["data"]["tables"].as_array().unwrap()
     );
+    assert_eq!(upgraded["data"]["tables"][5], serde_json::json!([]));
     let imported = d.path().join("imported");
     maintenance::import(&imported, &legacy).unwrap();
     assert_eq!(
@@ -433,6 +439,63 @@ impl host::SchemaSql for Sql<'_> {
         Ok(())
     }
 }
+#[test]
+fn v2_migration_preserves_old_receipts_and_imports_them_as_audit() {
+    let db = rusqlite::Connection::open_in_memory().unwrap();
+    db.execute_batch(include_str!("../schema/v2.sql")).unwrap();
+    let authority = tt::workspace::Authority {
+        workspace: "00000000-0000-0000-0000-000000000001".into(),
+        incarnation: "00000000-0000-0000-0000-000000000002".into(),
+    };
+    db.execute(
+        "INSERT INTO tt_metadata VALUES (1,2,1,?1,?2,0)",
+        [&authority.workspace, &authority.incarnation],
+    )
+    .unwrap();
+    let envelope = Envelope::new(
+        "A".into(),
+        authority,
+        RequestId::new(now(), [7; 16]),
+        &Operation::AddClient {
+            name: "retained".into(),
+        },
+        None,
+    )
+    .unwrap();
+    let outcome = {
+        let tx = db.unchecked_transaction().unwrap();
+        let outcome = host::attempt(&mut Sql(&tx), "A", &envelope, now()).unwrap();
+        tx.commit().unwrap();
+        outcome
+    };
+    let before = host::capture(&Sql(&db), now()).unwrap();
+    {
+        let tx = db.unchecked_transaction().unwrap();
+        host::migrate_v1(&mut Sql(&tx), &before).unwrap();
+        tx.commit().unwrap();
+    }
+    assert_eq!(
+        host::request_status(&Sql(&db), "A", &envelope, now()).unwrap(),
+        Resolution::Recorded(outcome)
+    );
+    let after = host::capture(&Sql(&db), now()).unwrap();
+    assert_eq!(
+        after.manifest().receipt_digest,
+        before.manifest().receipt_digest
+    );
+    portable::verify(&after.to_bytes().unwrap()).unwrap();
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("imported");
+    maintenance::import(&target, &before).unwrap();
+    assert_eq!(
+        maintenance::export(&target, now())
+            .unwrap()
+            .manifest()
+            .receipt_digest,
+        before.manifest().receipt_digest
+    );
+}
+
 #[test]
 fn infrastructure_errors_are_not_rejection_receipts_and_roll_back_work() {
     let d = tempfile::tempdir().unwrap();
@@ -497,12 +560,17 @@ fn host_schema_migration_compares_the_verified_backup_and_rolls_back_on_mismatch
         transaction.commit().unwrap();
     }
     host::verify_schema(&Sql(&db)).unwrap();
+    let upgraded: serde_json::Value =
+        serde_json::from_slice(&host::capture(&Sql(&db), now()).unwrap().to_bytes().unwrap())
+            .unwrap();
+    let old: serde_json::Value = serde_json::from_slice(&current.to_bytes().unwrap()).unwrap();
     assert_eq!(
-        host::capture(&Sql(&db), now())
-            .unwrap()
-            .manifest()
-            .data_digest,
-        current.manifest().data_digest
+        &upgraded["data"]["tables"].as_array().unwrap()[..5],
+        old["data"]["tables"].as_array().unwrap()
+    );
+    assert_eq!(
+        upgraded["data"]["sequences"],
+        serde_json::json!(["0", "0", "0"])
     );
     db.execute_batch("DROP TRIGGER clients_reject_insert;")
         .unwrap();
@@ -1018,8 +1086,12 @@ fn legacy_sql_names_are_preserved_not_silently_trimmed() {
     let path = d.path().join("target");
     maintenance::import(&path, &snapshot).unwrap();
     let imported = maintenance::export(&path, now()).unwrap();
+    let imported: serde_json::Value =
+        serde_json::from_slice(&imported.to_bytes().unwrap()).unwrap();
+    let original: serde_json::Value =
+        serde_json::from_slice(&snapshot.to_bytes().unwrap()).unwrap();
     assert_eq!(
-        imported.manifest().data_digest,
-        snapshot.manifest().data_digest
+        &imported["data"]["tables"].as_array().unwrap()[..5],
+        original["data"]["tables"].as_array().unwrap()
     );
 }

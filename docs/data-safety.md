@@ -22,11 +22,13 @@ safety copy through a second reader, verifies integrity, foreign keys and fallib
 domain/sequence values, then fsyncs and publishes `<db>.pre-migration-UUID.sqlite`.
 Only afterward does an atomic transaction rename all five domain tables to `tt_*`,
 install metadata/identity and the empty write-rejecting legacy `clients` sentinel.
-Schema-v1 to current schema-v2 migration likewise publishes a verified safety copy
-**before** atomic schema change. Fresh/imported/restored databases retain the sentinel;
-cached legacy writes fail too. Transaction failure rolls back schema changes, not
-an already published safety copy. No live v1 migration RPC is implemented in the
-Worker: older routed schemas fail closed; use verified import into a fresh target.
+Schema-v1/v2 to current schema-v3 migration likewise publishes a verified safety copy
+**before** atomic schema change. Schema 3 adds separate plans without reclassifying
+existing entries. Fresh/imported/restored databases retain the sentinel; cached
+legacy writes fail too. Transaction failure rolls back schema changes, not an
+already published safety copy. Worker initialization blocks requests while it
+captures a recognized older schema and publishes/verifies its R2 safety copy, then
+compares and migrates atomically. Unknown schemas and failed publication fail closed.
 
 Native handles hold shared maintenance leases. Domain writes increment revision in
 the same transaction. Workspace mutations additionally check reviewed authority and
@@ -57,13 +59,13 @@ checks. Never manually replace a live workspace or copy only its WAL database ma
 
 ## Portable format 2 (format 1 remains readable)
 
-Current snapshots are compact JSON format 2/schema 2. Wide values are canonical
+Current snapshots are compact JSON format 2/schema 3. Wide values are canonical
 exact decimal strings, never JSON numbers. Table/column order is fixed; rows sort by
 positive ID. UTC times are microseconds, monthly hours whole hours, money currency
 millionths, dates ISO and billing zones named IANA zones.
 
 - Data includes all clients/projects/agreements, running timers/completed entries,
-  revision and timer/entry high-water marks, including deleted maxima.
+  plans, revision and timer/entry/plan high-water marks, including deleted maxima.
 - Manifest includes versions, source workspace/incarnation, capture time, counts,
   sizes and SHA-256 digests. Data digest covers compact `tables,sequences,revision`
   and excludes identity/capture provenance.
@@ -81,7 +83,11 @@ millionths, dates ISO and billing zones named IANA zones.
   digest. Import creates fresh identities; no source identity authorizes replay.
 - Verification requires a fence or audit proof for every receipt context and rejects
   identity collisions. Fresh identity and empty-fence compaction change the operational
-  digest; all data, sequences, revision and receipt digests remain unchanged. Meaningful
+  digest; within the same schema, all data, sequences, revision and receipt digests
+  remain unchanged. Schema-1/2 imports append empty plans and a zero plan sequence,
+  changing the data digest but preserving every original row, sequence and revision.
+  Rust verifies this expansion; the private import result carries the verified
+  source data digest separately from the current-schema cut's digest. Meaningful
   receipt/floor proofs persist indefinitely and may exhaust bounded Worker capacity;
   writes/import then refuse safely rather than deleting proofs.
 

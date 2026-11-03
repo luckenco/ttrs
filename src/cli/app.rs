@@ -51,6 +51,9 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 "Cancellation records no completed time. Rerun with --yes to confirm.",
             ));
         }
+        Command::PlanCancel { yes: false, .. } | Command::EntryConvert { yes: false, .. } => {
+            return Err(Error::usage("Rerun with --yes to confirm this change."));
+        }
         Command::EntryDelete { yes: false, .. } => {
             return Err(Error::usage(
                 "Deletion is permanent and changes estimates and usage. Rerun with --yes to confirm.",
@@ -166,7 +169,134 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
                 .map_err(core_error)?;
             line(format_args!("Deleted {} (id:{}).", entry.scope(), id))
         }
+        Command::Budget { month } => {
+            let reference = tracker.reference_time().map_err(core_error)?;
+            let month = match month {
+                Some(month) => format!("{month}-01")
+                    .parse::<jiff::civil::Date>()
+                    .map_err(|e| Error::usage(e.to_string()))?,
+                None => reference.to_zoned(zone.clone()).date().first_of_month(),
+            };
+            for r in tracker.budget(month).map_err(core_error)? {
+                line(format_args!(
+                    "{} / {} · {} · {}\nWorked: {} · Planned: {} · Included: {} · Available: {}{}",
+                    r.client.name(),
+                    r.project.name(),
+                    r.agreement.name(),
+                    month,
+                    duration_us(r.worked_us),
+                    duration_us(r.planned_us),
+                    duration_us(r.included_us),
+                    duration_us(r.available_us()),
+                    if r.available_us() < 0 {
+                        " · OVERBOOKED"
+                    } else {
+                        ""
+                    }
+                ))?;
+            }
+            Ok(())
+        }
+        Command::PlanList { agreement } => {
+            let agreement = resolve_agreement(&tracker, &agreement)?;
+            for plan in tracker.plans(agreement.id()).map_err(core_error)? {
+                line(format_args!(
+                    "id:{} · {} · {} — {} · PLANNED",
+                    plan.id(),
+                    plan.scope(),
+                    datetime(plan.started_at(), &zone),
+                    datetime(plan.ended_at(), &zone)
+                ))?;
+            }
+            Ok(())
+        }
+        Command::PlanCancel { id, .. } => {
+            let expected = tracker
+                .plan(
+                    id.strip_prefix("id:")
+                        .unwrap_or(&id)
+                        .parse()
+                        .map_err(|e: model::InvalidId| Error::usage(e.to_string()))?,
+                )
+                .map_err(core_error)?;
+            tracker
+                .apply(tt::workspace::Operation::CancelPlan { expected })
+                .map_err(core_error)?;
+            line(format_args!("Plan cancelled."))
+        }
+        Command::PlanChange {
+            id,
+            from,
+            to,
+            scope,
+            complete,
+        } => {
+            let expected = tracker
+                .plan(
+                    id.strip_prefix("id:")
+                        .unwrap_or(&id)
+                        .parse()
+                        .map_err(|e: model::InvalidId| Error::usage(e.to_string()))?,
+                )
+                .map_err(core_error)?;
+            let reference = tracker.reference_time().map_err(core_error)?;
+            let interval = command::LogEntry::new(
+                expected.agreement(),
+                scope.unwrap_or_else(|| expected.scope().into()),
+                parse_time(&from, &zone, reference)?,
+                parse_time(&to, &zone, reference)?,
+            )
+            .map_err(core_error)?;
+            let warning = if complete {
+                None
+            } else {
+                tracker
+                    .plan_warning(&interval, Some(&expected))
+                    .map_err(core_error)?
+            };
+            let operation = if complete {
+                tt::workspace::Operation::CompletePlan {
+                    expected,
+                    actual: interval,
+                }
+            } else {
+                tt::workspace::Operation::Reschedule { expected, interval }
+            };
+            tracker.apply(operation).map_err(core_error)?;
+            if let Some(warning) = warning {
+                line(format_args!("WARNING: {warning}"))?;
+            }
+            line(format_args!(
+                "Plan {}.",
+                if complete {
+                    "completed; actual time recorded"
+                } else {
+                    "rescheduled"
+                }
+            ))
+        }
+        Command::EntryConvert { id, .. } => {
+            let expected = tracker
+                .entry(
+                    id.strip_prefix("id:")
+                        .unwrap_or(&id)
+                        .parse()
+                        .map_err(|e: model::InvalidId| Error::usage(e.to_string()))?,
+                )
+                .map_err(core_error)?;
+            let value = tracker
+                .apply(tt::workspace::Operation::ConvertToPlan { expected })
+                .map_err(core_error)?;
+            if let tt::workspace::MutationValue::Plan(plan) = value {
+                line(format_args!(
+                    "Converted to plan id:{}; scope and dates preserved.",
+                    plan.id()
+                ))?;
+            }
+            Ok(())
+        }
         Command::Log {
+            kind,
             target,
             scope,
             from,
@@ -176,12 +306,34 @@ pub(super) fn run(command: Command) -> Result<(), Error> {
             let reference = tracker.reference_time().map_err(core_error)?;
             let started_at = parse_time(&from, &zone, reference)?;
             let ended_at = parse_time(&to, &zone, reference)?;
-            let entry = tracker
-                .log(
-                    command::LogEntry::new(target.agreement, scope, started_at, ended_at)
-                        .map_err(core_error)?,
-                )
+            let interval = command::LogEntry::new(target.agreement, scope, started_at, ended_at)
                 .map_err(core_error)?;
+            let planned = match kind {
+                Some(super::clap::EntryKind::Planned) => true,
+                Some(super::clap::EntryKind::Completed) => false,
+                None => started_at > reference,
+            };
+            if planned {
+                let warning = tracker.plan_warning(&interval, None).map_err(core_error)?;
+                if let tt::workspace::MutationValue::Plan(plan) = tracker
+                    .apply(tt::workspace::Operation::Plan(interval))
+                    .map_err(core_error)?
+                {
+                    if let Some(warning) = warning {
+                        line(format_args!("WARNING: {warning}"))?;
+                    }
+                    return line(format_args!(
+                        "Planned {} for {} from {} to {} (plan id:{}). No actual work recorded.",
+                        plan.scope(),
+                        target.label,
+                        datetime(plan.started_at(), &zone),
+                        datetime(plan.ended_at(), &zone),
+                        plan.id()
+                    ));
+                }
+                return Err(Error::runtime("Unexpected plan result."));
+            }
+            let entry = tracker.log(interval).map_err(core_error)?;
             line(format_args!(
                 "Logged {} for {} from {} to {} (id:{})",
                 entry.scope(),
@@ -562,6 +714,17 @@ fn format_us(microseconds: i64) -> String {
     format!("{:02}:{:02}", minutes / 60, minutes % 60)
 }
 
+pub(super) fn duration_us(us: i128) -> String {
+    let seconds = us.abs() / 1_000_000;
+    format!(
+        "{}{:02}:{:02}:{:02}",
+        if us < 0 { "-" } else { "" },
+        seconds / 3600,
+        seconds / 60 % 60,
+        seconds % 60
+    )
+}
+
 fn duration(start: Timestamp, end: Timestamp) -> String {
     format_us(end.as_microsecond().saturating_sub(start.as_microsecond()))
 }
@@ -623,6 +786,13 @@ fn compact_time(value: &str) -> Option<(i8, i8)> {
 
 fn digits(high: u8, low: u8) -> u8 {
     (high - b'0') * 10 + low - b'0'
+}
+
+fn datetime(timestamp: Timestamp, zone: &TimeZone) -> String {
+    timestamp
+        .to_zoned(zone.clone())
+        .strftime("%F %T%.f %:z")
+        .to_string()
 }
 
 pub(super) fn clock(timestamp: Timestamp, zone: &TimeZone) -> String {

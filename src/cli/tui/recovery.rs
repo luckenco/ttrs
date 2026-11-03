@@ -26,6 +26,18 @@ pub(super) fn entry_label(entry: &model::TimeEntry, zone: &TimeZone) -> String {
     )
 }
 
+pub(super) fn plan_label(plan: &model::Plan, zone: &TimeZone) -> String {
+    format!(
+        "id:{} · {} · {} — {}",
+        plan.id(),
+        plan.scope(),
+        plan.started_at()
+            .to_zoned(zone.clone())
+            .strftime("%F %R %:z"),
+        plan.ended_at().to_zoned(zone.clone()).strftime("%F %R %:z")
+    )
+}
+
 pub(super) fn entry_detail(entry: &model::TimeEntry, zone: &TimeZone) -> String {
     format!(
         "{}\nid:{} · agreement:{}\nFrom: {}\nTo: {}\nDuration: {}",
@@ -87,7 +99,9 @@ impl App {
         }
         let mut form = Form::new(kind, &self.workspace.catalogs, None, now, zone)?;
         form.admission = self.pending.context.clone();
-        self.prepare_form(&form, zone)?;
+        if !matches!(form.kind, Kind::Reschedule(_) | Kind::CompletePlan(_)) {
+            self.prepare_form(&form, zone)?;
+        }
         self.error = None;
         self.workspace.overlay = Some(Overlay::Form(Box::new(form)));
         Ok(())
