@@ -12,6 +12,8 @@ use std::{collections::BTreeMap, fmt::Display};
 /// Exhaustive stable wire codes; internal storage sources never cross the bridge.
 pub fn error_code(error: &Error) -> &'static str {
     match error {
+        Error::FutureCompletion => "FutureCompletion",
+        Error::EntryNotFuture => "EntryNotFuture",
         Error::AuthorityChanged => "AuthorityChanged",
         Error::PrincipalChanged => "PrincipalChanged",
         Error::WorkspaceFrozen => "WorkspaceFrozen",
@@ -59,6 +61,8 @@ pub fn error_code(error: &Error) -> &'static str {
         Error::TimerChanged(..) => "TimerChanged",
         Error::EntryNotFound(..) => "EntryNotFound",
         Error::EntryChanged(..) => "EntryChanged",
+        Error::PlanNotFound(..) => "PlanNotFound",
+        Error::PlanChanged(..) => "PlanChanged",
         Error::SwitchClientMismatch => "SwitchClientMismatch",
         Error::DatabaseSchemaOutdated => "DatabaseSchemaOutdated",
         Error::InvalidBackup(..) => "InvalidBackup",
@@ -67,6 +71,7 @@ pub fn error_code(error: &Error) -> &'static str {
 }
 pub fn is_domain(error: &Error) -> bool {
     match error {
+        Error::FutureCompletion | Error::EntryNotFuture => true,
         Error::AuthorityChanged => false,
         Error::PrincipalChanged => false,
         Error::WorkspaceFrozen => false,
@@ -114,6 +119,8 @@ pub fn is_domain(error: &Error) -> bool {
         Error::TimerChanged(..) => true,
         Error::EntryNotFound(..) => true,
         Error::EntryChanged(..) => true,
+        Error::PlanNotFound(..) => true,
+        Error::PlanChanged(..) => true,
         Error::SwitchClientMismatch => true,
         Error::DatabaseSchemaOutdated => false,
         Error::InvalidBackup(..) => false,
@@ -124,6 +131,8 @@ pub fn is_domain(error: &Error) -> bool {
 /// Whether a wire code represents a definitive domain rejection. No missing IDs are synthesized.
 pub fn is_domain_code(code: &str) -> bool {
     const CODES: &[&str] = &[
+        "FutureCompletion",
+        "EntryNotFuture",
         "RevisionChanged",
         "ProjectChanged",
         "EmptyClientName",
@@ -164,6 +173,8 @@ pub fn is_domain_code(code: &str) -> bool {
         "TimerChanged",
         "EntryNotFound",
         "EntryChanged",
+        "PlanNotFound",
+        "PlanChanged",
         "SwitchClientMismatch",
     ];
     CODES.contains(&code)
@@ -583,6 +594,38 @@ pub fn validate_recorded(envelope: &Envelope, outcome: &RecordedOutcome) -> Resu
                 && entry.scope() == expected.scope()
                 && entry.started_at() == expected.started_at()
         }
+        (Operation::Reschedule { expected, interval }, M::Plan(plan)) => {
+            let (a, scope, start, end) = interval.into_parts();
+            plan.id() == expected.id()
+                && a == expected.agreement()
+                && plan.agreement() == a
+                && plan.scope() == scope
+                && plan.started_at() == start
+                && plan.ended_at() == end
+        }
+        (Operation::Plan(log), M::Plan(plan)) => {
+            let (a, scope, start, end) = log.into_parts();
+            plan.agreement() == a
+                && plan.scope() == scope
+                && plan.started_at() == start
+                && plan.ended_at() == end
+        }
+        (Operation::ConvertToPlan { expected }, M::Plan(plan)) => {
+            expected.started_at() > committed.stamp.calculated_at
+                && plan.agreement() == expected.agreement()
+                && plan.scope() == expected.scope()
+                && plan.started_at() == expected.started_at()
+                && plan.ended_at() == expected.ended_at()
+        }
+        (Operation::CompletePlan { expected, actual }, M::Entry(entry)) => {
+            let (a, scope, start, end) = actual.into_parts();
+            a == expected.agreement()
+                && entry.agreement() == a
+                && entry.scope() == scope
+                && entry.started_at() == start
+                && entry.ended_at() == end
+                && end <= committed.stamp.calculated_at
+        }
         (Operation::Log(log), M::Entry(entry)) => {
             let (agreement, scope, start, end) = log.into_parts();
             entry.agreement() == agreement
@@ -605,7 +648,10 @@ pub fn validate_recorded(envelope: &Envelope, outcome: &RecordedOutcome) -> Resu
                 && timer.agreement() == agreement
                 && timer.scope() == scope.trim()
         }
-        (Operation::Cancel { .. } | Operation::DeleteEntry { .. }, M::Removed) => true,
+        (
+            Operation::Cancel { .. } | Operation::DeleteEntry { .. } | Operation::CancelPlan { .. },
+            M::Removed,
+        ) => true,
         _ => false,
     };
     if !valid {
@@ -629,6 +675,7 @@ pub fn validate_projection(
             (R::Agreement(id), I::Agreement(v)) => *id == v.id(),
             (R::Timer(id), I::Timer(v)) => *id == v.id(),
             (R::Entry(id), I::Entry(v)) => *id == v.id(),
+            (R::Plan(id), I::Plan(v)) => *id == v.id(),
             _ => false,
         },
         (Q::Overview { zone }, P::Overview(view)) => {
@@ -647,6 +694,10 @@ pub fn validate_projection(
             entries.len() <= usize::from(*limit)
                 && entries.iter().all(|entry| entry.agreement() == *agreement)
         }
+        (Q::Plans { agreement }, P::Plans(plans)) => {
+            plans.iter().all(|p| p.agreement() == *agreement)
+        }
+        (Q::Budget { month }, P::Budget(totals)) => totals.iter().all(|r| r.month == *month),
         (Q::RecentScopes { limit, .. }, P::Scopes(scopes)) => scopes.len() <= usize::from(*limit),
         _ => false,
     };
@@ -721,7 +772,7 @@ pub fn decode_committed(v: &Value) -> Result<workspace::Committed> {
     identity(&authority.incarnation)?;
     let revision = number(text(s, "revision")?)?;
     if revision < 0
-        || s.get("schema").and_then(Value::as_u64) != Some(u64::from(crate::schema::VERSION))
+        || !matches!(s.get("schema").and_then(Value::as_u64), Some(2 | 3))
         || s.get("rules").and_then(Value::as_u64) != Some(u64::from(crate::schema::RULES))
     {
         return Err(Error::InvalidRequest);
@@ -737,7 +788,7 @@ pub fn decode_committed(v: &Value) -> Result<workspace::Committed> {
     let stamp = workspace::Stamp {
         authority,
         revision,
-        schema: crate::schema::VERSION,
+        schema: s["schema"].as_u64().ok_or(Error::InvalidRequest)? as u32,
         rules: crate::schema::RULES,
         calculated_at: timestamp(text(s, "calculated_at")?)?,
         display_zone,
@@ -767,6 +818,7 @@ pub fn decode_committed(v: &Value) -> Result<workspace::Committed> {
             "Archived" => workspace::MutationValue::Archived(project(value)?),
             "Timer" => workspace::MutationValue::Timer(timer(value)?),
             "Entry" => workspace::MutationValue::Entry(entry(value)?),
+            "Plan" => workspace::MutationValue::Plan(plan(value)?),
             "Switched" => {
                 let pair = pair(value)?;
                 workspace::MutationValue::Switched(entry(&pair[0])?, timer(&pair[1])?)
@@ -923,6 +975,22 @@ fn entry(v: &Value) -> Result<model::TimeEntry> {
         end,
     ))
 }
+fn plan(v: &Value) -> Result<model::Plan> {
+    let (agreement, scope, start, end) = log(v)?.into_parts();
+    Ok(model::Plan::new(id(v, "id")?, agreement, scope, start, end))
+}
+fn log(v: &Value) -> Result<command::LogEntry> {
+    command::LogEntry::new(
+        id(v, "agreement")?,
+        scope(v)?,
+        timestamp(text(v, "started_at")?)?,
+        timestamp(text(v, "ended_at")?)?,
+    )
+}
+fn log_json(log: &command::LogEntry) -> Value {
+    let (a, s, start, end) = log.clone().into_parts();
+    json!({"agreement":a,"scope":s,"started_at":start,"ended_at":end})
+}
 fn selection(v: &Value) -> Result<ProjectSelection> {
     let p = field(v, "project")?;
     let name = text(p, "name")?;
@@ -990,6 +1058,15 @@ pub fn encode_operation(op: &Operation) -> Result<String> {
             let (a, s, start, end) = log.clone().into_parts();
             json!({"Log":{"agreement":a,"scope":s,"started_at":start,"ended_at":end}})
         }
+        Operation::Plan(log) => json!({"Plan":log_json(log)}),
+        Operation::Reschedule { expected, interval } => {
+            json!({"Reschedule":{"expected":expected,"interval":log_json(interval)}})
+        }
+        Operation::CompletePlan { expected, actual } => {
+            json!({"CompletePlan":{"expected":expected,"actual":log_json(actual)}})
+        }
+        Operation::CancelPlan { expected } => json!({"CancelPlan":{"expected":expected}}),
+        Operation::ConvertToPlan { expected } => json!({"ConvertToPlan":{"expected":expected}}),
         Operation::Cancel { expected } => json!({"Cancel":{"expected":expected}}),
         Operation::DeleteEntry { expected } => json!({"DeleteEntry":{"expected":expected}}),
     };
@@ -1069,6 +1146,21 @@ pub fn decode_operation(bytes: &str) -> Result<Operation> {
             timestamp(text(v, "started_at")?)?,
             timestamp(text(v, "ended_at")?)?,
         )?),
+        "Plan" => Operation::Plan(log(v)?),
+        "Reschedule" => Operation::Reschedule {
+            expected: plan(field(v, "expected")?)?,
+            interval: log(field(v, "interval")?)?,
+        },
+        "CompletePlan" => Operation::CompletePlan {
+            expected: plan(field(v, "expected")?)?,
+            actual: log(field(v, "actual")?)?,
+        },
+        "CancelPlan" => Operation::CancelPlan {
+            expected: plan(field(v, "expected")?)?,
+        },
+        "ConvertToPlan" => Operation::ConvertToPlan {
+            expected: entry(field(v, "expected")?)?,
+        },
         "Cancel" => Operation::Cancel {
             expected: timer(field(v, "expected")?)?,
         },
@@ -1094,6 +1186,9 @@ pub fn decode_session(v: &Value) -> Result<Session> {
         stamp: decode_stamp(field(v, "stamp")?)?,
     };
     exact(v, &session)?;
+    if session.stamp.schema != crate::schema::VERSION {
+        return Err(Error::DatabaseSchemaOutdated);
+    }
     Ok(session)
 }
 fn exact<T: Serialize>(v: &Value, decoded: &T) -> Result<()> {
@@ -1175,6 +1270,41 @@ fn limit(v: &Value) -> Result<Option<model::TimerLimit>> {
             .ok_or(Error::InvalidRequest)?,
     )))
 }
+fn retainer_month(v: &Value) -> Result<model::RetainerMonth> {
+    let month = model::RetainerMonth {
+        client: client(field(v, "client")?)?,
+        project: project(field(v, "project")?)?,
+        agreement: agreement(field(v, "agreement")?)?,
+        month: date(text(v, "month")?)?,
+        worked_us: wide(field(v, "worked_us")?)?,
+        planned_us: wide(field(v, "planned_us")?)?,
+        included_us: wide(field(v, "included_us")?)?,
+        fee_micros: wide(field(v, "fee_micros")?)?,
+        overage_micros: wide(field(v, "overage_micros")?)?,
+    };
+    if [
+        month.worked_us,
+        month.planned_us,
+        month.included_us,
+        month.fee_micros,
+        month.overage_micros,
+    ]
+    .iter()
+    .any(|v| *v < 0)
+        || month.month.day() != 1
+    {
+        return Err(Error::InvalidRequest);
+    }
+    month
+        .worked_us
+        .checked_add(month.planned_us)
+        .ok_or(Error::InvalidRequest)?;
+    month
+        .fee_micros
+        .checked_add(month.overage_micros)
+        .ok_or(Error::InvalidRequest)?;
+    Ok(month)
+}
 fn dashboard(v: &Value) -> Result<model::Dashboard> {
     let today = field(v, "today")?;
     Ok(model::Dashboard {
@@ -1196,23 +1326,7 @@ fn dashboard(v: &Value) -> Result<model::Dashboard> {
             earnings_micros: money_map(field(today, "earnings_micros")?)?,
         },
         month_earnings_micros: money_map(field(v, "month_earnings_micros")?)?,
-        retainers: list(field(v, "retainers")?, |v| {
-            let month = model::RetainerMonth {
-                client: client(field(v, "client")?)?,
-                project: project(field(v, "project")?)?,
-                agreement: agreement(field(v, "agreement")?)?,
-                month: date(text(v, "month")?)?,
-                worked_us: wide(field(v, "worked_us")?)?,
-                included_us: wide(field(v, "included_us")?)?,
-                fee_micros: wide(field(v, "fee_micros")?)?,
-                overage_micros: wide(field(v, "overage_micros")?)?,
-            };
-            month
-                .fee_micros
-                .checked_add(month.overage_micros)
-                .ok_or(Error::InvalidRequest)?;
-            Ok(month)
-        })?,
+        retainers: list(field(v, "retainers")?, retainer_month)?,
     })
 }
 /// Fallible projection conversion, including exact i128 dashboard totals and historical catalogs.
@@ -1236,6 +1350,7 @@ pub fn decode_projection(v: &Value) -> Result<workspace::Projection> {
                 "Agreement" => workspace::Item::Agreement(agreement(v)?),
                 "Timer" => workspace::Item::Timer(timer(v)?),
                 "Entry" => workspace::Item::Entry(entry(v)?),
+                "Plan" => workspace::Item::Plan(plan(v)?),
                 _ => return Err(Error::InvalidRequest),
             })
         }
@@ -1261,6 +1376,8 @@ pub fn decode_projection(v: &Value) -> Result<workspace::Projection> {
                 Some(text(value, "cursor")?.into())
             },
         },
+        "Plans" => workspace::ProjectionValue::Plans(list(value, plan)?),
+        "Budget" => workspace::ProjectionValue::Budget(list(value, retainer_month)?),
         "Scopes" => workspace::ProjectionValue::Scopes(list(value, |v| {
             Ok(v.as_str().ok_or(Error::InvalidRequest)?.into())
         })?),

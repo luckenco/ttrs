@@ -53,8 +53,13 @@ impl<S: ReadSql> super::Store<S> {
             })
             .collect::<Result<Vec<_>>>()?;
         let start = super::day_start(now.to_zoned(zone.clone()).date(), zone)?;
-        let (retainers, earnings) =
-            self.retainer_totals(&all_projects, &agreements, &clients, &timers, start, now)?;
+        let (retainers, earnings) = self.retainer_totals(
+            &all_projects,
+            &agreements,
+            &clients,
+            &timers,
+            super::retainers::Period::Current { today: start, now },
+        )?;
         let today = self.daily_total(start, now, &projects, &timers, earnings)?;
         let month_earnings_micros =
             self.monthly_earnings(now, &all_projects, &agreements, &timers, &retainers)?;

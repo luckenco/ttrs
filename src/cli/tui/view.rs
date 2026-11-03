@@ -132,16 +132,17 @@ fn draw_dashboard(
     let mut monthly = amounts(&app.snapshot.month_earnings_micros);
     let gap = u16::from(area.height >= 10);
     let minimum = if compact { 3 } else { 2 };
+    let retainer_rows = retainer_rows(area.width);
     let mut retainer_height = 0;
     if !app.snapshot.retainers.is_empty() {
         retainer_height = u16::try_from(app.snapshot.retainers.len())
             .unwrap_or(u16::MAX)
-            .saturating_mul(2)
+            .saturating_mul(retainer_rows)
             .saturating_add(1)
             .min(area.height / 2)
             .min(area.height.saturating_sub(minimum + gap + 3));
-        if retainer_height == 2 {
-            retainer_height = 1;
+        if retainer_height <= retainer_rows {
+            retainer_height = retainer_height.min(1);
         }
     }
     let rows = if compact {
@@ -273,12 +274,16 @@ fn draw_dashboard(
     );
 }
 
+fn retainer_rows(width: u16) -> u16 {
+    if width < 50 { 3 } else { 2 }
+}
+
 fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: layout::Rect) {
     if area.height == 0 {
         return;
     }
-    let visible = usize::from(area.height.saturating_sub(1) / 2);
-    let mut title = "Retainers · monthly estimate".to_owned();
+    let visible = usize::from(area.height.saturating_sub(1) / retainer_rows(area.width));
+    let mut title = "Retainers · Worked / Planned / Available".to_owned();
     if visible < totals.len() {
         title = format!("Retainers · {visible}/{} · : totals", totals.len());
     }
@@ -303,11 +308,17 @@ fn draw_retainers(frame: &mut Frame, totals: &[tt::model::RetainerMonth], area: 
             .bold(),
         );
         let mut detail = format!(
-            "{} · {} / {} incl",
-            total.month.strftime("%b %Y"),
+            "Worked {} · Planned {}",
             hours(total.worked_us),
-            hours(total.included_us),
+            hours(total.planned_us),
         );
+        let available = format!("Available {}", hours(total.available_us()));
+        if area.width < 50 {
+            lines.push(text::Line::from(detail).dim());
+            detail = available;
+        } else {
+            detail.push_str(&format!(" · {available}"));
+        }
         if area.width >= 60 {
             detail.push_str(&format!(
                 " · {} overage",
@@ -342,8 +353,13 @@ fn limit_amounts(values: &mut Vec<String>, rows: usize) {
 }
 
 fn hours(micros: i128) -> String {
-    let minutes = micros / 60_000_000;
-    format!("{:02}:{:02}", minutes / 60, minutes % 60)
+    let minutes = micros.abs() / 60_000_000;
+    format!(
+        "{}{:02}:{:02}",
+        if micros < 0 { "-" } else { "" },
+        minutes / 60,
+        minutes % 60
+    )
 }
 
 pub(super) fn money(currency: &str, micros: i128) -> String {

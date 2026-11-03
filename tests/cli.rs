@@ -305,6 +305,128 @@ fn cancelling_future_work_requires_confirmation_and_records_no_entry() {
 }
 
 #[test]
+fn log_defaults_future_to_planned_and_supports_completion_rescheduling_and_conversion() {
+    let case = Case::new();
+    case.ok(&["client", "add", "--name", "Acme"]);
+    case.ok(&[
+        "project",
+        "add",
+        "--client",
+        "Acme",
+        "--name",
+        "website",
+        "--timezone",
+        "UTC",
+        "--agreement",
+        "Support",
+        "--fee",
+        "100",
+        "--included-hours",
+        "1",
+        "--currency",
+        "EUR",
+        "--effective-on",
+        "2026-03-01",
+    ]);
+    let saved = case.ok(&[
+        "log",
+        "-p",
+        "website",
+        "-s",
+        "Reserved",
+        "--from",
+        "2026-03-13 09:00",
+        "--to",
+        "2026-03-13 11:00",
+    ]);
+    assert!(saved.contains("Planned") && saved.contains("OVERBOOKED"));
+    assert_eq!(
+        case.ok(&["entry", "list", "--agreement", "id:1"]),
+        "No completed entries.\n"
+    );
+    assert!(
+        case.ok(&["plan", "list", "--agreement", "id:1"])
+            .contains("Reserved")
+    );
+    assert!(
+        case.ok(&["budget", "--month", "2026-03"])
+            .contains("Available: -01:00:00")
+    );
+    case.ok(&[
+        "plan",
+        "reschedule",
+        "--id",
+        "id:1",
+        "--from",
+        "2026-03-14 09:00",
+        "--to",
+        "2026-03-14 11:00",
+    ]);
+    assert!(
+        case.ok(&["plan", "list", "--agreement", "id:1"])
+            .contains("2026-03-14")
+    );
+    assert!(
+        case.fails(
+            1,
+            &[
+                "plan",
+                "complete",
+                "--id",
+                "id:1",
+                "--from",
+                "2026-03-14 09:00",
+                "--to",
+                "2026-03-14 11:00",
+            ],
+        )
+        .contains("at or before now")
+    );
+    assert!(
+        case.ok(&["plan", "list", "--agreement", "id:1"])
+            .contains("Reserved")
+    );
+    case.ok(&[
+        "plan", "complete", "--id", "id:1", "--from", "0900", "--to", "1000",
+    ]);
+    assert!(
+        case.ok(&["entry", "list", "--agreement", "id:1"])
+            .contains("Reserved")
+    );
+    assert_eq!(case.ok(&["plan", "list", "--agreement", "id:1"]), "");
+    assert!(
+        case.fails(1, &["entry", "convert-to-plan", "--id", "id:1", "--yes"])
+            .contains("wholly future")
+    );
+    case.ok(&[
+        "log",
+        "-p",
+        "website",
+        "-s",
+        "Legacy-style future",
+        "--kind",
+        "completed",
+        "--from",
+        "2026-03-15 09:00",
+        "--to",
+        "2026-03-15 10:00",
+    ]);
+    assert!(
+        case.ok(&["entry", "list", "--agreement", "id:1"])
+            .contains("Legacy-style future")
+    );
+    case.fails(2, &["entry", "convert-to-plan", "--id", "id:2"]);
+    case.ok(&["entry", "convert-to-plan", "--id", "id:2", "--yes"]);
+    assert!(
+        case.ok(&["plan", "list", "--agreement", "id:1"])
+            .contains("Legacy-style future")
+    );
+    case.fails(2, &["plan", "cancel", "--id", "id:2"]);
+    case.ok(&["plan", "cancel", "--id", "id:2", "--yes"]);
+    assert_eq!(case.ok(&["plan", "list", "--agreement", "id:1"]), "");
+}
+
+#[test]
 fn deleting_entries_requires_confirmation_and_works_after_archival() {
     let case = Case::new();
     case.ok(&["client", "add", "--name", "Acme"]);
@@ -332,6 +454,8 @@ fn deleting_entries_requires_confirmation_and_works_after_archival() {
         "website",
         "-s",
         "Future",
+        "--kind",
+        "completed",
         "--from",
         "2030-03-12T09:00:00Z",
         "--to",
@@ -796,7 +920,7 @@ send "\r"
 await "Berlin."
 after 100
 send "2jlBackfill\t1000\t1100\t\r"
-await "Log time"
+await "Log completed time"
 send "\r"
 await "Logged Backfill"
 after 100

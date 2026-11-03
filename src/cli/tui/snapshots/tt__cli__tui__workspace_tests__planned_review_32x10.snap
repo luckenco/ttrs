@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dash  [2 Agreements]  : menu "
+"Review · Log or plan time · 1/25"
+"WARNING: 2026-01: OVERBOOKED by "
+"01:01:56 after this plan.       "
+"Advisory only; saving is still  "
+"allowed.                        "
+"                                "
+"Times without a date mean today "
+"Enter: Save planned time        "
+"↑↓ scroll  Esc edit  F1 details "

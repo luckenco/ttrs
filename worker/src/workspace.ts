@@ -10,6 +10,25 @@ const WRITE_HEADROOM = 4096, IMPORT_HEADROOM = 2048;
 interface Config extends Identity { name: string; job?: string }
 interface BackupJob { id: string; payload: string; attempts: number; order?: string; complete?: Published }
 export class WorkspaceDO extends DurableObject<Env> {
+  constructor(ctx: DurableObjectState, env: Env) {
+    super(ctx, env);
+    this.ctx.blockConcurrencyWhile(async () => {
+      const config = this.ctx.storage.kv.get<Config>("config");
+      if (!config) return;
+      const snapshot = this.ctx.storage.transactionSync(() => this.#core().call("migration_snapshot", { now: now() }));
+      if (snapshot === null) return;
+      const payload = JSON.stringify(snapshot);
+      // Fail closed: no schema writes until an independently verified R2 safety
+      // copy exists. Initialization blocks requests throughout capture/publication.
+      const saved = await publish(this.env.BACKUPS, `safety/${config.workspace}/${config.incarnation}`, `pre-v3-${crypto.randomUUID()}`, payload);
+      if (await verifyPublished(this.env.BACKUPS, saved.key) !== payload) throw new Failure("BackupVerification", 503);
+      this.ctx.storage.transactionSync(() => {
+        this.#core().call("migrate", { now: now(), payload }, true);
+        this.ctx.storage.kv.put("schemaMigration", saved);
+      });
+      await this.ctx.storage.sync();
+    });
+  }
   #core() { return new Core(module, this.ctx.storage.sql); }
   #config(): Config {
     const config = this.ctx.storage.kv.get<Config>("config");

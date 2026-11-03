@@ -98,6 +98,9 @@ pub struct RetainerMonth {
     /// Actual recorded and live work in microseconds.
     #[serde(serialize_with = "crate::protocol::decimal")]
     pub worked_us: i128,
+    /// Reserved duration for this month, including overdue uncompleted plans.
+    #[serde(serialize_with = "crate::protocol::decimal")]
+    pub planned_us: i128,
     /// Included duration, prorated and truncated to whole microseconds.
     #[serde(serialize_with = "crate::protocol::decimal")]
     pub included_us: i128,
@@ -111,6 +114,11 @@ pub struct RetainerMonth {
 }
 
 impl RetainerMonth {
+    /// Remaining included time after actual work and reservations. Negative means overbooked.
+    pub const fn available_us(&self) -> i128 {
+        self.included_us - self.worked_us - self.planned_us
+    }
+
     /// Returns the base fee plus any hourly overage, in millionths of currency.
     pub const fn charge_micros(&self) -> i128 {
         self.fee_micros + self.overage_micros

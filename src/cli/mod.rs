@@ -97,7 +97,29 @@ pub enum Command {
         id: String,
         yes: bool,
     },
+    Budget {
+        month: Option<String>,
+    },
+    PlanList {
+        agreement: String,
+    },
+    PlanCancel {
+        id: String,
+        yes: bool,
+    },
+    PlanChange {
+        id: String,
+        from: String,
+        to: String,
+        scope: Option<String>,
+        complete: bool,
+    },
+    EntryConvert {
+        id: String,
+        yes: bool,
+    },
     Log {
+        kind: Option<clap::EntryKind>,
         target: TrackingTarget,
         scope: String,
         from: String,

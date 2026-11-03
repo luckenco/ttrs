@@ -110,10 +110,10 @@ export class AuthorityDO extends DurableObject<Env> {
     if (job.phase === "import") {
       const payload = await verifyPublished(this.env.BACKUPS, job.source);
       await target.create(capability, { ...job.target, job: id }, false);
-      const result = await target.importInactive(targetContext, id, payload) as Snapshot["manifest"];
+      const result = await target.importInactive(targetContext, id, payload) as Snapshot["manifest"] & { source_data_digest?: string };
       const source = JSON.parse(payload) as Snapshot;
       if (result.workspace !== job.target.workspace || result.incarnation !== job.target.incarnation ||
-          result.data_digest !== source.manifest.data_digest || result.receipt_digest !== source.manifest.receipt_digest) throw new Failure("ImportVerification", 503);
+          (result.source_data_digest ?? result.data_digest) !== source.manifest.data_digest || result.receipt_digest !== source.manifest.receipt_digest) throw new Failure("ImportVerification", 503);
       return this.#move(id, "import", { phase: "staged" });
     }
     if (job.phase === "staged") return this.#move(id, "staged", { phase: "freezing" });

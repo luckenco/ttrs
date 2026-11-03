@@ -1,7 +1,9 @@
 //! Versioned shared SQLite definitions and portable row order.
-pub(crate) const VERSION: u32 = 2;
+pub(crate) const VERSION: u32 = 3;
 pub(crate) const RULES: u32 = 1;
-pub(crate) const SCHEMA: &str = include_str!("../schema/v2.sql");
+pub(crate) const SCHEMA: &str = include_str!("../schema/v3.sql");
+pub(crate) const V2: &str = include_str!("../schema/v2.sql");
+pub(crate) const MIGRATE_V3: &str = include_str!("../schema/migrate-v3.sql");
 pub(crate) const V1: &str = include_str!("../schema/v1.sql");
 pub(crate) const MIGRATE_V2: &str = include_str!("../schema/migrate-v2.sql");
 #[cfg(feature = "native")]
@@ -104,6 +106,16 @@ pub(crate) const TABLES: &[(&str, &[&str])] = &[
     ),
     (
         "tt_time_entries",
+        &[
+            "id",
+            "agreement_id",
+            "scope",
+            "started_at_us",
+            "ended_at_us",
+        ],
+    ),
+    (
+        "tt_plans",
         &[
             "id",
             "agreement_id",

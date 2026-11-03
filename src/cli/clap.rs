@@ -116,8 +116,20 @@ enum TopCommand {
         #[command(subcommand)]
         command: EntryCommand,
     },
-    /// Log a completed entry.
+    /// Browse retainer budgets (YYYY-MM; defaults to the display month).
+    Budget {
+        #[arg(long)]
+        month: Option<String>,
+    },
+    /// Manage existing reservations. Add them with log.
+    Plan {
+        #[command(subcommand)]
+        command: PlanCommand,
+    },
+    /// Log completed time or reserve planned time; future starts default to planned.
     Log {
+        #[arg(long, value_enum)]
+        kind: Option<EntryKind>,
         #[command(flatten)]
         target: TargetArgs,
         #[arg(short, long)]
@@ -208,6 +220,13 @@ enum RestoreCommand {
 
 #[derive(Subcommand)]
 enum EntryCommand {
+    /// Convert a wholly future completed log to a reservation, preserving its details.
+    ConvertToPlan {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
     /// List completed entries, newest first.
     List {
         /// Agreement reference in id:<number> form; historical/archived terms are allowed.
@@ -221,6 +240,46 @@ enum EntryCommand {
         /// Confirm irreversible deletion; estimates and recorded usage will change.
         #[arg(long)]
         yes: bool,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, clap::ValueEnum)]
+pub enum EntryKind {
+    Completed,
+    Planned,
+}
+
+#[derive(Subcommand)]
+enum PlanCommand {
+    List {
+        #[arg(long)]
+        agreement: String,
+    },
+    Cancel {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    Reschedule {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        scope: Option<String>,
+    },
+    Complete {
+        #[arg(long)]
+        id: String,
+        #[arg(long)]
+        from: String,
+        #[arg(long)]
+        to: String,
+        #[arg(long)]
+        scope: Option<String>,
     },
 }
 
@@ -471,12 +530,54 @@ impl Command {
             Some(TopCommand::Entry {
                 command: EntryCommand::Delete { id, yes },
             }) => Self::EntryDelete { id, yes },
+            Some(TopCommand::Budget { month }) => Self::Budget { month },
+            Some(TopCommand::Plan {
+                command: PlanCommand::List { agreement },
+            }) => Self::PlanList { agreement },
+            Some(TopCommand::Plan {
+                command: PlanCommand::Cancel { id, yes },
+            }) => Self::PlanCancel { id, yes },
+            Some(TopCommand::Plan {
+                command:
+                    PlanCommand::Reschedule {
+                        id,
+                        from,
+                        to,
+                        scope,
+                    },
+            }) => Self::PlanChange {
+                id,
+                from,
+                to,
+                scope,
+                complete: false,
+            },
+            Some(TopCommand::Plan {
+                command:
+                    PlanCommand::Complete {
+                        id,
+                        from,
+                        to,
+                        scope,
+                    },
+            }) => Self::PlanChange {
+                id,
+                from,
+                to,
+                scope,
+                complete: true,
+            },
+            Some(TopCommand::Entry {
+                command: EntryCommand::ConvertToPlan { id, yes },
+            }) => Self::EntryConvert { id, yes },
             Some(TopCommand::Log {
+                kind,
                 target,
                 scope,
                 from,
                 to,
             }) => Self::Log {
+                kind,
                 target: target.into_target(),
                 scope,
                 from,

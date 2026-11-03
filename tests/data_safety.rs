@@ -127,7 +127,7 @@ fn resign(snapshot: &mut Value) {
     );
     snapshot["manifest"]["data_bytes"] = json!(data.len().to_string());
     snapshot["manifest"]["data_digest"] = json!(format!("{:x}", Sha256::digest(data.as_bytes())));
-    for index in 0..5 {
+    for index in 0..snapshot["data"]["tables"].as_array().unwrap().len() {
         snapshot["manifest"]["counts"][index] = json!(
             snapshot["data"]["tables"][index]
                 .as_array()
@@ -139,12 +139,58 @@ fn resign(snapshot: &mut Value) {
 }
 
 #[test]
+fn resigned_plan_corruption_is_rejected_without_asserting_storage_invariants() {
+    let root = fixture();
+    let path = root.path().join("work.sqlite");
+    let now = NOW.parse().unwrap();
+    let mut workspace = tt::workspace::Workspace::open(&path).unwrap();
+    let authority = workspace.session("local", now).unwrap().stamp.authority;
+    workspace
+        .apply(
+            &authority,
+            tt::workspace::Operation::Plan(
+                command::LogEntry::new(
+                    "2".parse().unwrap(),
+                    "planned".into(),
+                    "2026-11-10T09:00:00Z".parse().unwrap(),
+                    "2026-11-10T10:00:00Z".parse().unwrap(),
+                )
+                .unwrap(),
+            ),
+            now,
+        )
+        .unwrap();
+    let cut = maintenance::export(&path, now).unwrap();
+    let valid: Value = serde_json::from_slice(&cut.to_bytes().unwrap()).unwrap();
+    for (pointer, value) in [
+        ("/data/tables/5/0/0", json!("0")),
+        ("/data/tables/5/0/1", json!("999")),
+        ("/data/tables/5/0/2", json!("  ")),
+        (
+            "/data/tables/5/0/4",
+            valid["data"]["tables"][5][0][3].clone(),
+        ),
+        ("/data/sequences/2", json!("0")),
+        ("/data/tables/5/0", json!(["1"])),
+        ("/data/tables", json!([])),
+    ] {
+        let mut broken = valid.clone();
+        *broken.pointer_mut(pointer).unwrap() = value;
+        resign(&mut broken);
+        let result =
+            std::panic::catch_unwind(|| portable::verify(&serde_json::to_vec(&broken).unwrap()));
+        assert!(result.is_ok(), "panicked at {pointer}");
+        assert!(result.unwrap().is_err(), "accepted {pointer}");
+    }
+}
+
+#[test]
 fn portable_and_native_roundtrips_preserve_every_row_and_deleted_highwater() {
     let root = fixture();
     let path = root.path().join("work.sqlite");
     let now = NOW.parse().unwrap();
     let original = maintenance::export(&path, now).unwrap();
-    assert_eq!(original.manifest().counts, ["3", "3", "4", "2", "3"]);
+    assert_eq!(original.manifest().counts, ["3", "3", "4", "2", "3", "0"]);
     assert_eq!(original.manifest().revision, "17");
     let file = root.path().join("snapshot.json");
     maintenance::save(&original, &file).unwrap();

@@ -8,6 +8,7 @@ use super::{
     catalog::{self, Browser, Catalogs, Reference},
     choose::Choose,
     effects::Apply,
+    entries::{self, Entry},
     form::{Form, Kind},
     state::{App, move_selection},
     view,
@@ -61,6 +62,7 @@ pub(super) enum Action {
     StopAt,
     Cancel,
     Entries,
+    Budget,
     Log,
     NewClient,
     NewProject,
@@ -86,7 +88,12 @@ pub(super) enum Overlay {
     Actions(Choose<ActionItem>),
     Filter(Choose<(Option<model::ClientId>, String)>),
     Form(Box<Form>),
-    Entries(Choose<model::TimeEntry>),
+    Entries(entries::Browser),
+    Budget {
+        month: jiff::civil::Date,
+        text: String,
+        scroll: u16,
+    },
     Detail {
         title: String,
         text: String,
@@ -177,7 +184,7 @@ impl Workspace {
         match &mut self.overlay {
             Some(Overlay::Actions(picker)) => picker.paste(text),
             Some(Overlay::Filter(picker)) => picker.paste(text),
-            Some(Overlay::Entries(picker)) => picker.paste(text),
+            Some(Overlay::Entries(browser)) => browser.picker.paste(text),
             Some(Overlay::Form(form)) => form.paste(text),
             _ => {
                 if let Some(browser) = self.browser_mut()
@@ -410,7 +417,13 @@ impl App {
                     }
                     Ok(())
                 } else if key.code == KeyCode::Esc && form.picker.is_none() {
-                    if matches!(form.kind, Kind::Cancel(_) | Kind::DeleteEntry(_)) {
+                    if matches!(
+                        form.kind,
+                        Kind::Cancel(_)
+                            | Kind::DeleteEntry(_)
+                            | Kind::CancelPlan(_)
+                            | Kind::ConvertToPlan(_)
+                    ) {
                         return Ok(());
                     }
                     if form.review.take().is_some() {
@@ -475,29 +488,76 @@ impl App {
                     Ok(())
                 }
             }
-            Overlay::Entries(picker) => {
+            Overlay::Entries(browser) => {
                 if key.code == KeyCode::Esc {
                     return Ok(());
                 }
-                if matches!(key.code, KeyCode::Enter | KeyCode::Tab) {
-                    if let Some(entry) = picker.selected() {
-                        if key.code == KeyCode::Tab {
-                            self.workspace.overlay = Some(Overlay::Detail {
-                                title: "Completed entry · Esc back".into(),
-                                text: super::recovery::entry_detail(entry, zone),
-                                scroll: 0,
-                            });
-                        } else if let Err(error) =
-                            self.recovery_form(Kind::DeleteEntry(entry.clone()), now, zone)
-                        {
+                if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT) {
+                    browser.cycle_filter(zone);
+                    self.workspace.overlay = Some(overlay);
+                    return Ok(());
+                }
+                if let Some(entry) = browser.picker.selected() {
+                    if key.code == KeyCode::Tab {
+                        self.workspace.overlay = Some(Overlay::Detail {
+                            title: "Entry · Esc back".into(),
+                            text: entry.detail(zone),
+                            scroll: 0,
+                        });
+                        self.workspace.back.push(overlay);
+                        return Ok(());
+                    }
+                    let alt = key.modifiers.contains(KeyModifiers::ALT);
+                    let kind = match (entry, key.code) {
+                        (Entry::Completed(entry), KeyCode::Enter) => {
+                            Some(Kind::DeleteEntry(entry.clone()))
+                        }
+                        (Entry::Completed(entry), KeyCode::Char('c')) if alt => {
+                            Some(Kind::ConvertToPlan(entry.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Enter) => {
+                            Some(Kind::CompletePlan(plan.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Char('r')) if alt => {
+                            Some(Kind::Reschedule(plan.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Char('d')) if alt => {
+                            Some(Kind::CancelPlan(plan.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
+                        if let Err(error) = self.recovery_form(kind, now, zone) {
                             self.workspace.overlay = Some(overlay);
                             return Err(error);
                         }
                         self.workspace.back.push(overlay);
                         return Ok(());
                     }
+                }
+                browser.picker.key(key);
+                Ok(())
+            }
+            Overlay::Budget {
+                month,
+                scroll: position,
+                ..
+            } => {
+                if key.code == KeyCode::Esc {
+                    return Ok(());
+                }
+                if matches!(key.code, KeyCode::Char('[') | KeyCode::Char(']')) {
+                    let shift = if key.code == KeyCode::Char('[') {
+                        -1
+                    } else {
+                        1
+                    };
+                    let next = month
+                        .checked_add(jiff::Span::new().months(shift))
+                        .map_err(|e| Error::usage(e.to_string()))?;
+                    self.request_read(super::effects::Read::Budget(next), zone)?;
                 } else {
-                    picker.key(key);
+                    scroll(position, key.code);
                 }
                 Ok(())
             }
@@ -554,6 +614,14 @@ impl App {
                 self.key(KeyCode::Char('s').into(), now, zone)?;
             }
             Action::Entries => self.browse_entries(zone)?,
+            Action::Budget => {
+                self.request_read(
+                    super::effects::Read::Budget(
+                        now.to_zoned(zone.clone()).date().first_of_month(),
+                    ),
+                    zone,
+                )?;
+            }
             Action::Cancel => self.cancel_review(now, zone)?,
             Action::StopNow => {
                 self.key(KeyCode::Char('x').into(), now, zone)?;
@@ -754,7 +822,7 @@ impl App {
             ),
             (
                 Action::Log,
-                "Log completed time · l",
+                "Log or plan time · l",
                 self.workspace
                     .catalogs
                     .projects
@@ -827,7 +895,7 @@ impl App {
                 (Action::FilterClient, "Filter by client · f", None),
                 (
                     Action::Entries,
-                    "Browse completed entries",
+                    "Browse entries",
                     project
                         .is_none()
                         .then_some("Select a project or agreement first."),
@@ -863,6 +931,11 @@ impl App {
                 });
             }
         }
+        items.push(ActionItem {
+            action: Action::Budget,
+            label: "Retainer budgets · browse months".into(),
+            disabled: None,
+        });
         let busy = project.is_some_and(|project| {
             self.snapshot.projects.iter().any(|p| {
                 p.client.id() == project.client()
@@ -877,7 +950,7 @@ impl App {
             if item.disabled.is_some() {
                 continue;
             }
-            if busy && matches!(item.action, Action::Replace | Action::Archive | Action::Log) {
+            if busy && matches!(item.action, Action::Replace | Action::Archive) {
                 item.disabled = Some("Stop this client's running timer first.".into());
             }
             if self.refresh_error.is_some()
@@ -889,6 +962,7 @@ impl App {
                         | Action::StopAt
                         | Action::Cancel
                         | Action::Entries
+                        | Action::Budget
                         | Action::Log
                         | Action::NewClient
                         | Action::NewProject
@@ -920,9 +994,23 @@ pub(super) fn scroll(position: &mut u16, code: KeyCode) {
 
 fn help(section: Section) -> String {
     format!(
-        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log completed time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nRecovery: use : Cancel selected timer on Dashboard, or : Browse completed entries in Agreements/Projects. Search entries; Tab opens full details. Enter opens a review; Enter again confirms. Esc cancels without changing work.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
+        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log or plan time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nPlanning: l defaults future starts to Planned; override Entry type if needed. : Browse entries shows Completed and Planned together; Alt-f cycles All / Completed / Planned without clearing search. For a plan: Enter to complete, Alt-r to reschedule, Alt-d to cancel. For completed work: Enter to delete, Alt-c to convert a wholly future log to a plan. : Retainer budgets browses months with [ and ]. Plans remain reserved until explicitly completed or cancelled.\n\nRecovery: use : Cancel selected timer on Dashboard, or : Browse entries in Agreements/Projects. Search entries; Tab opens full details. Enter opens a review; Enter again confirms. Esc cancels without changing work.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
         section.title()
     )
+}
+
+pub(super) fn budget_text(totals: &[model::RetainerMonth]) -> String {
+    if totals.is_empty() {
+        return "No retainer coverage in this month.".into();
+    }
+    totals.iter().map(|r| format!(
+        "{} / {} · {}\nBilling timezone: {}\nWorked: {}\nPlanned: {}\nIncluded: {}\nAvailable: {}{}",
+        r.client.name(), r.project.name(), r.agreement.name(),
+        r.project.billing_timezone().iana_name().unwrap_or("UTC"),
+        super::duration(r.worked_us), super::duration(r.planned_us),
+        super::duration(r.included_us), super::duration(r.available_us()),
+        if r.available_us() < 0 { " · OVERBOOKED" } else { "" },
+    )).collect::<Vec<_>>().join("\n\n")
 }
 
 fn totals(snapshot: &model::Dashboard) -> String {
@@ -942,13 +1030,15 @@ fn totals(snapshot: &model::Dashboard) -> String {
     }
     for r in &snapshot.retainers {
         lines.push(format!(
-            "\n{} / {} · {}\n{} · {} / {} included\nBase fee: {}\nOverage: {}\nCharge: {}",
+            "\n{} / {} · {}\n{} · {} / {} included\nPlanned: {} · Available: {}\nBase fee: {}\nOverage: {}\nCharge: {}",
             r.client.name(),
             r.project.name(),
             r.agreement.name(),
             r.month,
             super::duration(r.worked_us),
             super::duration(r.included_us),
+            super::duration(r.planned_us),
+            super::duration(r.available_us()),
             view::money(r.agreement.pricing().currency(), r.fee_micros),
             view::money(r.agreement.pricing().currency(), r.overage_micros),
             view::money(r.agreement.pricing().currency(), r.charge_micros())

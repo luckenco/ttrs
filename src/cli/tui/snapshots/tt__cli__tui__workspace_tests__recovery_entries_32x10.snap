@@ -1,15 +1,14 @@
 ---
 source: src/cli/tui/workspace_tests.rs
-assertion_line: 909
 expression: terminal.backend()
 ---
 " 1 Dash  [2 Agreements]  : menu "
-"Completed entries               "
+"Entries · All · Alt-f filter    "
 "› Search                        "
 "Future                          "
-"› id:1 · Future entry · 2026-01…"
+"› Completed · id:1 · Future ent…"
 "                                "
 "                                "
-"Enter: review deletion · Tab:   "
-"details · Esc: back             "
-"Search  Enter review  Tab info  "
+"Enter: delete · Alt-c: plan ·   "
+"Tab: details                    "
+"Enter delete  Alt-c plan        "

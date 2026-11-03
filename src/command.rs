@@ -69,6 +69,15 @@ pub struct LogEntry {
 }
 
 impl LogEntry {
+    /// Agreement selected for this interval.
+    pub const fn agreement(&self) -> model::ServiceAgreementId {
+        self.agreement
+    }
+    /// Start and exclusive end at storage precision.
+    pub const fn interval(&self) -> (Timestamp, Timestamp) {
+        (self.started_at, self.ended_at)
+    }
+
     /// Creates a completed-entry command.
     ///
     /// The scope must not be empty and the end must be later than the start.

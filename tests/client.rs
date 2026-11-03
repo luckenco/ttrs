@@ -1194,6 +1194,8 @@ fn stable_domain_codes_cover_every_core_error() {
     // Exhaustive golden oracle: extending Error forces an explicit wire contract decision here.
     fn golden(error: &tt::Error) -> (&'static str, bool) {
         match error {
+            tt::Error::FutureCompletion => ("FutureCompletion", true),
+            tt::Error::EntryNotFuture => ("EntryNotFuture", true),
             tt::Error::AuthorityChanged => ("AuthorityChanged", false),
             tt::Error::PrincipalChanged => ("PrincipalChanged", false),
             tt::Error::WorkspaceFrozen => ("WorkspaceFrozen", false),
@@ -1243,6 +1245,8 @@ fn stable_domain_codes_cover_every_core_error() {
             tt::Error::TimerChanged(..) => ("TimerChanged", true),
             tt::Error::EntryNotFound(..) => ("EntryNotFound", true),
             tt::Error::EntryChanged(..) => ("EntryChanged", true),
+            tt::Error::PlanChanged(..) => ("PlanChanged", true),
+            tt::Error::PlanNotFound(..) => ("PlanNotFound", true),
             tt::Error::SwitchClientMismatch => ("SwitchClientMismatch", true),
             tt::Error::DatabaseSchemaOutdated => ("DatabaseSchemaOutdated", false),
             tt::Error::InvalidBackup(..) => ("InvalidBackup", false),
@@ -1250,6 +1254,18 @@ fn stable_domain_codes_cover_every_core_error() {
         }
     }
     for (error, code, domain) in [
+        (tt::Error::FutureCompletion, "FutureCompletion", true),
+        (tt::Error::EntryNotFuture, "EntryNotFuture", true),
+        (
+            tt::Error::PlanNotFound(1.try_into().unwrap()),
+            "PlanNotFound",
+            true,
+        ),
+        (
+            tt::Error::PlanChanged(1.try_into().unwrap()),
+            "PlanChanged",
+            true,
+        ),
         (tt::Error::AuthorityChanged, "AuthorityChanged", false),
         (tt::Error::PrincipalChanged, "PrincipalChanged", false),
         (tt::Error::WorkspaceFrozen, "WorkspaceFrozen", false),

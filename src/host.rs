@@ -11,6 +11,7 @@ pub const SCHEMA_VERSION: u32 = crate::schema::VERSION;
 pub const RULES_VERSION: u32 = crate::schema::RULES;
 pub const SCHEMA: &str = crate::schema::SCHEMA;
 pub const MIGRATE_V2: &str = crate::schema::MIGRATE_V2;
+pub const MIGRATE_V3: &str = crate::schema::MIGRATE_V3;
 
 /// DDL is a separate capability used only with trusted shared schema constants.
 /// Implementations must not permit transaction-control SQL to escape host ownership.
@@ -48,10 +49,12 @@ pub fn verify_schema(db: &dyn ReadSql) -> Result<()> {
 /// Host must durably retain the independently captured verified backup BEFORE this transaction.
 /// Compare the complete legacy snapshot and exact schema under the writer reservation.
 pub fn migrate_v1(tx: &mut dyn SchemaSql, backup: &portable::Verified) -> Result<()> {
-    if backup.manifest().format != 1
-        || backup.manifest().schema != 1
-        || !crate::schema::matches(tx, crate::schema::V1)?
-    {
+    let source = match backup.manifest().schema {
+        1 => crate::schema::V1,
+        2 => crate::schema::V2,
+        _ => return Err(crate::Error::DatabaseSchemaOutdated),
+    };
+    if !crate::schema::matches(tx, source)? {
         return Err(crate::Error::DatabaseSchemaOutdated);
     }
     let now = backup
@@ -64,14 +67,29 @@ pub fn migrate_v1(tx: &mut dyn SchemaSql, backup: &portable::Verified) -> Result
             "migration backup does not match source",
         ));
     }
-    tx.batch(MIGRATE_V2)?;
+    if backup.manifest().schema == 1 {
+        tx.batch(MIGRATE_V2)?;
+    }
+    tx.batch(MIGRATE_V3)?;
     verify_schema(tx)?;
-    if portable::capture(tx, now)?.manifest().data_digest != backup.manifest().data_digest {
+    if !portable::same_data(&portable::capture(tx, now)?, backup) {
         return Err(crate::Error::InvalidBackup(
             "migration changed domain data or revision",
         ));
     }
     Ok(())
+}
+
+/// Return a verified migration cut only for a recognized older schema.
+/// Hosts must durably publish it before invoking `migrate_v1`.
+pub fn migration_snapshot(db: &dyn ReadSql, now: Timestamp) -> Result<Option<portable::Verified>> {
+    if crate::schema::matches(db, crate::schema::V1)?
+        || crate::schema::matches(db, crate::schema::V2)?
+    {
+        return Ok(Some(portable::capture(db, now)?));
+    }
+    verify_schema(db)?;
+    Ok(None)
 }
 
 /// After host executes shared schema SQL, initialize fresh identity in the same transaction.
@@ -129,6 +147,12 @@ pub fn decode_query(bytes: &[u8]) -> Result<workspace::Query> {
     #[derive(serde::Deserialize)]
     #[serde(deny_unknown_fields)]
     enum Dto {
+        Plans {
+            agreement: String,
+        },
+        Budget {
+            month: String,
+        },
         Lookup {
             kind: String,
             id: String,
@@ -148,6 +172,14 @@ pub fn decode_query(bytes: &[u8]) -> Result<workspace::Query> {
     }
     let dto: Dto = serde_json::from_slice(bytes).map_err(|_| crate::Error::InvalidRequest)?;
     match dto {
+        Dto::Plans { agreement } => Ok(workspace::Query::Plans {
+            agreement: agreement
+                .parse()
+                .map_err(|_| crate::Error::InvalidRequest)?,
+        }),
+        Dto::Budget { month } => Ok(workspace::Query::Budget {
+            month: month.parse().map_err(|_| crate::Error::InvalidRequest)?,
+        }),
         Dto::Lookup { kind, id } => {
             let id = crate::sql::integer(&id).map_err(|_| crate::Error::InvalidRequest)?;
             let reference = match kind.as_str() {
@@ -161,6 +193,9 @@ pub fn decode_query(bytes: &[u8]) -> Result<workspace::Query> {
                     id.try_into().map_err(|_| crate::Error::InvalidRequest)?,
                 ),
                 "Timer" => workspace::Reference::Timer(
+                    id.try_into().map_err(|_| crate::Error::InvalidRequest)?,
+                ),
+                "Plan" => workspace::Reference::Plan(
                     id.try_into().map_err(|_| crate::Error::InvalidRequest)?,
                 ),
                 "Entry" => workspace::Reference::Entry(

@@ -62,6 +62,24 @@ pub enum Operation {
         at: WorkTime,
     },
     Log(command::LogEntry),
+    /// Reserve time without affecting actual work, earnings or hard caps.
+    Plan(command::LogEntry),
+    Reschedule {
+        expected: model::Plan,
+        interval: command::LogEntry,
+    },
+    /// Atomically replace a reservation with reviewed actual work.
+    CompletePlan {
+        expected: model::Plan,
+        actual: command::LogEntry,
+    },
+    CancelPlan {
+        expected: model::Plan,
+    },
+    /// Explicitly convert a wholly future completed entry; existing logs are never reclassified automatically.
+    ConvertToPlan {
+        expected: model::TimeEntry,
+    },
     Cancel {
         expected: model::RunningTimer,
     },
@@ -222,6 +240,38 @@ pub(crate) fn apply(
             let (a, s, start, end) = log.into_parts();
             w::MutationValue::Entry(store.log(a, s, start, end)?)
         }
+        Operation::Plan(interval) => w::MutationValue::Plan(store.add_plan(interval)?),
+        Operation::Reschedule { expected, interval } => {
+            w::MutationValue::Plan(store.reschedule(&expected, interval)?)
+        }
+        Operation::CompletePlan { expected, actual } => {
+            let (a, scope, start, end) = actual.into_parts();
+            if a != expected.agreement() {
+                return Err(Error::InvalidRequest);
+            }
+            if end > now {
+                return Err(Error::FutureCompletion);
+            }
+            store.cancel_plan(&expected)?;
+            w::MutationValue::Entry(store.log(a, scope, start, end)?)
+        }
+        Operation::CancelPlan { expected } => {
+            store.cancel_plan(&expected)?;
+            w::MutationValue::Removed
+        }
+        Operation::ConvertToPlan { expected } => {
+            if expected.started_at() <= now {
+                return Err(Error::EntryNotFuture);
+            }
+            store.delete_entry_if_current(&expected)?;
+            let interval = command::LogEntry::new(
+                expected.agreement(),
+                expected.scope().into(),
+                expected.started_at(),
+                expected.ended_at(),
+            )?;
+            w::MutationValue::Plan(store.add_plan(interval)?)
+        }
         Operation::Cancel { expected } => {
             store.cancel_if_current(&expected)?;
             w::MutationValue::Removed
@@ -268,6 +318,7 @@ pub(crate) fn read(
             }
             w::Reference::Timer(id) => w::Item::Timer(store.timer(id)?),
             w::Reference::Entry(id) => w::Item::Entry(store.entry(id)?),
+            w::Reference::Plan(id) => w::Item::Plan(store.plan(id)?),
         }),
         w::Query::Overview { zone } => {
             stamp.display_zone = Some(crate::protocol::display_zone(&zone)?);
@@ -278,6 +329,13 @@ pub(crate) fn read(
                 agreements: store.agreements()?,
                 status: store.status(now)?,
             }))
+        }
+        w::Query::Plans { agreement } => w::ProjectionValue::Plans(store.plans(agreement)?),
+        w::Query::Budget { month } => {
+            if month.day() != 1 {
+                return Err(Error::InvalidRequest);
+            }
+            w::ProjectionValue::Budget(store.budget(month, now)?)
         }
         w::Query::RecentScopes { project, limit } => {
             if limit == 0 || limit > 100 {

@@ -20,6 +20,7 @@ mod driver_tests;
 #[cfg(test)]
 mod effect_tests;
 mod effects;
+mod entries;
 mod form;
 mod input;
 mod recovery;
@@ -34,15 +35,7 @@ mod workspace;
 mod workspace_tests;
 mod workspace_view;
 
-fn duration(us: i128) -> String {
-    let seconds = us.max(0) / 1_000_000;
-    format!(
-        "{:02}:{:02}:{:02}",
-        seconds / 3600,
-        seconds / 60 % 60,
-        seconds % 60
-    )
-}
+use crate::cli::app::duration_us as duration;
 
 struct PasteMode;
 

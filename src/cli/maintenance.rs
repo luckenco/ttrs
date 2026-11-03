@@ -208,12 +208,13 @@ fn summary(snapshot: &portable::Verified) -> Result<(), Error> {
         manifest.workspace, manifest.incarnation, manifest.revision
     ))?;
     line(format_args!(
-        "Rows: clients={}, projects={}, agreements={}, running timers={}, entries={}",
+        "Rows: clients={}, projects={}, agreements={}, running timers={}, entries={}, plans={}",
         manifest.counts[0],
         manifest.counts[1],
         manifest.counts[2],
         manifest.counts[3],
-        manifest.counts[4]
+        manifest.counts[4],
+        manifest.counts.get(5).map(String::as_str).unwrap_or("0")
     ))?;
     line(format_args!(
         "Integrity verification does not authenticate the source; restore only trusted backups."

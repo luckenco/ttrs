@@ -700,11 +700,20 @@ fn retainer_estimates_render_separately_from_daily_earnings() {
         }
     }
     let mut app = App::new(tracker.dashboard(now, &TimeZone::UTC).unwrap());
-    for (width, height) in [(100, 24), (50, 16), (32, 10)] {
+    for (width, height) in [(100, 24), (50, 16), (32, 24), (32, 10)] {
         let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
         terminal
             .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
             .unwrap();
+        if height >= 16 {
+            let screen = terminal.backend().to_string();
+            for label in ["Worked 24:00", "Planned 00:00", "Available -04:00"] {
+                assert!(
+                    screen.contains(label),
+                    "{label} missing at {width}x{height}"
+                );
+            }
+        }
         insta::assert_snapshot!(format!("retainers_{width}x{height}"), terminal.backend());
     }
 }

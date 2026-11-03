@@ -75,12 +75,34 @@ pub(super) fn draw(
                     &detail,
                 );
             }
-            Overlay::Entries(picker) => choose(
+            Overlay::Entries(browser) => {
+                let hint = match browser.picker.selected() {
+                    Some(super::entries::Entry::Completed(_)) => {
+                        "Enter: delete · Alt-c: plan · Tab: details"
+                    }
+                    Some(super::entries::Entry::Planned(_)) => {
+                        "Enter: complete · Alt-r: move · Alt-d: cancel · Tab: details"
+                    }
+                    None => "Alt-f: All / Completed / Planned · Esc: back",
+                };
+                choose(
+                    frame,
+                    &mut browser.picker,
+                    area,
+                    |entry| entry.label(zone),
+                    hint,
+                );
+            }
+            Overlay::Budget {
+                month,
+                text,
+                scroll,
+            } => detail(
                 frame,
-                picker,
+                &format!("Budget {month} · [ previous / ] next"),
+                text,
+                scroll,
                 area,
-                |entry| super::recovery::entry_label(entry, zone),
-                "Enter: review deletion · Tab: details · Esc: back",
             ),
             Overlay::Filter(picker) => choose(
                 frame,
@@ -470,7 +492,10 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
             if form.review.is_some()
                 && matches!(
                     form.kind,
-                    super::form::Kind::Cancel(_) | super::form::Kind::DeleteEntry(_)
+                    super::form::Kind::Cancel(_)
+                        | super::form::Kind::DeleteEntry(_)
+                        | super::form::Kind::CancelPlan(_)
+                        | super::form::Kind::ConvertToPlan(_)
                 ) =>
         {
             Some("↑↓ scroll  Esc cancel  F1 help")
@@ -482,7 +507,12 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         Some(Overlay::Form(_)) => {
             Some("Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details")
         }
-        Some(Overlay::Entries(_)) => Some("Search  Enter review  Tab info"),
+        Some(Overlay::Entries(browser)) => Some(match browser.picker.selected() {
+            Some(super::entries::Entry::Completed(_)) => "Enter delete  Alt-c plan",
+            Some(super::entries::Entry::Planned(_)) => "Enter complete  Alt-r move  Alt-d cancel",
+            None => "Alt-f filter  Esc back",
+        }),
+        Some(Overlay::Budget { .. }) => Some("[ / ] month  ↑↓ scroll  Esc back"),
         Some(Overlay::Detail { .. }) => Some("↑↓ scroll  : actions  Esc back"),
         Some(_) => Some("↑↓ choose  Enter open  Esc back"),
         None if app.workspace.section == Section::Agreements

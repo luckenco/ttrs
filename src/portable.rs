@@ -12,6 +12,8 @@
 //! Format 1 remains readable with an empty receipt section. Format 2 adds complete
 //! retained receipts, source-scoped audit outcomes and operational fences. Imports
 //! preserve these as audit data, never as replay permission or target activation.
+//! Schema 3 appends a plans table and a third sequence mark; schema 1/2 data
+//! remains readable and imports with empty plans. No existing entry is reclassified.
 //! Import discards only fences with neither source-scoped receipts nor a purge floor,
 //! including empty fences from older format-2 imports. Job-only control history is not
 //! receipt protection. Every receipt scope must have a live or audited fence; all
@@ -47,8 +49,9 @@ pub struct Manifest {
     pub revision: String,
     /// UTC capture instant at microsecond precision.
     pub captured_at: String,
-    /// Row counts in clients/projects/agreements/timers/entries order.
-    pub counts: [String; 5],
+    /// Row counts in clients/projects/agreements/timers/entries/plans order.
+    /// Schema 1/2 snapshots contain only the first five counts.
+    pub counts: Vec<String>,
     /// Canonical JSON data-section bytes, including sequences and revision.
     pub data_bytes: String,
     /// SHA-256 of the data section, excluding provenance.
@@ -64,8 +67,8 @@ pub struct Manifest {
 #[serde(deny_unknown_fields)]
 struct Data {
     // The fixed schema defines column order. Rows are ordered by positive ID.
-    tables: [Vec<Vec<sql::Cell>>; 5],
-    sequences: [String; 2],
+    tables: Vec<Vec<Vec<sql::Cell>>>,
+    sequences: Vec<String>,
     revision: String,
 }
 
@@ -214,7 +217,7 @@ pub fn verify(bytes: &[u8]) -> Result<Verified> {
 fn validate(snapshot: Snapshot) -> Result<Verified> {
     let manifest = &snapshot.manifest;
     if !((manifest.format == 1 && manifest.schema == 1)
-        || (manifest.format == FORMAT && manifest.schema == schema::VERSION))
+        || (manifest.format == FORMAT && matches!(manifest.schema, 2 | 3)))
         || (manifest.format == FORMAT && snapshot.fence.is_none())
         || manifest.rules != schema::RULES
         || (manifest.format == 1
@@ -252,6 +255,13 @@ fn validate(snapshot: Snapshot) -> Result<Verified> {
         || manifest.operational_digest != operational_digest(&snapshot)?
     {
         return Err(invalid("section size or digest mismatch"));
+    }
+    let table_count = if manifest.schema >= 3 { 6 } else { 5 };
+    if snapshot.data.tables.len() != table_count
+        || manifest.counts.len() != table_count
+        || snapshot.data.sequences.len() != table_count - 3
+    {
+        return Err(invalid("wrong table or sequence count"));
     }
     for (table, count) in snapshot.data.tables.iter().zip(&manifest.counts) {
         if *count != table.len().to_string() {
@@ -525,6 +535,19 @@ fn validate_data(data: &Data) -> Result<()> {
     Ok(())
 }
 
+// Schema 3 appends an empty plans table and sequence without changing old data.
+pub(crate) fn same_data(a: &Verified, b: &Verified) -> bool {
+    let a = &a.0.data;
+    let b = &b.0.data;
+    a.revision == b.revision
+        && a.tables[..5] == b.tables[..5]
+        && a.sequences[..2] == b.sequences[..2]
+        && a.tables.get(5).map(Vec::as_slice).unwrap_or_default()
+            == b.tables.get(5).map(Vec::as_slice).unwrap_or_default()
+        && a.sequences.get(2).map(String::as_str).unwrap_or("0")
+            == b.sequences.get(2).map(String::as_str).unwrap_or("0")
+}
+
 // Also used to verify pre-migration legacy safety copies, without inventing identity.
 #[cfg(feature = "native")]
 pub(crate) fn validate_legacy(db: &dyn sql::ReadSql) -> Result<()> {
@@ -533,7 +556,18 @@ pub(crate) fn validate_legacy(db: &dyn sql::ReadSql) -> Result<()> {
 
 #[cfg_attr(not(feature = "native"), allow(dead_code))]
 fn read_data(db: &dyn sql::ReadSql, legacy: bool) -> Result<Data> {
-    let mut tables: [Vec<Vec<sql::Cell>>; 5] = std::array::from_fn(|_| Vec::new());
+    let version: u32 = if legacy {
+        1
+    } else {
+        sql::one(
+            db,
+            "SELECT CAST(schema_version AS TEXT) FROM tt_metadata WHERE id = 1",
+            &[],
+            |r| r.get(0),
+        )?
+    };
+    let count = if version >= 3 { 6 } else { 5 };
+    let mut tables = vec![Vec::new(); count];
     for ((table, columns), rows) in schema::TABLES.iter().zip(&mut tables) {
         let table = if legacy {
             table.strip_prefix("tt_").unwrap()
@@ -551,8 +585,8 @@ fn read_data(db: &dyn sql::ReadSql, legacy: bool) -> Result<Data> {
             .map(|row| row.0)
             .collect();
     }
-    let mut sequences = [String::new(), String::new()];
-    for (table, sequence) in ["tt_running_timers", "tt_time_entries"]
+    let mut sequences = vec![String::new(); count - 3];
+    for (table, sequence) in ["tt_running_timers", "tt_time_entries", "tt_plans"]
         .iter()
         .zip(&mut sequences)
     {
@@ -617,7 +651,7 @@ pub(crate) fn capture(db: &dyn sql::ReadSql, now: Timestamp) -> Result<Verified>
         captured_at: Timestamp::from_microsecond(now.as_microsecond())
             .map_err(storage)?
             .to_string(),
-        counts: std::array::from_fn(|i| data.tables[i].len().to_string()),
+        counts: data.tables.iter().map(|t| t.len().to_string()).collect(),
         data_bytes: bytes.len().to_string(),
         data_digest: digest(&bytes),
         receipt_digest: digest(b"[]"),
@@ -734,7 +768,7 @@ pub(crate) fn import(tx: &mut dyn sql::WriteSql, verified: &Verified) -> Result<
             tx.write(&insert, row)?;
         }
     }
-    for (table, sequence) in ["tt_running_timers", "tt_time_entries"]
+    for (table, sequence) in ["tt_running_timers", "tt_time_entries", "tt_plans"]
         .iter()
         .zip(&verified.0.data.sequences)
     {
@@ -789,7 +823,7 @@ pub(crate) fn import(tx: &mut dyn sql::WriteSql, verified: &Verified) -> Result<
     {
         return Err(invalid("imported receipt audit mismatch"));
     }
-    if imported.manifest().data_digest != verified.manifest().data_digest {
+    if !same_data(&imported, verified) {
         return Err(invalid("imported data digest mismatch"));
     }
     Ok(())

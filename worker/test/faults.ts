@@ -78,6 +78,13 @@ export class WorkspaceDO extends ProductWorkspace {
   async fixture(capability: string, kind: string) {
     control(capability, this.env);
     if (kind === "alarm") return super.alarm();
+    if (kind === "v2") {
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("DROP TABLE tt_plans").toArray();
+        this.ctx.storage.sql.exec("UPDATE tt_metadata SET schema_version=2 WHERE id=1").toArray();
+      });
+      return;
+    }
     if (kind === "sequence") this.ctx.storage.sql.exec("INSERT INTO sqlite_sequence(name,seq) VALUES('tt_time_entries',9007199254740996)").toArray();
     else if (kind === "floor") this.ctx.storage.sql.exec("UPDATE tt_fence SET receipt_floor_us=1 WHERE id=1").toArray();
     else if (kind === "audit") this.ctx.storage.sql.exec("INSERT INTO tt_fence_audit VALUES(?,?,'active',NULL,1)", crypto.randomUUID(), crypto.randomUUID()).toArray();

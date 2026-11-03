@@ -7,6 +7,7 @@ mod billing;
 mod calendar;
 mod dashboard;
 mod lists;
+mod planning;
 mod recovery;
 mod retainers;
 mod timers;
@@ -550,7 +551,7 @@ fn project_has_work_after(
         connection,
         "SELECT CAST(EXISTS(
              SELECT 1
-             FROM tt_time_entries entry
+             FROM (SELECT agreement_id, ended_at_us FROM tt_time_entries UNION ALL SELECT agreement_id, ended_at_us FROM tt_plans) entry
              JOIN tt_service_agreements agreement ON agreement.id = entry.agreement_id
              WHERE agreement.project_id = CAST(?1 AS INTEGER)
                AND entry.ended_at_us > CAST(?2 AS INTEGER)
