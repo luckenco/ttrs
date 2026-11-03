@@ -20,6 +20,7 @@ mod driver_tests;
 #[cfg(test)]
 mod effect_tests;
 mod effects;
+mod entries;
 mod form;
 mod input;
 mod recovery;

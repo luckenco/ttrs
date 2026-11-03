@@ -75,20 +75,24 @@ pub(super) fn draw(
                     &detail,
                 );
             }
-            Overlay::Entries(picker) => choose(
-                frame,
-                picker,
-                area,
-                |entry| super::recovery::entry_label(entry, zone),
-                "Enter: delete · Alt-c: convert future log to plan · Tab: details",
-            ),
-            Overlay::Plans(picker) => choose(
-                frame,
-                picker,
-                area,
-                |plan| super::recovery::plan_label(plan, zone),
-                "Enter: complete · Alt-r: reschedule · Alt-d: cancel · Esc: back",
-            ),
+            Overlay::Entries(browser) => {
+                let hint = match browser.picker.selected() {
+                    Some(super::entries::Entry::Completed(_)) => {
+                        "Enter: delete · Alt-c: plan · Tab: details"
+                    }
+                    Some(super::entries::Entry::Planned(_)) => {
+                        "Enter: complete · Alt-r: move · Alt-d: cancel · Tab: details"
+                    }
+                    None => "Alt-f: All / Completed / Planned · Esc: back",
+                };
+                choose(
+                    frame,
+                    &mut browser.picker,
+                    area,
+                    |entry| entry.label(zone),
+                    hint,
+                );
+            }
             Overlay::Budget {
                 month,
                 text,
@@ -503,8 +507,11 @@ pub(super) fn shortcuts(app: &App, compact: bool) -> Option<&'static str> {
         Some(Overlay::Form(_)) => {
             Some("Tab / Shift-Tab field   Enter choose/next   Esc back   F1 details")
         }
-        Some(Overlay::Entries(_)) => Some("Search  Enter delete  Alt-c plan"),
-        Some(Overlay::Plans(_)) => Some("Enter complete  Alt-r move  Alt-d cancel"),
+        Some(Overlay::Entries(browser)) => Some(match browser.picker.selected() {
+            Some(super::entries::Entry::Completed(_)) => "Enter delete  Alt-c plan",
+            Some(super::entries::Entry::Planned(_)) => "Enter complete  Alt-r move  Alt-d cancel",
+            None => "Alt-f filter  Esc back",
+        }),
         Some(Overlay::Budget { .. }) => Some("[ / ] month  ↑↓ scroll  Esc back"),
         Some(Overlay::Detail { .. }) => Some("↑↓ scroll  : actions  Esc back"),
         Some(_) => Some("↑↓ choose  Enter open  Esc back"),

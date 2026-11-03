@@ -1,0 +1,14 @@
+---
+source: src/cli/tui/workspace_tests.rs
+expression: terminal.backend()
+---
+" 1 Dash  [2 Agreements]  : menu "
+"Entries · All · Alt-f filter    "
+"› Search                        "
+"Type to filter                  "
+"› Planned · id:1 · Shared plann…"
+"  Completed · id:1 · Shared com…"
+"                                "
+"Enter: complete · Alt-r: move · "
+"Alt-d: cancel · Tab: details    "
+"Enter complete  Alt-r move  Alt-"

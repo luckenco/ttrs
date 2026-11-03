@@ -33,8 +33,10 @@ pub(super) fn plan_label(plan: &model::Plan, zone: &TimeZone) -> String {
         plan.scope(),
         plan.started_at()
             .to_zoned(zone.clone())
-            .strftime("%F %R %:z"),
-        plan.ended_at().to_zoned(zone.clone()).strftime("%F %R %:z")
+            .strftime("%F %T%.f %:z %Z"),
+        plan.ended_at()
+            .to_zoned(zone.clone())
+            .strftime("%F %T%.f %:z %Z")
     )
 }
 
@@ -78,7 +80,7 @@ impl App {
             _ => return Err(Error::usage("Select a project or agreement first.")),
         };
         self.workspace.overlay = Some(Overlay::Detail {
-            title: "Completed entries".into(),
+            title: "Entries".into(),
             text: "Loading…".into(),
             scroll: 0,
         });

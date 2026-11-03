@@ -8,6 +8,7 @@ use super::{
     catalog::{self, Browser, Catalogs, Reference},
     choose::Choose,
     effects::Apply,
+    entries::{self, Entry},
     form::{Form, Kind},
     state::{App, move_selection},
     view,
@@ -61,7 +62,6 @@ pub(super) enum Action {
     StopAt,
     Cancel,
     Entries,
-    Plans,
     Budget,
     Log,
     NewClient,
@@ -88,8 +88,7 @@ pub(super) enum Overlay {
     Actions(Choose<ActionItem>),
     Filter(Choose<(Option<model::ClientId>, String)>),
     Form(Box<Form>),
-    Entries(Choose<model::TimeEntry>),
-    Plans(Choose<model::Plan>),
+    Entries(entries::Browser),
     Budget {
         month: jiff::civil::Date,
         text: String,
@@ -185,8 +184,7 @@ impl Workspace {
         match &mut self.overlay {
             Some(Overlay::Actions(picker)) => picker.paste(text),
             Some(Overlay::Filter(picker)) => picker.paste(text),
-            Some(Overlay::Entries(picker)) => picker.paste(text),
-            Some(Overlay::Plans(picker)) => picker.paste(text),
+            Some(Overlay::Entries(browser)) => browser.picker.paste(text),
             Some(Overlay::Form(form)) => form.paste(text),
             _ => {
                 if let Some(browser) = self.browser_mut()
@@ -490,54 +488,45 @@ impl App {
                     Ok(())
                 }
             }
-            Overlay::Entries(picker) => {
+            Overlay::Entries(browser) => {
                 if key.code == KeyCode::Esc {
                     return Ok(());
                 }
-                if matches!(key.code, KeyCode::Enter | KeyCode::Tab)
-                    || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::ALT))
-                {
-                    if let Some(entry) = picker.selected() {
-                        if key.code == KeyCode::Tab {
-                            self.workspace.overlay = Some(Overlay::Detail {
-                                title: "Completed entry · Esc back".into(),
-                                text: super::recovery::entry_detail(entry, zone),
-                                scroll: 0,
-                            });
-                        } else if let Err(error) = self.recovery_form(
-                            if key.code == KeyCode::Char('c') {
-                                Kind::ConvertToPlan(entry.clone())
-                            } else {
-                                Kind::DeleteEntry(entry.clone())
-                            },
-                            now,
-                            zone,
-                        ) {
-                            self.workspace.overlay = Some(overlay);
-                            return Err(error);
-                        }
+                if key.code == KeyCode::Char('f') && key.modifiers.contains(KeyModifiers::ALT) {
+                    browser.cycle_filter(zone);
+                    self.workspace.overlay = Some(overlay);
+                    return Ok(());
+                }
+                if let Some(entry) = browser.picker.selected() {
+                    if key.code == KeyCode::Tab {
+                        self.workspace.overlay = Some(Overlay::Detail {
+                            title: "Entry · Esc back".into(),
+                            text: entry.detail(zone),
+                            scroll: 0,
+                        });
                         self.workspace.back.push(overlay);
                         return Ok(());
                     }
-                } else {
-                    picker.key(key);
-                }
-                Ok(())
-            }
-            Overlay::Plans(picker) => {
-                if key.code == KeyCode::Esc {
-                    return Ok(());
-                }
-                if key.code == KeyCode::Enter
-                    || (matches!(key.code, KeyCode::Char('r') | KeyCode::Char('d'))
-                        && key.modifiers.contains(KeyModifiers::ALT))
-                {
-                    if let Some(plan) = picker.selected() {
-                        let kind = match key.code {
-                            KeyCode::Char('r') => Kind::Reschedule(plan.clone()),
-                            KeyCode::Char('d') => Kind::CancelPlan(plan.clone()),
-                            _ => Kind::CompletePlan(plan.clone()),
-                        };
+                    let alt = key.modifiers.contains(KeyModifiers::ALT);
+                    let kind = match (entry, key.code) {
+                        (Entry::Completed(entry), KeyCode::Enter) => {
+                            Some(Kind::DeleteEntry(entry.clone()))
+                        }
+                        (Entry::Completed(entry), KeyCode::Char('c')) if alt => {
+                            Some(Kind::ConvertToPlan(entry.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Enter) => {
+                            Some(Kind::CompletePlan(plan.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Char('r')) if alt => {
+                            Some(Kind::Reschedule(plan.clone()))
+                        }
+                        (Entry::Planned(plan), KeyCode::Char('d')) if alt => {
+                            Some(Kind::CancelPlan(plan.clone()))
+                        }
+                        _ => None,
+                    };
+                    if let Some(kind) = kind {
                         if let Err(error) = self.recovery_form(kind, now, zone) {
                             self.workspace.overlay = Some(overlay);
                             return Err(error);
@@ -545,9 +534,8 @@ impl App {
                         self.workspace.back.push(overlay);
                         return Ok(());
                     }
-                } else {
-                    picker.key(key);
                 }
+                browser.picker.key(key);
                 Ok(())
             }
             Overlay::Budget {
@@ -626,14 +614,6 @@ impl App {
                 self.key(KeyCode::Char('s').into(), now, zone)?;
             }
             Action::Entries => self.browse_entries(zone)?,
-            Action::Plans => {
-                let agreement = match self.workspace.reference() {
-                    Some(Reference::Agreement(id)) => id,
-                    Some(Reference::Project(id)) => self.workspace.catalogs.current(id)?.id(),
-                    _ => return Err(Error::usage("Select a project or agreement first.")),
-                };
-                self.request_read(super::effects::Read::Plans(agreement), zone)?;
-            }
             Action::Budget => {
                 self.request_read(
                     super::effects::Read::Budget(
@@ -915,14 +895,7 @@ impl App {
                 (Action::FilterClient, "Filter by client · f", None),
                 (
                     Action::Entries,
-                    "Browse completed entries",
-                    project
-                        .is_none()
-                        .then_some("Select a project or agreement first."),
-                ),
-                (
-                    Action::Plans,
-                    "Browse planned entries",
+                    "Browse entries",
                     project
                         .is_none()
                         .then_some("Select a project or agreement first."),
@@ -989,7 +962,6 @@ impl App {
                         | Action::StopAt
                         | Action::Cancel
                         | Action::Entries
-                        | Action::Plans
                         | Action::Budget
                         | Action::Log
                         | Action::NewClient
@@ -1022,7 +994,7 @@ pub(super) fn scroll(position: &mut u16, code: KeyCode) {
 
 fn help(section: Section) -> String {
     format!(
-        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log or plan time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nPlanning: l defaults future starts to Planned; override Entry type if needed. : Browse planned entries, then Enter to complete, Alt-r to reschedule, Alt-d to cancel. Completed-entry browser: Alt-c converts a wholly future log to a plan. : Retainer budgets browses months with [ and ]. Plans remain reserved until explicitly completed or cancelled.\n\nRecovery: use : Cancel selected timer on Dashboard, or : Browse completed entries in Agreements/Projects. Search entries; Tab opens full details. Enter opens a review; Enter again confirms. Esc cancels without changing work.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
+        "{}\n\n1: Dashboard · 2: Agreements\n:: open Projects, Clients, Settings, or other actions\nDirect shortcuts: 3 Projects · 4 Clients · 5 Settings\n↑↓ / j k: select a row\nEnter: open details or activate a control\n/: search the current catalog\na: show current / all (Projects, Agreements)\nf: filter by client (Projects, Agreements)\nn: create an item in this section\ns: start / switch a timer\nl: log or plan time (selected agreement is prefilled)\nt: browse all totals and retainers (Dashboard)\nTab/Shift-Tab: focus catalog list/details\nx: stop the selected timer NOW (Dashboard only)\nX: stop at a specified time (Dashboard only)\n:: searchable actions; unavailable actions explain why\nEsc: close the current layer / return to Dashboard\nq: quit from workspace screens; timers keep running\nCtrl-C: quit immediately, including from forms\n\nForms\nTab / Shift-Tab: next / previous field\nEnter: choose, advance, or activate the named action\nEsc: back; changed drafts ask before discarding\nReview: ↑↓ or PageUp/PageDown to scroll; Enter confirms\nText fields: arrows, Home/End, Backspace/Delete, Ctrl-U\nLetters, numbers and pasted text never invoke shortcuts.\n\nPlanning: l defaults future starts to Planned; override Entry type if needed. : Browse entries shows Completed and Planned together; Alt-f cycles All / Completed / Planned without clearing search. For a plan: Enter to complete, Alt-r to reschedule, Alt-d to cancel. For completed work: Enter to delete, Alt-c to convert a wholly future log to a plan. : Retainer budgets browses months with [ and ]. Plans remain reserved until explicitly completed or cancelled.\n\nRecovery: use : Cancel selected timer on Dashboard, or : Browse entries in Agreements/Projects. Search entries; Tab opens full details. Enter opens a review; Enter again confirms. Esc cancels without changing work.\n\nTimes use the displayed timezone. Use explicit dates for overnight work, and offsets for ambiguous DST times.\n\nEstimates are not invoices. Included retainer hours are not a cap. Project billing timezones and client ownership cannot be edited.\n\nLong details and all totals scroll at every supported terminal size.",
         section.title()
     )
 }

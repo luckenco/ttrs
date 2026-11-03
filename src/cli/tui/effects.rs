@@ -6,9 +6,8 @@ use tt::{client, model, workspace as w};
 
 use super::{
     catalog::{Catalogs, Reference},
-    choose::Choose,
+    entries::{self, Entry},
     form::Form,
-    recovery,
     state::{App, Failure, Picker, core_error, overflow},
     workflow::{Outcome, Prepared},
     workspace::{Overlay, Section},
@@ -37,7 +36,6 @@ pub(super) enum Effect {
 pub(super) enum Read {
     Scopes(model::ProjectId),
     Entries(model::ServiceAgreementId),
-    Plans(model::ServiceAgreementId),
     Budget(jiff::civil::Date),
     Prepare {
         draft: Box<Form>,
@@ -67,8 +65,7 @@ pub(super) struct Refreshed {
 
 pub(super) enum ReadValue {
     Scopes(Vec<String>),
-    Entries(Vec<model::TimeEntry>),
-    Plans(Vec<model::Plan>),
+    Entries(Vec<Entry>),
     Budget(jiff::civil::Date, Vec<model::RetainerMonth>),
     FormPrepared(Box<Form>),
 }
@@ -393,22 +390,8 @@ impl App {
                                 }
                             }
                             ReadValue::Entries(entries) => {
-                                self.workspace.overlay = Some(Overlay::Entries(Choose::new(
-                                    "Completed entries",
-                                    entries.into_iter().map(|entry| {
-                                        let label = recovery::entry_label(&entry, zone);
-                                        (entry, label)
-                                    }),
-                                )));
-                            }
-                            ReadValue::Plans(plans) => {
-                                self.workspace.overlay = Some(Overlay::Plans(Choose::new(
-                                    "Plans · Enter complete · Alt-r reschedule · Alt-d cancel",
-                                    plans.into_iter().map(|plan| {
-                                        let label = recovery::plan_label(&plan, zone);
-                                        (plan, label)
-                                    }),
-                                )));
+                                self.workspace.overlay =
+                                    Some(Overlay::Entries(entries::Browser::new(entries, zone)));
                             }
                             ReadValue::Budget(month, totals) => {
                                 self.workspace.overlay = Some(Overlay::Budget {
@@ -568,10 +551,24 @@ pub(super) fn execute(
                         ReadValue::Scopes(backend.recent_scopes(project, 3).map_err(core_error)?)
                     }
                     Read::Entries(agreement) => {
-                        ReadValue::Entries(backend.entries(agreement).map_err(core_error)?)
-                    }
-                    Read::Plans(agreement) => {
-                        ReadValue::Plans(backend.plans(agreement).map_err(core_error)?)
+                        let completed = backend.entries(agreement).map_err(core_error)?;
+                        let before = backend.last_stamp().expect("entries read has a stamp");
+                        let plans = backend.plans(agreement).map_err(core_error)?;
+                        let after = backend.last_stamp().expect("plans read has a stamp");
+                        // Conversion/completion between reads must not omit or double-list work.
+                        if before.authority != after.authority || before.revision != after.revision
+                        {
+                            return Err(Error::runtime(
+                                "Entries changed while loading; reopen the browser.",
+                            ));
+                        }
+                        ReadValue::Entries(
+                            completed
+                                .into_iter()
+                                .map(Entry::Completed)
+                                .chain(plans.into_iter().map(Entry::Planned))
+                                .collect(),
+                        )
                     }
                     Read::Budget(month) => {
                         ReadValue::Budget(month, backend.budget(month).map_err(core_error)?)

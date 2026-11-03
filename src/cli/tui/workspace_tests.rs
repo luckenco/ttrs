@@ -927,7 +927,7 @@ fn recovery_actions_are_disabled_when_refresh_failed() {
     app.selection.select(Some(0));
     for (section, name) in [
         (Section::Dashboard, "Cancel selected timer"),
-        (Section::Agreements, "Browse completed entries"),
+        (Section::Agreements, "Browse entries"),
     ] {
         app.workspace.section = section;
         app.refresh_error = Some("offline".into());
@@ -1029,10 +1029,10 @@ fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
         .unwrap();
     app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
-    action(&mut app, &mut tracker, now, "Browse completed entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     app.paste("Future");
     assert!(
-        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected() == Some(&entry))
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.picker.selected() == Some(&super::entries::Entry::Completed(entry.clone())))
     );
     assert_eq!(
         tracker.entries(agreement).unwrap().as_slice(),
@@ -1097,8 +1097,10 @@ fn browse_future_entries_search_paste_details_and_confirmed_deletion() {
             .values()
             .all(|amount| *amount == 0)
     );
-    action(&mut app, &mut tracker, now, "Browse completed entries");
-    assert!(matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected().is_none()));
+    action(&mut app, &mut tracker, now, "Browse entries");
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.picker.selected().is_none())
+    );
 }
 
 #[test]
@@ -1110,7 +1112,7 @@ fn stale_entry_deletion_preserves_review_and_does_not_delete_replacement() {
         .log(command::LogEntry::new(agreement, "Original".into(), from, now).unwrap())
         .unwrap();
     press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
-    action(&mut app, &mut tracker, now, "Browse completed entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     tracker.delete_entry_if_current(&entry).unwrap();
     let replacement = tracker
@@ -1170,9 +1172,9 @@ fn historical_entries_in_archived_projects_can_be_deleted() {
         app.workspace.reference(),
         Some(Reference::Agreement(previous.id()))
     );
-    action(&mut app, &mut tracker, now, "Browse completed entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     assert!(
-        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.selected() == Some(&entry))
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.picker.selected() == Some(&super::entries::Entry::Completed(entry.clone())))
     );
     press(
         &mut app,
@@ -1241,7 +1243,7 @@ fn l_plans_future_work_then_browser_reschedules_and_completes_actual_time() {
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     assert_eq!(tracker.plans(agreement).unwrap().len(), 1);
     assert!(tracker.entries(agreement).unwrap().is_empty());
-    action(&mut app, &mut tracker, now, "Browse planned entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     app.key_sync(
         KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
         &mut tracker,
@@ -1259,7 +1261,9 @@ fn l_plans_future_work_then_browser_reschedules_and_completes_actual_time() {
         now,
         &[KeyCode::Char('r'), KeyCode::Char('d')],
     );
-    assert!(matches!(&app.workspace.overlay, Some(Overlay::Plans(p)) if p.input.as_str() == "rd"));
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.picker.input.as_str() == "rd")
+    );
     app.key_sync(
         KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL),
         &mut tracker,
@@ -1287,7 +1291,7 @@ fn l_plans_future_work_then_browser_reschedules_and_completes_actual_time() {
             .contains("PLANNED")
     );
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
-    action(&mut app, &mut tracker, now, "Browse planned entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
     let f = form(&mut app);
     f.set(F::From, "2026-01-02 08:00");
@@ -1317,6 +1321,161 @@ fn l_plans_future_work_then_browser_reschedules_and_completes_actual_time() {
 }
 
 #[test]
+fn unified_entries_filter_search_details_and_actions_keep_work_kinds_distinct() {
+    use super::entries::Entry;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+
+    let (mut tracker, mut app, now) = setup();
+    let agreement = app.snapshot.projects[0].agreement.id();
+    let completed = tracker
+        .log(
+            command::LogEntry::new(
+                agreement,
+                "Shared completed".into(),
+                "2026-01-02T09:00:00Z".parse().unwrap(),
+                now,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+    let tt::workspace::MutationValue::Plan(plan) = tracker
+        .apply(tt::workspace::Operation::Plan(
+            command::LogEntry::new(
+                agreement,
+                "Shared planned".into(),
+                "2026-01-03T09:00:00Z".parse().unwrap(),
+                "2026-01-03T10:00:00Z".parse().unwrap(),
+            )
+            .unwrap(),
+        ))
+        .unwrap()
+    else {
+        panic!("expected a plan")
+    };
+    // Different kinds may have the same numeric ID, but never share an action target.
+    assert_eq!(completed.id().to_string(), plan.id().to_string());
+    app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
+    press(
+        &mut app,
+        &mut tracker,
+        now,
+        &[KeyCode::Char('2'), KeyCode::Char(':')],
+    );
+    let Some(Overlay::Actions(menu)) = &app.workspace.overlay else {
+        panic!("actions")
+    };
+    let labels: Vec<_> = menu.items.matches().map(|a| a.label.as_str()).collect();
+    assert_eq!(labels.iter().filter(|&&s| s == "Browse entries").count(), 1);
+    assert!(
+        !labels
+            .iter()
+            .any(|s| s.contains("Browse completed") || s.contains("Browse planned"))
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    action(&mut app, &mut tracker, now, "Browse entries");
+    for (width, height) in [(32, 10), (100, 24)] {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| view::draw(frame, &mut app, now, &TimeZone::UTC))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Completed") && screen.contains("Planned"));
+        assert!(screen.contains("Alt-f") && screen.contains("Enter: complete"));
+        insta::assert_snapshot!(
+            format!("unified_entries_{width}x{height}"),
+            terminal.backend()
+        );
+    }
+    app.paste("Shared");
+    press(&mut app, &mut tracker, now, &[KeyCode::Char('f')]);
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(b)) if b.picker.input.as_str() == "Sharedf" && b.picker.title.contains("All"))
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Backspace]);
+    for (status, selected, count) in [
+        ("Completed", Entry::Completed(completed.clone()), 1),
+        ("Planned", Entry::Planned(plan.clone()), 1),
+        ("All", Entry::Planned(plan.clone()), 2),
+    ] {
+        app.key_sync(
+            KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+            &mut tracker,
+            now,
+            &TimeZone::UTC,
+        )
+        .unwrap();
+        let Some(Overlay::Entries(browser)) = &app.workspace.overlay else {
+            panic!("entries")
+        };
+        assert!(browser.picker.title.contains(status));
+        assert_eq!(browser.picker.input.as_str(), "Shared");
+        assert_eq!(browser.picker.items.matches().len(), count);
+        assert_eq!(browser.picker.selected(), Some(&selected));
+    }
+    app.paste(" planned");
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(b)) if b.picker.selected().is_none())
+    );
+    // No match means no mutation, even with a destructive shortcut.
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(matches!(app.workspace.overlay, Some(Overlay::Entries(_))));
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('f'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    press(&mut app, &mut tracker, now, &[KeyCode::Tab]);
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Detail { text, .. }) if text.contains("Planned") && text.contains("2026-01-03 09:00:00") && text.contains("Duration"))
+    );
+    press(&mut app, &mut tracker, now, &[KeyCode::Esc]);
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(b)) if b.picker.title.contains("Planned") && b.picker.input.as_str() == "Shared planned")
+    );
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('d'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(matches!(form(&mut app).kind, Kind::CancelPlan(_)));
+    assert_eq!(tracker.plans(agreement).unwrap(), [plan]);
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.plans(agreement).unwrap().is_empty());
+    assert_eq!(tracker.entries(agreement).unwrap(), [completed]);
+    action(&mut app, &mut tracker, now, "Browse entries");
+    // A plan-only shortcut on completed work must not cancel or reschedule it.
+    app.key_sync(
+        KeyEvent::new(KeyCode::Char('r'), KeyModifiers::ALT),
+        &mut tracker,
+        now,
+        &TimeZone::UTC,
+    )
+    .unwrap();
+    assert!(matches!(app.workspace.overlay, Some(Overlay::Entries(_))));
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(matches!(form(&mut app).kind, Kind::DeleteEntry(_)));
+    press(&mut app, &mut tracker, now, &[KeyCode::Enter]);
+    assert!(tracker.entries(agreement).unwrap().is_empty());
+}
+
+#[test]
 fn future_log_conversion_requires_review_and_keeps_search_and_dates_intact() {
     use crossterm::event::{KeyEvent, KeyModifiers};
     let (mut tracker, mut app, now) = setup();
@@ -1334,9 +1493,11 @@ fn future_log_conversion_requires_review_and_keeps_search_and_dates_intact() {
         .unwrap();
     app.refresh_sync(&mut tracker, now, &TimeZone::UTC);
     press(&mut app, &mut tracker, now, &[KeyCode::Char('2')]);
-    action(&mut app, &mut tracker, now, "Browse completed entries");
+    action(&mut app, &mut tracker, now, "Browse entries");
     press(&mut app, &mut tracker, now, &[KeyCode::Char('c')]);
-    assert!(matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.input.as_str() == "c"));
+    assert!(
+        matches!(&app.workspace.overlay, Some(Overlay::Entries(p)) if p.picker.input.as_str() == "c")
+    );
     app.key_sync(
         KeyEvent::new(KeyCode::Char('c'), KeyModifiers::ALT),
         &mut tracker,

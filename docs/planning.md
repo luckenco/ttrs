@@ -5,6 +5,14 @@ same `l` form / `tt log` command. Auto chooses Planned when the start is after t
 sampled reference time; otherwise Completed. Explicit type overrides Auto.
 Completion always requires reviewed actual times ending at or before now.
 
+**Browse entries** combines completed work and reservations, newest first, with
+explicit status labels. **Alt-f** cycles All / Completed / Planned without clearing
+search; **Tab** opens either kind's details. For completed work, Enter reviews
+permanent deletion and Alt-c reviews conversion of a wholly future log. For plans,
+Enter reviews completion, Alt-r rescheduling, and Alt-d cancellation. The unified
+browser refuses a mixed-revision load rather than omit or duplicate entries if
+work changes between its completed-entry and plan queries.
+
 ## Contracts
 
 - `workspace::Operation::Plan(LogEntry)` validates scope, interval and agreement
